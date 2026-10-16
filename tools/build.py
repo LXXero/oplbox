@@ -160,11 +160,12 @@ def build_app():
     elf = OUT / "oplbox.elf"
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o",
        OUT / "fm1_isr.o", OUT / "oplbox.o", "-o", elf)
-    for sect in ("text.bin", "data.bin", "ramtext.bin"):
+    for sect in ("text.bin", "data.bin", "ramtext.bin", "ramcode.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),
                                ("common/bin/objcopy", "-O", "binary", "-j", ".data", elf, OUT / "data.bin"),
                                ("common/bin/objcopy", "-O", "binary", "-j", ".ram_text", elf, OUT / "ramtext.bin"),
+                               ("common/bin/objcopy", "-O", "binary", "-j", ".ram_code", elf, OUT / "ramcode.bin"),
                                ("common/bin/objdump", "-t", elf),
                                ("common/bin/objdump", "-d", elf),
                                ("common/bin/objdump", "-d", "-j", ".ram_text", elf))
@@ -173,8 +174,12 @@ def build_app():
     def symv(name):
         return int(re.search(r"^([0-9a-f]+) .*\s" + name + r"$", syms, re.M).group(1), 16)
     img = bytearray((OUT / "text.bin").read_bytes())
-    # .ram_text and .data follow .text at their load addresses; crt0 copies them by words
-    for sect, lname in (("ramtext.bin", "_rt_load"), ("data.bin", "_data_load")):
+    # .ram_text, .ram_code and .data follow .text at their load addresses; the start copies them by words:
+    # .ram_text and .ram_code as one range (_rt_start.._rt_end), so their load addresses must be contiguous
+    rc_size = (OUT / "ramcode.bin").stat().st_size if (OUT / "ramcode.bin").exists() else 0
+    if rc_size and symv("_rc_load") - symv("_rt_load") != symv("_rc_start") - symv("_rt_start"):
+        raise SystemExit(".ram_code is not contiguous with .ram_text (load vs run offsets differ)")
+    for sect, lname in (("ramtext.bin", "_rt_load"), ("ramcode.bin", "_rc_load"), ("data.bin", "_data_load")):
         load = symv(lname)
         if load % 4:
             raise SystemExit(f"{lname} {load:#x} is not word aligned")
@@ -217,7 +222,11 @@ def check(img, syms, dis, rt):
         return int(mm.group(1), 16) if mm else 0
     ram = sym("_bss_end") - 0x01C08000
     pool = sym("_pool_end") - 0x01C20000
-    notes.append(f"image {len(img)} B of {APP_SLOT}; RAM .data+.bss {ram} B of 98304; pool {pool} B of 344064")
+    rtext = sym("_rt_end") - 0x01C00000
+    notes.append(f"image {len(img)} B of {APP_SLOT}; RAM .data+.bss {ram} B of 98304; pool {pool} B of 344064; "
+                 f"RAM code .ram_text+.ram_code {rtext} B of 24576")
+    if rtext > 0x6000:
+        errors.append(f"RAM code {rtext} B > 24 KiB")
     if ram > 96 * 1024:
         errors.append(f"RAM .data+.bss {ram} B > 96 KiB")
     return errors, notes

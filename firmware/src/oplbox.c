@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* OPLBOX: the M-VAVE FM-1 as an AdLib. Plays the SoundFX Macs Opera songs of LINEL's games and of
- * Stone Age (Eclipse, 1992) through an OPL2 (Nuked-OPL3), the way FXDRIVER V1.06 played them on a
- * Sound Blaster: register for register (verified against DOSBox captures of the original driver).
+ * Stone Age (Eclipse, 1992) through an OPL2, the way FXDRIVER V1.06 played them on a Sound Blaster:
+ * register for register (verified against DOSBox captures of the original driver).
  *
  *   PLAY           play / pause          HOME     back to the start of the song
  *   OCT- OCT+      previous / next song  SELECT   turn: pick a song (plays it if playing)
@@ -10,7 +10,9 @@
  *
  * The song that was playing and the loop mode survive a power-off (settings sector).
  * Built on Dinghy (zvenson) / Felucca (Leo Kuroshita, Hügelton Instruments) / SLOOP (isod89), GPL-3.0.
- * Nuked-OPL3 (Alexey Khokholov), LGPL-2.1. Player after AdPlug's cmfmcsop.cpp (Sebastian Kienzl), LGPL-2.1. */
+ * OPL cores: DOSBox's dbopl (GPL-2+, the default: a third of the CPU) or Nuked-OPL3 (LGPL-2.1, cycle-exact,
+ * -DOPL_CORE=OPL_NUKED: more than the chip has, until it runs on the second core).
+ * Player after AdPlug's cmfmcsop.cpp (Sebastian Kienzl), LGPL-2.1. */
 #define APP_NAME "OPLBOX"
 #include "platform.c"
 #ifdef DINGHY_HOST                            /* the fake FM-1 has no tick counter and no busy wait */
@@ -18,28 +20,23 @@
 static uint32_t fm1_ticks(void) { return 0; }
 static void fm1_delay_ms(uint32_t ms) { (void)ms; }
 #endif
-#include "opl3.c"
-#include "macsop.c"
+#define OPL_DBOPL 1
+#define OPL_NUKED 2
+#ifndef OPL_CORE
+#define OPL_CORE OPL_DBOPL
+#endif
+#include "macsop.h"
 #include "songs.h"
 
-/* ---- the chip and the player (the audio ISR owns them while playing) */
-static opl3_chip chip __attribute__((section(".pool")));       /* 21 KB: too big for .bss, lives in the pool */
-static macsop player;
-
+static macsop player;                         /* the audio ISR owns the chip and the player while playing */
 static volatile uint32_t playing;             /* 1: the ISR runs the chip and the player   (main writes, ISR reads) */
 static volatile uint32_t song_over;           /* the ISR says the song ended; main picks what is next */
 static volatile uint32_t audio_us;            /* the last ISR's render time, for the screen */
 static volatile uint32_t pos_order, pos_row;  /* where the player is, for the screen */
 static volatile uint32_t rows_done;           /* rows played since the song started */
-
-static void opl_write(void *ctx, uint16_t reg, uint8_t val)
-{
-    (void)ctx;
-    OPL3_WriteRegBuffered(&chip, reg, val);   /* as the ISA bus did: one write per chip sample at most */
-}
-
-
-#include "opl2fast.c"
+static volatile uint32_t overload;            /* the ISR could not keep up for 1/4 s and stopped itself */
+static uint32_t over_n;                       /* consecutive interrupts over budget */
+#define ISR_BUDGET_US 5805u                   /* 256 frames at 44.1 kHz */
 
 /* OPL2 runs at 49716 Hz; the FM-1 at 44100. Native samples are generated as needed and interpolated:
  * no division, and the row clock ticks on native samples so the timing is the driver's (18.2 / 9.1 / 4.55 rows/s). */
@@ -48,19 +45,84 @@ static const uint32_t SPR_Q16[4] = { 0, 179021084u, 358042167u, 716084334u };   
 static uint32_t rs_phase, row_acc;            /* resampler phase (Q16); samples until the next row (Q16) */
 static int32_t s_prev, s_cur;                 /* the last two native samples */
 
+static void tick_row(void)                    /* the row clock: before a native sample, when it is due */
+{
+    if (playing && !song_over) {
+        if (!macsop_tick(&player))
+            song_over = 1;
+        pos_order = player.order_idx; pos_row = player.row; rows_done++;
+    }
+    row_acc += SPR_Q16[player.speed];
+}
+
+#if OPL_CORE == OPL_NUKED
+#include "opl3.c"
+static opl3_chip chip __attribute__((section(".pool")));       /* 21 KB: too big for .bss, lives in the pool */
+static void opl_write(void *ctx, uint16_t reg, uint8_t val)
+{
+    (void)ctx;
+    OPL3_WriteRegBuffered(&chip, reg, val);   /* as the ISA bus did: one write per chip sample at most */
+}
+#include "opl2fast.c"
+static void chip_reset(void)
+{
+    uint32_t k;
+    OPL3_Reset(&chip, 49716);
+    OPL3_WriteReg(&chip, 0x105, 0);           /* an OPL2: no OPL3 features */
+    for (k = 0; k < 4096u; k++)               /* drain the write buffer */
+        opl2_generate(&chip);
+}
+static void chip_write_now(uint16_t reg, uint8_t val) { OPL3_WriteReg(&chip, reg, val); }
+static void chip_flush(void) { uint32_t k; for (k = 0; k < 4096u; k++) opl2_generate(&chip); }
 static int32_t next_native(void)
 {
-    if (row_acc < (1u << 16)) {
-        if (playing && !song_over) {
-            if (!macsop_tick(&player))
-                song_over = 1;
-            pos_order = player.order_idx; pos_row = player.row; rows_done++;
-        }
-        row_acc += SPR_Q16[player.speed];
-    }
+    if (row_acc < (1u << 16))
+        tick_row();
     row_acc -= 1u << 16;
     return opl2_generate(&chip);
 }
+#else
+#ifndef DINGHY_HOST
+#define DBOPL2_RAMDATA __attribute__((section(".data.dbopl2")))      /* wave and volume tables in RAM, not flash */
+#define DBOPL2_RAMCODE __attribute__((section(".ram_code.dbopl2")))  /* the sample loop in RAM (app.ld, build.py) */
+#endif
+#include "dbopl2.c"
+static dbopl2 chip;
+#define NAT_CHUNK 128u                        /* native samples generated per block (a row is >= 2731) */
+static int32_t nat[NAT_CHUNK];
+static uint32_t nat_rd, nat_n;
+static void opl_write(void *ctx, uint16_t reg, uint8_t val)
+{
+    (void)ctx;
+    dbopl2_write(&chip, reg, val);            /* between blocks: a write lands at the next block boundary */
+}
+static void chip_reset(void) { dbopl2_reset(&chip); nat_rd = nat_n = 0; }
+static void chip_write_now(uint16_t reg, uint8_t val) { dbopl2_write(&chip, reg, val); }
+static void chip_flush(void) { }
+static void refill(void)                      /* the next block: up to the row due next, at most NAT_CHUNK */
+{
+    uint32_t k, i;
+    if (row_acc < (1u << 16))
+        tick_row();
+    k = row_acc >> 16;
+    if (k > NAT_CHUNK) k = NAT_CHUNK;
+    row_acc -= k << 16;
+    for (i = 0; i < k; i++) nat[i] = 0;
+#ifdef DINGHY_HOST
+    dbopl2_generate(&chip, k, nat);
+#else
+    FL_FAR(dbopl2_generate)(&chip, k, nat);   /* RAM code: beyond the call range of XIP, through a pointer */
+#endif
+    nat_rd = 0; nat_n = k;
+}
+static inline int32_t next_native(void)
+{
+    if (nat_rd == nat_n)
+        refill();
+    return nat[nat_rd++];
+}
+#endif
+#include "macsop.c"
 
 static void app_audio(int32_t *out, uint32_t n)
 {
@@ -75,12 +137,18 @@ static void app_audio(int32_t *out, uint32_t n)
             s_prev = s_cur;
             s_cur = next_native();
         }
-        s = s_prev + (((s_cur - s_prev) * (int32_t)rs_phase) >> 16);
-        s = (s * 3) >> 1;                     /* the OPL's peak sits well under full scale: +3.5 dB */
+        s = s_prev + (((s_cur - s_prev) * (int32_t)rs_phase) >> 16);   /* unity: the OPL's full scale is the DAC's */
+        if (s > 32767) s = 32767; else if (s < -32768) s = -32768;      /* ECHOS and KAISER touch it */
         out[2u * i] += s;
         out[2u * i + 1u] += s;
     }
     audio_us = (fm1_ticks() - t0) / FM1_TICKS_PER_US;
+    /* over budget a quarter second in a row: the sound stops itself, so the main loop, USB and the
+     * updater keep the device reachable (0.1 on hardware: 100 %+ and the hub could not talk to it) */
+    if (audio_us > ISR_BUDGET_US) {
+        if (++over_n >= 43u) { playing = 0; overload = 1; over_n = 0; }
+    } else
+        over_n = 0;
 }
 
 /* ---- songs (main loop) */
@@ -90,19 +158,16 @@ static void chip_silence(void)                /* every key off, so a paused song
 {
     uint32_t ch;
     for (ch = 0; ch < 9u; ch++)
-        OPL3_WriteReg(&chip, (uint16_t)(0xB0 + ch), (uint8_t)(player.bx[ch] & ~0x20u));
-    OPL3_WriteReg(&chip, 0xBD, (uint8_t)(player.bd & 0x20u));
+        chip_write_now((uint16_t)(0xB0 + ch), (uint8_t)(player.bx[ch] & ~0x20u));
+    chip_write_now(0xBD, (uint8_t)(player.bd & 0x20u));
 }
 
 static void load_song(uint32_t i)             /* with the ISR off the chip (playing == 0) */
 {
-    uint32_t k;
     cur = i;
-    OPL3_Reset(&chip, 49716);
-    OPL3_WriteReg(&chip, 0x105, 0);           /* an OPL2: no OPL3 features */
+    chip_reset();
     macsop_load(&player, SONG_DATA + SONGS[i].off, SONGS[i].len, opl_write, 0);
-    for (k = 0; k < 4096u; k++)               /* drain the write buffer: the rewind's register writes */
-        opl2_generate(&chip);
+    chip_flush();                             /* the rewind's register writes land */
     rs_phase = 0; row_acc = 0; s_prev = s_cur = 0;
     song_over = 0; pos_order = 0; pos_row = 0; rows_done = 0;
 }
@@ -152,6 +217,11 @@ static void draw_instruments(void)          /* the first six instrument names, t
     cv_blit(0, 124);
 }
 
+static uint32_t pct_colour(uint32_t us)      /* the load figure: amber past 85 %, red when it does not fit */
+{
+    return us > 5805u ? RGB(255, 60, 60) : us > 4934u ? C_ACC : C_MUTE;
+}
+
 static void draw_status(int play, int loop_all)
 {
     char s[40];
@@ -169,8 +239,12 @@ static void draw_status(int play, int loop_all)
     /* second line: mode and the audio load */
     cv_text(4, 20, &FONT_S, loop_all ? "ALL IN TURN" : "LOOP SONG", C_MUTE);
     k = 0; s[k++] = 'C'; s[k++] = 'P'; s[k++] = 'U'; s[k++] = ' ';
-    u2s(s + k, (audio_us * 100u) / 5805u, 2); k += 2; s[k++] = '%'; s[k] = 0;
-    cv_text(170, 20, &FONT_S, s, C_MUTE);
+    {   uint32_t pct = (audio_us * 100u) / 5805u;         /* of the 5.8 ms an interrupt has */
+        if (pct > 999u) pct = 999u;
+        u2s(s + k, pct, 3); k += 3; if (s[4] == '0') { s[4] = s[5]; s[5] = s[6]; k--; } if (s[4] == '0' && s[5] != 0) { s[4] = s[5]; k--; }
+    }
+    s[k++] = '%'; s[k] = 0;
+    cv_text(160, 20, &FONT_S, s, pct_colour(audio_us));
     cv_blit(0, 190);
 }
 
@@ -192,7 +266,10 @@ static void app_main(void)
 
     for (;;) {
         uint32_t b, rel;
+        uint8_t st, d1, d2;
         platform_poll();
+        while (midi_get(&st, &d1, &d2)) { }   /* drain MIDI in: a full ring NAKs the USB endpoint and locks SysEx
+                                               * (the installer's handshake) out - 0.1 never read it (Smalley) */
 
         b = fm1_input_edges(&rel);
         spin = fm1_enc_take(ENC_SELECT);
@@ -214,9 +291,13 @@ static void app_main(void)
             set.song = (uint8_t)cur; dirty = 1; t_change = fm1_ms;
             shown_order = ~0u;
         }
+        if (overload && play) {               /* the ISR stopped itself: show it as paused, PLAY tries again */
+            play = 0; stop(); shown_order = ~0u;
+            draw_text_box(0, 78, 240, &FONT_S, "AUDIO OVERLOAD - PAUSED", RGB(255, 60, 60), 1);
+        }
         if (b & (1u << BTN_PLAY)) {
             play ^= 1u;
-            if (play) playing = 1; else stop();
+            if (play) { overload = 0; draw_title(cur); playing = 1; } else stop();
             shown_order = ~0u;
         }
         if (b & (1u << BTN_HOME)) {
