@@ -4,7 +4,7 @@ Custom firmware for the M-VAVE FM-1 that plays the **SoundFX Macs Opera** songs 
 LINEL's games (Michael Tschögl, 1990–92) and of Eclipse's **Stone Age** (Thomas Detert, 1992) — through an
 OPL2 emulation, exactly the way FXDRIVER V1.06 drove a Sound Blaster.
 
-**Status: 0.3.2** = 0.2 + the tracker screen (SEQ) + the scope screen (FX). 0.2: 0.1 ran on hardware and could not keep up: its OPL core (Nuked-OPL3, cycle-exact) needed more
+**Status: 0.3.3** = 0.2 + the tracker screen (SEQ) + the scope screen (FX). 0.2: 0.1 ran on hardware and could not keep up: its OPL core (Nuked-OPL3, cycle-exact) needed more
 than the whole core, the audio interrupt ran over its 5.8 ms budget every time, the sound stuttered at half
 speed and the main loop starved — which also starved USB, so the installer could not talk to it. 0.2 fixes the
 cause and the consequence:
@@ -35,7 +35,7 @@ original driver, and `dbopl2.c` is checked sample for sample against the unmodif
 | **OCT−  OCT+** or the **SELECT** knob | previous / next song |
 | **REC** | loop one song ↔ play them all in turn (the LED shows which) |
 | **SEQ** | jukebox screen ↔ **tracker screen**: the pattern scrolling by, one column per channel, the playing row in the middle. Notes as `C4` / `c4` (lowercase = sharp), `==` key off, `EN` end of pattern. Rhythm songs show 11 columns (6 melodic + BD SD TM TC HH), melodic songs 9. View only for now; editing is planned (EDIT). |
-| **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel (rhythm songs: 6 = bass drum, 7 = hi-hat + snare, 8 = tom + cymbal), each labelled with the number and name of the instrument the channel plays (`--` = the driver's default patch, before the song sets one), auto-ranged, triggered on a zero crossing, 20 frames a second. The trace is the channel's own output before mixing, tapped inside the OPL core. |
+| **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel (rhythm songs: 6 = bass drum, 7 = hi-hat + snare, 8 = tom + cymbal), each labelled with the number and name of the instrument the channel plays (`--` = the driver's default patch, before the song sets one), auto-ranged, triggered on a zero crossing, 20 frames a second. The trace is the channel's own output before mixing, tapped inside the OPL core. **The first nine white keys (F3–G4) mute / unmute channels 1–9** so you can hear each one on its own: a muted box goes red, its key's LED lights, and the channel keeps running silently (so unmuting is seamless). Mutes clear when the song changes. |
 | **MASTER** | volume |
 
 The song and the loop mode are kept across a power-off.
@@ -47,7 +47,7 @@ any firmware that has the update path (stock V14/V15, Felucca, SLOOP, Dinghy, �
 
 ```sh
 pip3 install mido python-rtmidi
-python3 tools/fm1_install.py oplbox-0.3.2.fwsc        # asks before it writes, restarts into OPLBOX
+python3 tools/fm1_install.py oplbox-0.3.3.fwsc        # asks before it writes, restarts into OPLBOX
 python3 tools/fm1_install.py --info                 # what the connected FM-1 runs
 ```
 
@@ -95,7 +95,7 @@ As Dinghy: Linux x86-64, Python 3 with Pillow, JieLi's Linux toolchain (`tools/g
 three boot files of the AC79 SDK at tag `AC79NN_SDK_V1.2.1_2023-12-13` (hash-checked by the build).
 
 ```sh
-JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK ./build.sh --release 0.3.2
+JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK ./build.sh --release 0.3.3
 tests/run_host.sh                 # the same app on this computer: WAV + screen PNGs, no FM-1 needed
 ```
 

@@ -7,7 +7,8 @@
  *   OCT- OCT+      previous / next song  SELECT   turn: pick a song (plays it if playing)
  *   REC            loop one song <-> play them all in turn (the LED says which)
  *   SEQ            jukebox screen <-> tracker screen (the pattern scrolling by, one column per channel)
- *   FX             jukebox screen <-> scope screen (one oscilloscope per channel, labelled with its instrument)
+ *   FX             jukebox screen <-> scope screen (one oscilloscope per channel, labelled with its instrument);
+ *                  there, the first nine white keys (F3..G4) mute / unmute channels 1..9 (key LED = muted)
  *   MASTER         volume (platform.c)
  *
  * The song that was playing and the loop mode survive a power-off (settings sector).
@@ -80,6 +81,7 @@ static void chip_reset(void)
 }
 static void chip_write_now(uint16_t reg, uint8_t val) { OPL3_WriteReg(&chip, reg, val); }
 static void chip_flush(void) { uint32_t k; for (k = 0; k < 4096u; k++) opl2_generate(&chip); }
+static void chip_mute(uint32_t mask) { (void)mask; }        /* no mute in the Nuked path */
 static int32_t next_native(void)
 {
     if (row_acc < (1u << 16))
@@ -111,6 +113,7 @@ static void opl_write(void *ctx, uint16_t reg, uint8_t val)
     dbopl2_write(&chip, reg, val);            /* between blocks: a write lands at the next block boundary */
 }
 static void chip_reset(void) { dbopl2_reset(&chip); nat_rd = nat_n = 0; }
+static void chip_mute(uint32_t mask) { chip.mute = mask; }   /* bit n: channel n out of the mix */
 static void chip_write_now(uint16_t reg, uint8_t val) { dbopl2_write(&chip, reg, val); }
 static void chip_flush(void) { }
 static void refill(void)                      /* the next block: up to the row due next, at most NAT_CHUNK */
@@ -338,6 +341,10 @@ static void draw_tracker(void)                /* the rows around the playing one
 #define SC_BOXW 80u
 #define SC_BOXH 56u
 #define C_SCOPE_AXIS RGB(44, 44, 44)
+#define C_MUTED RGB(255, 60, 60)
+#define C_MUTED_TRACE RGB(110, 40, 40)
+static uint32_t mute_mask;                    /* bit n: channel n muted (the scope's white keys) */
+static const uint8_t WHITE_KEY[9] = { 0, 2, 4, 6, 7, 9, 11, 12, 14 };   /* F3 G3 A3 B3 C4 D4 E4 F4 G4 as key numbers */
 
 static void draw_scope_frame(void)
 {
@@ -353,7 +360,7 @@ static void draw_scope(void)
     for (r = 0; r < 3u; r++) {
         cv_begin(240, SC_BOXH, C_BLACK);
         for (c = 0; c < 3u; c++) {
-            uint32_t ch = r * 3u + c, x0 = c * SC_BOXW, t = 0, px, lit = 0;
+            uint32_t ch = r * 3u + c, x0 = c * SC_BOXW, t = 0, px, lit = 0, muted = (mute_mask >> ch) & 1u;
             int32_t ylast = 0, peak = 0;
             const char *n = macsop_channel_instr(&player, (int)ch);
             for (k = 0; k < SCOPE_N; k++) {   /* oldest .. newest; the peak sets the gain (auto-range) */
@@ -374,13 +381,14 @@ static void draw_scope(void)
                 for (k = 0; j < 9u && n && n[k]; k++) name[j++] = n[k];
                 name[j] = 0;
             }
-            cv_text((int32_t)x0 + 3, 0, &FONT_S, name, lit ? C_TXT : C_MUTE);
+            cv_text((int32_t)x0 + 3, 0, &FONT_S, name, muted ? C_MUTED : lit ? C_TXT : C_MUTE);
             cv_line((int32_t)x0 + 2, 37, (int32_t)x0 + (int32_t)SC_BOXW - 3, 37, C_SCOPE_AXIS);
             if (c) cv_line((int32_t)x0, 2, (int32_t)x0, (int32_t)SC_BOXH - 3, C_SCOPE_AXIS);
             for (px = 0; px < 76u; px++) {
                 int32_t v = lit ? (snap[t + px * 4u] * 17) / peak : 0, y;
                 y = 37 - v;
-                if (px) cv_line((int32_t)(x0 + 1u + px), ylast, (int32_t)(x0 + 2u + px), y, lit ? C_ACC : C_MUTE);
+                if (px) cv_line((int32_t)(x0 + 1u + px), ylast, (int32_t)(x0 + 2u + px), y,
+                                muted ? C_MUTED_TRACE : lit ? C_ACC : C_MUTE);
                 ylast = y;
             }
         }
@@ -393,6 +401,7 @@ static void app_main(void)
     struct { uint8_t song, loop_all; } set = {0, 0};
     uint32_t shown_order = ~0u, shown_row = ~0u, t_status = 0, t_change = 0, dirty = 0, play = 0, next = 0;
     uint32_t view = 0, t_scope = 0;           /* 0: jukebox, 1: tracker (SEQ), 2: scope (FX) */
+    uint32_t keys_prev = 0;
     int32_t spin;
     settings_load(&set, sizeof set);
     if (set.song >= N_SONGS) set.song = 0;
@@ -413,6 +422,13 @@ static void app_main(void)
                                                * (the installer's handshake) out - 0.1 never read it (Smalley) */
 
         b = fm1_input_edges(&rel);
+        {   /* the scope's white keys: mute / unmute a channel */
+            uint32_t keys = fm1_in.notes, down = keys & ~keys_prev, k;
+            keys_prev = keys;
+            if (view == 2u && down)
+                for (k = 0; k < 9u; k++)
+                    if (down & (1u << WHITE_KEY[k])) { mute_mask ^= 1u << k; chip_mute(mute_mask); }
+        }
         spin = fm1_enc_take(ENC_SELECT);
         if (b & (1u << BTN_OCT_UP)) spin++;
         if (b & (1u << BTN_OCT_DOWN)) spin--;
@@ -425,6 +441,7 @@ static void app_main(void)
                        : (uint32_t)(((int32_t)cur + spin) % (int32_t)N_SONGS + (int32_t)N_SONGS) % N_SONGS;
             next = 0;
             stop();
+            mute_mask = 0;                    /* a new song starts with every channel in */
             load_song(i);
             if (view == 1u) draw_tracker_frame(); else if (view == 2u) draw_scope_frame(); else { draw_title(cur); draw_instruments(); }
             playing = play ? 1u : 0u;
@@ -464,6 +481,9 @@ static void app_main(void)
         fm1_led_key(BTN_REC, set.loop_all);
         fm1_led_key(BTN_SEQ, view == 1u);
         fm1_led_key(BTN_FX, view == 2u);
+        {   uint32_t k;                       /* the white keys' LEDs: lit = that channel is muted */
+            for (k = 0; k < 9u; k++) fm1_led_key(14u + WHITE_KEY[k], (int)((mute_mask >> k) & 1u));
+        }
         if (view == 2u && fm1_ms - t_scope > 50u) {          /* the scope: 20 frames a second */
             t_scope = fm1_ms;
             draw_scope();

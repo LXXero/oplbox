@@ -1,0 +1,7 @@
+# t(ms) what ...
+2500 btn 2
+6000 keys 0x01
+6200 keys 0
+6400 keys 0x40
+6600 keys 0
+13000 end

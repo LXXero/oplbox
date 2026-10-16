@@ -72,6 +72,8 @@ typedef struct {
     uint8_t reg08, regBD, vibratoIndex, tremoloIndex;
     int8_t vibratoSign;
     uint8_t vibratoShift, tremoloValue, vibratoStrength, tremoloStrength, waveFormMask;
+    uint32_t mute;                           /* bit n: channel n left out of the mix (6, 7, 8 in rhythm mode:
+                                              * bass drum, hi-hat + snare, tom + cymbal); the chip runs as before */
 } dbopl2;
 
 static const uint16_t WaveBaseTable[8]  = { 0, 512, 512, 2048, 2560, 3072, 256, 1024 };
@@ -338,6 +340,7 @@ static void dbopl2_reset(dbopl2 *chip)
     chip->reg08 = chip->regBD = 0; chip->waveFormMask = 0;
     chip->vibratoSign = 0; chip->vibratoShift = 0; chip->tremoloValue = 0;
     chip->vibratoStrength = 0; chip->tremoloStrength = 0;
+    chip->mute = 0;
     for (i = 0; i < 255u; i++) {             /* as dbopl's Setup: every register 0xff then 0 */
         dbopl2_write(chip, i, 0xff);
         dbopl2_write(chip, i, 0);
@@ -464,17 +467,17 @@ static DBOPL2_RAMCODE uint32_t chip_forward_lfo(dbopl2 *chip, uint32_t samples)
     return count;
 }
 
-static DBOPL2_RAMCODE __attribute__((always_inline)) inline void ch_percussion(dbchan *c, dbopl2 *chip, int32_t *output, uint32_t i)
+static DBOPL2_RAMCODE __attribute__((always_inline)) inline void ch_percussion(dbchan *c, dbopl2 *chip, int32_t *output, uint32_t i, const int32_t keep[3])
 {
     int32_t mod = (int32_t)((uint32_t)(c->old[0] + c->old[1]) >> c->feedback);
-    int32_t sample, part;
+    int32_t sample, bd, hs, tc;
     uint32_t noiseBit, c2, c5, phaseBit, hhVol, sdVol, tcVol;
     c->old[0] = c->old[1];                   /* bass drum: op 0 with feedback, op 1 */
     c->old[1] = op_get_sample(&c->op[0], mod);
     mod = (c->regC0 & 1) ? 0 : c->old[0];
     sample = op_get_sample(&c->op[1], mod);
     DBOPL2_TAP(6, i, sample << 1);
-    part = sample;
+    bd = sample;
     noiseBit = chip_forward_noise(chip) & 1u;
     c2 = op_forward_wave(OP(c, 2));
     c5 = op_forward_wave(OP(c, 5));
@@ -489,22 +492,24 @@ static DBOPL2_RAMCODE __attribute__((always_inline)) inline void ch_percussion(d
         uint32_t sdIndex = (0x100u + (c2 & 0x100u)) ^ (noiseBit << 8);
         sample += op_get_wave(OP(c, 3), sdIndex, sdVol);
     }
-    DBOPL2_TAP(7, i, (sample - part) << 1);
-    part = sample;
+    hs = sample - bd;
+    DBOPL2_TAP(7, i, hs << 1);
     sample += op_get_sample(OP(c, 4), 0);    /* tom */
     tcVol = op_forward_volume(OP(c, 5));     /* cymbal */
     if (!ENV_SILENT(tcVol)) {
         uint32_t tcIndex = (1u + phaseBit) << 8;
         sample += op_get_wave(OP(c, 5), tcIndex, tcVol);
     }
-    DBOPL2_TAP(8, i, (sample - part) << 1);
-    output[0] += sample << 1;
+    tc = sample - bd - hs;
+    DBOPL2_TAP(8, i, tc << 1);
+    output[0] += ((bd & keep[0]) + (hs & keep[1]) + (tc & keep[2])) << 1;
 }
 
 /* one channel (three in rhythm mode) over a block; returns the next channel */
 static DBOPL2_RAMCODE __attribute__((always_inline)) inline dbchan *ch_block(dbchan *c, dbopl2 *chip, uint32_t samples, int32_t *output, const int mode)
 {
     uint32_t i, ch = (uint32_t)(c - chip->chan);
+    const int32_t keep = (chip->mute >> ch) & 1u ? 0 : -1;   /* muted: computed, tapped, not mixed */
     if (mode == SM_AM) {
         if (op_silent(&c->op[0]) && op_silent(&c->op[1])) { c->old[0] = c->old[1] = 0; DBOPL2_TAP_ZERO(ch, samples); return c + 1; }
     } else if (mode == SM_FM) {
@@ -514,7 +519,10 @@ static DBOPL2_RAMCODE __attribute__((always_inline)) inline dbchan *ch_block(dbc
     if (mode == SM_PERC) {
         op_prepare(OP(c, 2), chip); op_prepare(OP(c, 3), chip);
         op_prepare(OP(c, 4), chip); op_prepare(OP(c, 5), chip);
-        for (i = 0; i < samples; i++) ch_percussion(c, chip, output + i, i);
+        {
+            const int32_t keep3[3] = { keep, (chip->mute >> 7) & 1u ? 0 : -1, (chip->mute >> 8) & 1u ? 0 : -1 };
+            for (i = 0; i < samples; i++) ch_percussion(c, chip, output + i, i, keep3);
+        }
         return c + 3;
     }
     for (i = 0; i < samples; i++) {
@@ -525,7 +533,7 @@ static DBOPL2_RAMCODE __attribute__((always_inline)) inline dbchan *ch_block(dbc
         if (mode == SM_AM) s = out0 + op_get_sample(&c->op[1], 0);
         else s = op_get_sample(&c->op[1], out0);
         DBOPL2_TAP(ch, i, s);
-        output[i] += s;
+        output[i] += s & keep;
     }
     return c + 1;
 }

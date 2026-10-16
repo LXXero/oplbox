@@ -1,3 +1,9 @@
+# OPLBOX 0.3.3 (identity FM-1_963)
+
+- Scope screen: the first nine white keys (F3-G4) mute / unmute channels 1-9. Red label, dim trace,
+  key LED lit while muted; the channel keeps running so unmuting is seamless. Cleared on song change.
+  (Mute is a mask in the mix, bit-exact with DOSBox when nothing is muted.)
+
 # OPLBOX 0.3.2 (identity FM-1_963)
 
 - Scope labels: instrument number first ("06 produc"), `--` for the driver's default patch.
