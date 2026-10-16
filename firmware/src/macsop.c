@@ -311,3 +311,12 @@ const char *macsop_channel_instr(const macsop *m, int ch)
         return 0;
     return m->cur_instr[ch]->name;
 }
+
+int macsop_channel_instr_no(const macsop *m, int ch)
+{
+    if (ch < 0 || ch >= MACSOP_CHANNELS || !m->cur_instr[ch])
+        return 0;
+    if (m->cur_instr[ch] < m->instr || m->cur_instr[ch] >= m->instr + m->n_instr)
+        return 0;                             /* the driver's own "Default" patch: not in the song */
+    return (int)(m->cur_instr[ch] - m->instr) + 1;
+}

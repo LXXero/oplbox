@@ -349,7 +349,7 @@ static void draw_scope(void)
 {
     static int16_t snap[SCOPE_N];
     uint32_t w0 = scope_w, r, c, k;
-    char name[10];
+    char name[12];
     for (r = 0; r < 3u; r++) {
         cv_begin(240, SC_BOXH, C_BLACK);
         for (c = 0; c < 3u; c++) {
@@ -365,8 +365,15 @@ static void draw_scope(void)
             if (peak < 48) peak = 48;
             for (k = 1; k < 200u; k++)        /* trigger: the first rising zero crossing */
                 if (snap[k - 1] < 0 && snap[k] >= 0) { t = k; break; }
-            for (k = 0; k < 9u && n && n[k]; k++) name[k] = n[k];
-            name[k] = 0;
+            {   /* "03 produc": the instrument's number first (what the tracker shows), then its name */
+                int no = macsop_channel_instr_no(&player, (int)ch);
+                uint32_t j = 0;
+                if (no) { name[j++] = (char)('0' + no / 10); name[j++] = (char)('0' + no % 10); }
+                else { name[j++] = '-'; name[j++] = '-'; }   /* the driver's default patch, before the song sets one */
+                name[j++] = ' ';
+                for (k = 0; j < 9u && n && n[k]; k++) name[j++] = n[k];
+                name[j] = 0;
+            }
             cv_text((int32_t)x0 + 3, 0, &FONT_S, name, lit ? C_TXT : C_MUTE);
             cv_line((int32_t)x0 + 2, 37, (int32_t)x0 + (int32_t)SC_BOXW - 3, 37, C_SCOPE_AXIS);
             if (c) cv_line((int32_t)x0, 2, (int32_t)x0, (int32_t)SC_BOXH - 3, C_SCOPE_AXIS);

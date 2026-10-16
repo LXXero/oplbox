@@ -53,3 +53,5 @@ uint16_t macsop_order_pattern(const macsop *m, uint16_t order_idx);
 void macsop_pattern_grid(const macsop *m, uint16_t pattern, uint8_t grid[64][MACSOP_CHANNELS]);
 /* the name of the instrument channel ch (0..10) last played, or 0 */
 const char *macsop_channel_instr(const macsop *m, int ch);
+/* its number as the tracker shows it (1..n_instr), 0 = none yet */
+int macsop_channel_instr_no(const macsop *m, int ch);

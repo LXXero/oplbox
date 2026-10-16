@@ -1,3 +1,7 @@
+# OPLBOX 0.3.2 (identity FM-1_963)
+
+- Scope labels: instrument number first ("06 produc"), `--` for the driver's default patch.
+
 # OPLBOX 0.3.1 (identity FM-1_963)
 
 - **Scope screen** on FX: nine oscilloscopes, one per channel, labelled with the channel's instrument;
