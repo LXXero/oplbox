@@ -179,10 +179,13 @@ static void chip_silence(void)                /* every key off, so a paused song
     chip_write_now(0xBD, (uint8_t)(player.bd & 0x20u));
 }
 
+static uint32_t mute_mask;                    /* bit n: channel n muted (the scope's white keys) */
+
 static void load_song(uint32_t i)             /* with the ISR off the chip (playing == 0) */
 {
     cur = i;
     chip_reset();
+    chip_mute(mute_mask);                     /* the reset cleared the chip's copy: a restart keeps the mutes */
     macsop_load(&player, SONG_DATA + SONGS[i].off, SONGS[i].len, opl_write, 0);
     chip_flush();                             /* the rewind's register writes land */
     rs_phase = 0; row_acc = 0; s_prev = s_cur = 0;
@@ -343,7 +346,6 @@ static void draw_tracker(void)                /* the rows around the playing one
 #define C_SCOPE_AXIS RGB(44, 44, 44)
 #define C_MUTED RGB(255, 60, 60)
 #define C_MUTED_TRACE RGB(110, 40, 40)
-static uint32_t mute_mask;                    /* bit n: channel n muted (the scope's white keys) */
 static const uint8_t WHITE_KEY[9] = { 0, 2, 4, 6, 7, 9, 11, 12, 14 };   /* F3 G3 A3 B3 C4 D4 E4 F4 G4 as key numbers */
 
 static void draw_scope_frame(void)

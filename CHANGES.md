@@ -1,3 +1,7 @@
+# OPLBOX 0.3.4 (identity FM-1_963)
+
+- Fix: mutes survived on screen but not in the chip after a restart (song end in LOOP SONG, HOME). Now kept.
+
 # OPLBOX 0.3.3 (identity FM-1_963)
 
 - Scope screen: the first nine white keys (F3-G4) mute / unmute channels 1-9. Red label, dim trace,
