@@ -47,3 +47,9 @@ int  macsop_tick(macsop *m);         /* play one row; 0 when the song has ended 
 /* rows per second as a 16.16 fixed-point value (18.2 / 9.1 / 4.55 as AdPlug measured against DOSBox) */
 uint32_t macsop_rows_per_sec_q16(const macsop *m);
 const char *macsop_instr_name(const macsop *m, int i);
+/* for a tracker view: the pattern an order entry plays (0xFFFF: none), and a pattern's notes as a grid
+ * (0 = empty, 1 = end of pattern, 4 = key off, 24.. = note) */
+uint16_t macsop_order_pattern(const macsop *m, uint16_t order_idx);
+void macsop_pattern_grid(const macsop *m, uint16_t pattern, uint8_t grid[64][MACSOP_CHANNELS]);
+/* the name of the instrument channel ch (0..10) last played, or 0 */
+const char *macsop_channel_instr(const macsop *m, int ch);

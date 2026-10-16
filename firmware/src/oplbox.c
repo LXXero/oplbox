@@ -6,6 +6,8 @@
  *   PLAY           play / pause          HOME     back to the start of the song
  *   OCT- OCT+      previous / next song  SELECT   turn: pick a song (plays it if playing)
  *   REC            loop one song <-> play them all in turn (the LED says which)
+ *   SEQ            jukebox screen <-> tracker screen (the pattern scrolling by, one column per channel)
+ *   FX             jukebox screen <-> scope screen (one oscilloscope per channel, labelled with its instrument)
  *   MASTER         volume (platform.c)
  *
  * The song that was playing and the loop mode survive a power-off (settings sector).
@@ -64,6 +66,10 @@ static void opl_write(void *ctx, uint16_t reg, uint8_t val)
     OPL3_WriteRegBuffered(&chip, reg, val);   /* as the ISA bus did: one write per chip sample at most */
 }
 #include "opl2fast.c"
+#define SCOPE_N 512u                          /* no taps in the Nuked path: the scope screen shows flat lines */
+static volatile uint32_t scope_on;
+static int16_t scope[9][SCOPE_N];
+static uint32_t scope_w;
 static void chip_reset(void)
 {
     uint32_t k;
@@ -86,6 +92,14 @@ static int32_t next_native(void)
 #define DBOPL2_RAMDATA __attribute__((section(".data.dbopl2")))      /* wave and volume tables in RAM, not flash */
 #define DBOPL2_RAMCODE __attribute__((section(".ram_code.dbopl2")))  /* the sample loop in RAM (app.ld, build.py) */
 #endif
+/* the scope screen's taps: each channel's last SCOPE_N native samples, written by the ISR when the screen is up */
+#define SCOPE_N 512u
+static volatile uint32_t scope_on;
+static int16_t scope[9][SCOPE_N];
+static uint32_t scope_w;
+#define DBOPL2_TAP(ch, i, s) do { if (scope_on) scope[ch][(scope_w + (i)) & (SCOPE_N - 1u)] = (int16_t)(s); } while (0)
+#define DBOPL2_TAP_ZERO(ch, n) do { if (scope_on) { uint32_t k_; for (k_ = 0; k_ < (n); k_++) scope[ch][(scope_w + k_) & (SCOPE_N - 1u)] = 0; } } while (0)
+#define DBOPL2_TAP_ADVANCE(n) (scope_w += (n))
 #include "dbopl2.c"
 static dbopl2 chip;
 #define NAT_CHUNK 128u                        /* native samples generated per block (a row is >= 2731) */
@@ -248,10 +262,130 @@ static void draw_status(int play, int loop_all)
     cv_blit(0, 190);
 }
 
+/* ---- the tracker screen: the current pattern as a tracker shows it, the playing row in the middle.
+ * Notes as "C4" / "c4" (lowercase = sharp), 9 columns 24 px apart for a melodic song, 11 (6 + BD SD TM TC HH)
+ * 20 px apart for a rhythm song: 240 px is 30 characters. A pattern is read into a grid once per pattern;
+ * editing it is for later (EDIT). */
+#define TR_TOP  38u                            /* first pattern row on screen */
+#define TR_ROWS 9u                             /* rows shown: 4 before, the playing one, 4 after */
+#define TR_CUR  4u
+#define C_ROWBG RGB(52, 36, 10)                /* the playing row's bar */
+static uint8_t grid[64][MACSOP_CHANNELS];
+static uint16_t grid_pat = 0xFFFF;
+
+static void note_text(char *s, uint8_t n, int wide)   /* "C#4" / "..." / "===" / "END", or 2 chars: "c4" */
+{
+    static const char NAMES[12] = "CCDDEFFGGAAB", SHARP[12] = " # #  # # # ";
+    const char *fixed = n == 0 ? "..." : n == 4 ? "===" : n == 1 ? "END" : (n < 24 || n > 119) ? "???" : 0;
+    if (fixed) { s[0] = fixed[0]; s[1] = fixed[1]; s[2] = fixed[2]; }
+    else {
+        uint32_t i = n % 12u, oct = n / 12u - 2u;
+        if (wide) { s[0] = NAMES[i]; s[1] = SHARP[i] == ' ' ? '-' : '#'; s[2] = (char)('0' + oct); }
+        else      { s[0] = SHARP[i] == ' ' ? NAMES[i] : (char)(NAMES[i] + 32); s[1] = (char)('0' + oct); }
+    }
+    s[wide ? 3 : 2] = 0;
+}
+
+static void draw_tracker_frame(void)          /* title and column labels (once per song / view switch) */
+{
+    static const char *const DRUMS[5] = { "BD", "SD", "TM", "TC", "HH" };
+    uint32_t ncol = player.rhythm ? MACSOP_CHANNELS : 9u, cw = ncol <= 9u ? 24u : 20u, c;
+    char s[3];
+    lcd_fill(0, 0, 240, TR_TOP, C_BLACK);
+    draw_text_box(0, 2, 240, &FONT_S, SONGS[cur].title, C_ACC, 1);
+    cv_begin(240, 16, C_BLACK);
+    for (c = 0; c < ncol; c++) {
+        const char *l;
+        if (c < 6u || ncol <= 9u) { s[0] = (char)('1' + c); s[1] = 0; l = s; }
+        else l = DRUMS[c - 6u];
+        cv_text((int32_t)(20u + c * cw + (l[1] ? 0u : 4u)), 0, &FONT_S, l, C_MUTE);
+    }
+    cv_blit(0, 20);
+    grid_pat = 0xFFFF;
+}
+
+static void draw_tracker(void)                /* the rows around the playing one, three rows a canvas (CV_MAX) */
+{
+    uint32_t ncol = player.rhythm ? MACSOP_CHANNELS : 9u, cw = ncol <= 9u ? 24u : 20u;
+    uint32_t row = pos_row, band, i, c;
+    uint16_t pat = macsop_order_pattern(&player, (uint16_t)pos_order);
+    char s[4];
+    if (pat != grid_pat) { macsop_pattern_grid(&player, pat, grid); grid_pat = pat; }
+    for (band = 0; band < TR_ROWS / 3u; band++) {
+        uint32_t r0 = band * 3u, rn = 3u;
+        cv_begin(240, rn * 16u, C_BLACK);
+        for (i = 0; i < rn; i++) {
+            int32_t r = (int32_t)row - (int32_t)TR_CUR + (int32_t)(r0 + i);
+            int32_t y = (int32_t)(i * 16u);
+            int cur = r0 + i == TR_CUR;
+            if (cur) cv_rect(0, y, 240, 16, C_ROWBG);
+            if (r < 0 || r >= 64) continue;
+            u2s(s, (uint32_t)r, 2);
+            cv_text(2, y, &FONT_S, s, cur ? C_ACC : C_MUTE);
+            for (c = 0; c < ncol; c++) {
+                note_text(s, grid[r][c], 0);
+                cv_text((int32_t)(20u + c * cw), y, &FONT_S, s, grid[r][c] ? (cur ? C_ACC : C_TXT) : C_MUTE);
+            }
+        }
+        cv_blit(0, TR_TOP + r0 * 16u);
+    }
+}
+
+/* ---- the scope screen: nine boxes, one oscilloscope per channel (rhythm mode: 6 = bass drum, 7 = hi-hat +
+ * snare, 8 = tom + cymbal), each labelled with the instrument the channel plays. The trace is the channel's
+ * own output before mixing, 4 native samples a pixel (6 ms across a box), triggered on a rising zero crossing. */
+#define SC_TOP 20u
+#define SC_BOXW 80u
+#define SC_BOXH 56u
+#define C_SCOPE_AXIS RGB(44, 44, 44)
+
+static void draw_scope_frame(void)
+{
+    lcd_fill(0, 0, 240, SC_TOP, C_BLACK);
+    draw_text_box(0, 2, 240, &FONT_S, SONGS[cur].title, C_ACC, 1);
+}
+
+static void draw_scope(void)
+{
+    static int16_t snap[SCOPE_N];
+    uint32_t w0 = scope_w, r, c, k;
+    char name[10];
+    for (r = 0; r < 3u; r++) {
+        cv_begin(240, SC_BOXH, C_BLACK);
+        for (c = 0; c < 3u; c++) {
+            uint32_t ch = r * 3u + c, x0 = c * SC_BOXW, t = 0, px, lit = 0;
+            int32_t ylast = 0, peak = 0;
+            const char *n = macsop_channel_instr(&player, (int)ch);
+            for (k = 0; k < SCOPE_N; k++) {   /* oldest .. newest; the peak sets the gain (auto-range) */
+                int32_t v = snap[k] = scope[ch][(w0 + k) & (SCOPE_N - 1u)];
+                if (v < 0) v = -v;
+                if (v > peak) peak = v;
+            }
+            lit = peak >= 48;                 /* below that it is the tail of a release: flat */
+            if (peak < 48) peak = 48;
+            for (k = 1; k < 200u; k++)        /* trigger: the first rising zero crossing */
+                if (snap[k - 1] < 0 && snap[k] >= 0) { t = k; break; }
+            for (k = 0; k < 9u && n && n[k]; k++) name[k] = n[k];
+            name[k] = 0;
+            cv_text((int32_t)x0 + 3, 0, &FONT_S, name, lit ? C_TXT : C_MUTE);
+            cv_line((int32_t)x0 + 2, 37, (int32_t)x0 + (int32_t)SC_BOXW - 3, 37, C_SCOPE_AXIS);
+            if (c) cv_line((int32_t)x0, 2, (int32_t)x0, (int32_t)SC_BOXH - 3, C_SCOPE_AXIS);
+            for (px = 0; px < 76u; px++) {
+                int32_t v = lit ? (snap[t + px * 4u] * 17) / peak : 0, y;
+                y = 37 - v;
+                if (px) cv_line((int32_t)(x0 + 1u + px), ylast, (int32_t)(x0 + 2u + px), y, lit ? C_ACC : C_MUTE);
+                ylast = y;
+            }
+        }
+        cv_blit(0, SC_TOP + r * SC_BOXH);
+    }
+}
+
 static void app_main(void)
 {
     struct { uint8_t song, loop_all; } set = {0, 0};
     uint32_t shown_order = ~0u, shown_row = ~0u, t_status = 0, t_change = 0, dirty = 0, play = 0, next = 0;
+    uint32_t view = 0, t_scope = 0;           /* 0: jukebox, 1: tracker (SEQ), 2: scope (FX) */
     int32_t spin;
     settings_load(&set, sizeof set);
     if (set.song >= N_SONGS) set.song = 0;
@@ -285,19 +419,18 @@ static void app_main(void)
             next = 0;
             stop();
             load_song(i);
-            draw_title(cur);
-            draw_instruments();
+            if (view == 1u) draw_tracker_frame(); else if (view == 2u) draw_scope_frame(); else { draw_title(cur); draw_instruments(); }
             playing = play ? 1u : 0u;
             set.song = (uint8_t)cur; dirty = 1; t_change = fm1_ms;
             shown_order = ~0u;
         }
         if (overload && play) {               /* the ISR stopped itself: show it as paused, PLAY tries again */
             play = 0; stop(); shown_order = ~0u;
-            draw_text_box(0, 78, 240, &FONT_S, "AUDIO OVERLOAD - PAUSED", RGB(255, 60, 60), 1);
+            draw_text_box(0, view ? 2u : 78u, 240, &FONT_S, "AUDIO OVERLOAD - PAUSED", RGB(255, 60, 60), 1);
         }
         if (b & (1u << BTN_PLAY)) {
             play ^= 1u;
-            if (play) { overload = 0; draw_title(cur); playing = 1; } else stop();
+            if (play) { overload = 0; if (view == 1u) draw_tracker_frame(); else if (view == 2u) draw_scope_frame(); else draw_title(cur); playing = 1; } else stop();
             shown_order = ~0u;
         }
         if (b & (1u << BTN_HOME)) {
@@ -306,11 +439,32 @@ static void app_main(void)
         if (b & (1u << BTN_REC)) {
             set.loop_all ^= 1u; dirty = 1; t_change = fm1_ms; shown_order = ~0u;
         }
+        if (b & ((1u << BTN_SEQ) | (1u << BTN_FX))) {   /* SEQ: tracker, FX: scope; again: the jukebox */
+            uint32_t want = (b & (1u << BTN_SEQ)) ? 1u : 2u;
+            view = view == want ? 0u : want;
+            scope_on = view == 2u;
+            lcd_fill(0, 0, 240, 190, C_BLACK);
+            if (view == 1u) draw_tracker_frame();
+            else if (view == 2u) draw_scope_frame();
+            else {
+                draw_text_box(0, 6, 240, &FONT_S, "OPLBOX " APP_VER " - MACS OPERA", C_MUTE, 1);
+                draw_title(cur); draw_instruments();
+            }
+            shown_order = ~0u;
+        }
 
         fm1_led_key(BTN_PLAY, play);
         fm1_led_key(BTN_REC, set.loop_all);
+        fm1_led_key(BTN_SEQ, view == 1u);
+        fm1_led_key(BTN_FX, view == 2u);
+        if (view == 2u && fm1_ms - t_scope > 50u) {          /* the scope: 20 frames a second */
+            t_scope = fm1_ms;
+            draw_scope();
+        }
         if (pos_order != shown_order || pos_row != shown_row || fm1_ms - t_status > 250u) {
+            int moved = pos_order != shown_order || pos_row != shown_row;
             shown_order = pos_order; shown_row = pos_row; t_status = fm1_ms;
+            if (view == 1u && moved) draw_tracker();
             draw_status((int)play, (int)set.loop_all);
         }
         if (dirty && !playing && fm1_ms - t_change > 2000u) {   /* an erase stalls the sound: only while paused */

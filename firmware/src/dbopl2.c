@@ -19,6 +19,14 @@
 #endif
 #include "dbopl2_tables.h"
 
+/* taps for an oscilloscope view: a channel's own samples (index 0..8; the rhythm block taps 6 = bass drum,
+ * 7 = hi-hat + snare, 8 = tom + cymbal) before they are summed. No-ops unless the app defines them. */
+#ifndef DBOPL2_TAP
+#define DBOPL2_TAP(ch, i, s) ((void)0)       /* sample i of this block, channel ch */
+#define DBOPL2_TAP_ZERO(ch, n) ((void)0)     /* the channel was skipped as silent for n samples */
+#define DBOPL2_TAP_ADVANCE(n) ((void)0)      /* a block of n samples is done */
+#endif
+
 #define WAVE_BITS   10
 #define WAVE_SH     (32 - WAVE_BITS)         /* 10.22 wave index */
 #define WAVE_MASK   ((1u << WAVE_SH) - 1u)
@@ -456,15 +464,17 @@ static DBOPL2_RAMCODE uint32_t chip_forward_lfo(dbopl2 *chip, uint32_t samples)
     return count;
 }
 
-static DBOPL2_RAMCODE __attribute__((always_inline)) inline void ch_percussion(dbchan *c, dbopl2 *chip, int32_t *output)
+static DBOPL2_RAMCODE __attribute__((always_inline)) inline void ch_percussion(dbchan *c, dbopl2 *chip, int32_t *output, uint32_t i)
 {
     int32_t mod = (int32_t)((uint32_t)(c->old[0] + c->old[1]) >> c->feedback);
-    int32_t sample;
+    int32_t sample, part;
     uint32_t noiseBit, c2, c5, phaseBit, hhVol, sdVol, tcVol;
     c->old[0] = c->old[1];                   /* bass drum: op 0 with feedback, op 1 */
     c->old[1] = op_get_sample(&c->op[0], mod);
     mod = (c->regC0 & 1) ? 0 : c->old[0];
     sample = op_get_sample(&c->op[1], mod);
+    DBOPL2_TAP(6, i, sample << 1);
+    part = sample;
     noiseBit = chip_forward_noise(chip) & 1u;
     c2 = op_forward_wave(OP(c, 2));
     c5 = op_forward_wave(OP(c, 5));
@@ -479,38 +489,43 @@ static DBOPL2_RAMCODE __attribute__((always_inline)) inline void ch_percussion(d
         uint32_t sdIndex = (0x100u + (c2 & 0x100u)) ^ (noiseBit << 8);
         sample += op_get_wave(OP(c, 3), sdIndex, sdVol);
     }
+    DBOPL2_TAP(7, i, (sample - part) << 1);
+    part = sample;
     sample += op_get_sample(OP(c, 4), 0);    /* tom */
     tcVol = op_forward_volume(OP(c, 5));     /* cymbal */
     if (!ENV_SILENT(tcVol)) {
         uint32_t tcIndex = (1u + phaseBit) << 8;
         sample += op_get_wave(OP(c, 5), tcIndex, tcVol);
     }
+    DBOPL2_TAP(8, i, (sample - part) << 1);
     output[0] += sample << 1;
 }
 
 /* one channel (three in rhythm mode) over a block; returns the next channel */
 static DBOPL2_RAMCODE __attribute__((always_inline)) inline dbchan *ch_block(dbchan *c, dbopl2 *chip, uint32_t samples, int32_t *output, const int mode)
 {
-    uint32_t i;
+    uint32_t i, ch = (uint32_t)(c - chip->chan);
     if (mode == SM_AM) {
-        if (op_silent(&c->op[0]) && op_silent(&c->op[1])) { c->old[0] = c->old[1] = 0; return c + 1; }
+        if (op_silent(&c->op[0]) && op_silent(&c->op[1])) { c->old[0] = c->old[1] = 0; DBOPL2_TAP_ZERO(ch, samples); return c + 1; }
     } else if (mode == SM_FM) {
-        if (op_silent(&c->op[1])) { c->old[0] = c->old[1] = 0; return c + 1; }
+        if (op_silent(&c->op[1])) { c->old[0] = c->old[1] = 0; DBOPL2_TAP_ZERO(ch, samples); return c + 1; }
     }
     op_prepare(&c->op[0], chip); op_prepare(&c->op[1], chip);
     if (mode == SM_PERC) {
         op_prepare(OP(c, 2), chip); op_prepare(OP(c, 3), chip);
         op_prepare(OP(c, 4), chip); op_prepare(OP(c, 5), chip);
-        for (i = 0; i < samples; i++) ch_percussion(c, chip, output + i);
+        for (i = 0; i < samples; i++) ch_percussion(c, chip, output + i, i);
         return c + 3;
     }
     for (i = 0; i < samples; i++) {
-        int32_t mod = (int32_t)((uint32_t)(c->old[0] + c->old[1]) >> c->feedback), out0;
+        int32_t mod = (int32_t)((uint32_t)(c->old[0] + c->old[1]) >> c->feedback), out0, s;
         c->old[0] = c->old[1];
         c->old[1] = op_get_sample(&c->op[0], mod);
         out0 = c->old[0];
-        if (mode == SM_AM) output[i] += out0 + op_get_sample(&c->op[1], 0);
-        else output[i] += op_get_sample(&c->op[1], out0);
+        if (mode == SM_AM) s = out0 + op_get_sample(&c->op[1], 0);
+        else s = op_get_sample(&c->op[1], out0);
+        DBOPL2_TAP(ch, i, s);
+        output[i] += s;
     }
     return c + 1;
 }
@@ -530,6 +545,7 @@ static DBOPL2_RAMCODE void dbopl2_generate(dbopl2 *chip, uint32_t total, int32_t
             else if (c->mode == SM_AM) c = ch_block_am(c, chip, samples, output);
             else c = ch_block_perc(c, chip, samples, output);
         }
+        DBOPL2_TAP_ADVANCE(samples);
         total -= samples;
         output += samples;
     }

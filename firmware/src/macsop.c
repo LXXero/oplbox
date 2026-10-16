@@ -282,3 +282,32 @@ const char *macsop_instr_name(const macsop *m, int i)
 {
     return (i >= 0 && i < m->n_instr) ? m->instr[i].name : "";
 }
+
+uint16_t macsop_order_pattern(const macsop *m, uint16_t order_idx)
+{
+    if (order_idx >= 99u || m->order[order_idx] >= m->n_patterns)
+        return 0xFFFF;
+    return m->order[order_idx];
+}
+
+void macsop_pattern_grid(const macsop *m, uint16_t pattern, uint8_t grid[64][MACSOP_CHANNELS])
+{
+    uint32_t r, c, p;
+    for (r = 0; r < 64u; r++)
+        for (c = 0; c < MACSOP_CHANNELS; c++)
+            grid[r][c] = 0;
+    if (pattern >= m->n_patterns)
+        return;
+    for (p = m->pat_off[pattern]; p + 6u <= m->size && m->blob[p] != 0xFF; p += 6u) {
+        const uint8_t *e = m->blob + p;
+        if (e[0] < 64u && e[1] < MACSOP_CHANNELS)
+            grid[e[0]][e[1]] = e[2];
+    }
+}
+
+const char *macsop_channel_instr(const macsop *m, int ch)
+{
+    if (ch < 0 || ch >= MACSOP_CHANNELS || !m->cur_instr[ch])
+        return 0;
+    return m->cur_instr[ch]->name;
+}

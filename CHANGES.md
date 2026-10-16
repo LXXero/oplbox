@@ -1,3 +1,9 @@
+# OPLBOX 0.3.1 (identity FM-1_963)
+
+- **Scope screen** on FX: nine oscilloscopes, one per channel, labelled with the channel's instrument;
+  rhythm songs tap bass drum / hi-hat + snare / tom + cymbal into boxes 7-9. Auto-ranged, zero-crossing
+  triggered, 20 frames a second; the audio interrupt pays about 5 % more for the taps while it is up.
+
 # OPLBOX 0.2 (identity FM-1_962)
 
 0.1 on hardware: the audio interrupt ran over its budget every time (100 %+), half-speed stutter, and the

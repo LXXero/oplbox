@@ -1,0 +1,7 @@
+# t(ms) what ...
+500 btn 11
+1000 btn 1
+1200 btn 1
+1400 btn 1
+1600 btn 1
+13000 end
