@@ -41,12 +41,12 @@ int main(int argc, char **argv)
     uint8_t *blob = malloc(n); fread(blob, 1, n, f); fclose(f);
 
     OPL3_Reset(&chip, rate);
-    macsop m;
-    int r = macsop_load(&m, blob, (uint32_t)n, oplwrite, NULL);
+    macsop m; static macsop_song song;
+    int r = macsop_load(&m, &song, blob, (uint32_t)n, oplwrite, NULL);
     if (r) { fprintf(stderr, "load failed: %d\n", r); return 1; }
     fprintf(stderr, "%s: %u patterns, %u orders, speed %u (%.2f rows/s), rhythm %s, %u instruments\n", argv[1],
-            m.n_patterns, m.n_orders, m.speed, macsop_rows_per_sec_q16(&m) / 65536.0, m.rhythm ? "on" : "off", m.n_instr);
-    for (int i = 0; i < m.n_instr; i++) fprintf(stderr, "  %2d %s\n", i + 1, macsop_instr_name(&m, i));
+            song.n_patterns, song.n_orders, song.speed, macsop_rows_per_sec_q16(&m) / 65536.0, song.rhythm ? "on" : "off", song.n_instr);
+    for (int i = 0; i < song.n_instr; i++) fprintf(stderr, "  %2d %s\n", i + 1, macsop_instr_name(&m, i));
 
     /* samples per row in 16.16 */
     uint64_t spr_q16 = ((uint64_t)rate << 32) / macsop_rows_per_sec_q16(&m);

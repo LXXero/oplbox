@@ -1,3 +1,24 @@
+# OPLBOX 0.4 (identity FM-1_964) — the editor
+
+- **EDIT**: the tracker screen becomes an editor. K1/K2 cursor, SELECT order position, keys enter notes (and
+  audition them when paused), K3 transpose, K4 instrument, ALGO volume, PRESETS step, FX key-off, SCL clear,
+  GLO end-of-pattern, OCT-/+ keyboard octave, PLAY from the cursor, HOME to row 0. Edits are live.
+- **Song screen** (SEQ while editing): the order list; K1 pattern at a position, GLO insert, SCL delete, ARP new
+  pattern, K2 speed, K3 rhythm mode.
+- **Instrument screen** (SEQ again): every parameter of an instrument on a list, K1 changes it (channels
+  playing it update at once), name editing, ARP copies an instrument, keys audition on channel 1.
+- **SAVE**: nine 32 KiB flash slots (0x98000-0xE0000). Slots show in the jukebox after the 18 built-in songs;
+  an empty slot opens as a new blank song. Slots hold plain .CMF files.
+- The song model: patterns as cells in RAM (190 KB of the pool), a lossless .CMF reader/writer: all 18 originals
+  round-trip byte for byte; the register stream from the cell model equals the old player's on every song.
+- Proof against the real thing: a song edited and saved here, played by Stone Age's FXDRIVER in DOSBox, gives
+  the FM-1's register stream exactly (host/proof/: the .CMF and the DOSBox capture; host/rowcmp3.py).
+- Register writes from the main loop (auditions, instrument edits) go through a queue the audio interrupt
+  drains between blocks, so editing never races the chip.
+- Not yet: pulling/pushing .CMF files over USB (0.5), live recording while playing, undo.
+
+Audio path unchanged from 0.3.4 (dbopl core, mutes, scope).
+
 # OPLBOX 0.3.4 (identity FM-1_963)
 
 - Fix: mutes survived on screen but not in the chip after a restart (song end in LOOP SONG, HOME). Now kept.

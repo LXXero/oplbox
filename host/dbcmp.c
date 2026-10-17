@@ -17,8 +17,8 @@ int main(int argc, char **argv)
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     uint8_t *blob = malloc(n); fread(blob, 1, n, f); fclose(f);
     orig_init(); new_init();
-    macsop m;
-    if (macsop_load(&m, blob, (uint32_t)n, w, NULL)) { fprintf(stderr, "load failed\n"); return 1; }
+    macsop m; static macsop_song song;
+    if (macsop_load(&m, &song, blob, (uint32_t)n, w, NULL)) { fprintf(stderr, "load failed\n"); return 1; }
     uint64_t spr = ((uint64_t)49716 << 32) / macsop_rows_per_sec_q16(&m), acc = 0;
     static int32_t a[512], b[512];
     uint64_t total = (uint64_t)(secs * 49716), done = 0, bad = 0, first = ~0ull; int playing = 1;

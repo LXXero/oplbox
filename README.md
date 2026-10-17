@@ -4,41 +4,71 @@ Custom firmware for the M-VAVE FM-1 that plays the **SoundFX Macs Opera** songs 
 LINEL's games (Michael Tschögl, 1990–92) and of Eclipse's **Stone Age** (Thomas Detert, 1992) — through an
 OPL2 emulation, exactly the way FXDRIVER V1.06 drove a Sound Blaster.
 
-**Status: 0.3.4** = 0.2 + the tracker screen (SEQ) + the scope screen (FX). 0.2: 0.1 ran on hardware and could not keep up: its OPL core (Nuked-OPL3, cycle-exact) needed more
-than the whole core, the audio interrupt ran over its 5.8 ms budget every time, the sound stuttered at half
-speed and the main loop starved — which also starved USB, so the installer could not talk to it. 0.2 fixes the
-cause and the consequence:
-
-- the OPL core is now **DOSBox's `dbopl`** (the sound of DOSBox, where most people heard these songs), cut down
-  to one OPL2 and to integers, its sample loop and wave tables in RAM instead of flash. The FM-1 emulator
-  measures the audio interrupt at **13 %** of the core (0.1: 62 %, and worse on the chip). The screen shows the
-  real figure (`CPU nn%`, three digits now, amber past 85 %, red over budget).
-- an **overload guard**: if the interrupt runs over budget for a quarter of a second, playback stops itself and
-  the screen says `AUDIO OVERLOAD - PAUSED`; the main loop, USB and the updater keep running, so the device
-  always stays reachable. PLAY starts it again.
-- unity gain (0.1 clipped the loud LINEL songs), and the few songs that touch the OPL's full scale are
-  clipped at the DAC instead of wrapping.
-- the MIDI input ring is drained (0.1 never read it; after ~40 notes / clocks from the host the USB endpoint
-  NAKs and SysEx — the installer's handshake — is locked out until a power-cycle; found by Smalley).
-
-Nuked-OPL3 stays in the tree as the cycle-exact option (`-DOPL_CORE=OPL_NUKED`), for when it can run on the
-second core. The register stream is the same for both: the player is verified against DOSBox captures of the
-original driver, and `dbopl2.c` is checked sample for sample against the unmodified DOSBox code
-(`host/dbcmp.c`, 18 songs, 30 s each, 0 mismatches).
+**Status: 0.4 — it is a tracker now.** EDIT turns the tracker screen into an editor: cursor on the knobs,
+notes from the keys, a song screen for the order list and an instrument screen for the patches, SAVE to one of
+nine flash slots, and the slots are plain `.CMF` files, the format SoundFX Macs Opera / FXDRIVER read. Proof:
+a song edited on the (host-mode) FM-1, saved, and played by Stone Age's own driver in DOSBox gives a register
+stream identical to the FM-1's (`host/evcmp` / `rowcmp3`, 434 of 434 key-ons), and every original song
+round-trips through the editor's model byte for byte (`host/roundtrip.c`, 18 of 18). Hardware: 0.2–0.3 ran at
+~20 % CPU on a real FM-1 (Smalley); 0.4 adds nothing to the audio path.
 
 ## Controls
+
+**Playing** (jukebox / tracker / scope screens)
 
 | | |
 | --- | --- |
 | **PLAY** | play / pause |
 | **HOME** | back to the start of the song |
-| **OCT−  OCT+** or the **SELECT** knob | previous / next song |
+| **OCT−  OCT+** or the **SELECT** knob | previous / next song: the 18 built in, then slots 1–9 |
 | **REC** | loop one song ↔ play them all in turn (the LED shows which) |
-| **SEQ** | jukebox screen ↔ **tracker screen**: the pattern scrolling by, one column per channel, the playing row in the middle. Notes as `C4` / `c4` (lowercase = sharp), `==` key off, `EN` end of pattern. Rhythm songs show 11 columns (6 melodic + BD SD TM TC HH), melodic songs 9. View only for now; editing is planned (EDIT). |
-| **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel (rhythm songs: 6 = bass drum, 7 = hi-hat + snare, 8 = tom + cymbal), each labelled with the number and name of the instrument the channel plays (`--` = the driver's default patch, before the song sets one), auto-ranged, triggered on a zero crossing, 20 frames a second. The trace is the channel's own output before mixing, tapped inside the OPL core. **The first nine white keys (F3–G4) mute / unmute channels 1–9** so you can hear each one on its own: a muted box goes red, its key's LED lights, and the channel keeps running silently (so unmuting is seamless). Mutes clear when the song changes. |
+| **SEQ** | jukebox screen ↔ **tracker screen**: the pattern scrolling by, one column per channel, the playing row in the middle. Notes as `C4` / `c4` (lowercase = sharp), `==` key off, `EN` end of pattern. Rhythm songs show 11 columns (6 + BD SD TM TC HH), melodic songs 9. |
+| **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel, labelled `06 produc` (instrument number, then name; `--` = the driver's default patch). The first nine white keys (F3–G4) mute / unmute channels 1–9: red label, dim trace, key LED lit. Mutes survive a restart, clear on a song change. |
 | **MASTER** | volume |
 
-The song and the loop mode are kept across a power-off.
+**Editing** — **EDIT** (LED lit). The tracker screen follows the cursor instead of the playback; SEQ now cycles
+tracker → song → instrument screens. Everything edits live: a change is heard on the next row.
+
+| tracker screen | |
+| --- | --- |
+| **K1 / K2** | cursor column / row |
+| **SELECT** | order position (which pattern you are in) |
+| **keys** | enter that note at the cursor (and play it, when paused), then step down; **OCT−/+** shift the keyboard (`OCT3` in the status line = F3 is the lowest key) |
+| **K3** | the note under the cursor ± a semitone |
+| **K4** | instrument: the cell's, and the one new notes get (`I03`) |
+| **ALGO** | volume: the cell's, and the one new notes get |
+| **PRESETS** | step after a note, 0–16 (`STEP1`) |
+| **FX** | key off (`==`) here |
+| **SCL** | clear the cell |
+| **GLO** | end the pattern at this row (`EN`) / undo that |
+| **PLAY** | play from the cursor / pause |
+| **HOME** | cursor to row 0 |
+| **SAVE** | save the song to its flash slot (a built-in song goes to the first empty slot; the status line says which) |
+
+| song screen (SEQ once) | |
+| --- | --- |
+| **SELECT** | position in the order list |
+| **K1** | which pattern plays at this position |
+| **GLO** | insert a position after this one (a copy of it) |
+| **SCL** | delete this position |
+| **ARP** | a new, empty pattern at this position |
+| **K2 / K3** | speed 1–3 (18.2 / 9.1 / 4.55 rows per second) / rhythm mode on–off |
+
+| instrument screen (SEQ twice) | |
+| --- | --- |
+| **PRESETS** | which instrument |
+| **SELECT** | the row: name, then operator 1 and 2 (AR DR SL RR TL KSL MULT AM VIB EG KSR WAVE), feedback, connection |
+| **K1** | the value (on the name row: the character position; **K2** the character) |
+| **ARP** | a new instrument, a copy of this one |
+| **keys** | play the instrument on channel 1 |
+
+The header line while editing: `03/14 P07  c4 I05 V127 B32` = order position / positions, pattern, and the
+cursor cell's note, instrument, volume and bend.
+
+**Slots.** Nine 32 KiB slots in the flash area the Felucca family keeps for data (`0x98000`–`0xE0000`), each
+holding one `.CMF` behind a small header with a CRC. Picking an empty slot in the jukebox starts a new, blank
+song (one pattern, one instrument). Songs in slots play like the built-in ones. Getting a slot's `.CMF` to a
+computer over USB is next (0.5); until then the host build writes `build/host/slotN.cmf`.
 
 ## Install
 
@@ -47,7 +77,7 @@ any firmware that has the update path (stock V14/V15, Felucca, SLOOP, Dinghy, �
 
 ```sh
 pip3 install mido python-rtmidi
-python3 tools/fm1_install.py oplbox-0.3.4.fwsc        # asks before it writes, restarts into OPLBOX
+python3 tools/fm1_install.py oplbox-0.4.fwsc        # asks before it writes, restarts into OPLBOX
 python3 tools/fm1_install.py --info                 # what the connected FM-1 runs
 ```
 
@@ -69,7 +99,10 @@ quiet moment the main loop sees the press, pauses, and the installer gets its an
 
 ## What is in it
 
-- `firmware/src/oplbox.c` — the app: audio interrupt, song control, overload guard, screen.
+- `firmware/src/oplbox.c` — the app: audio interrupt, song control, overload guard, the screens, the editors, the slots.
+- `firmware/src/macsop.c` / `.h` — the song model (patterns as 65 × 11 cells, instruments, order list), the lossless
+  `.CMF` reader / writer, and the player (FXDRIVER's arithmetic). `host/roundtrip.c` checks the model against
+  the 18 files byte for byte and hashes the register streams.
 - `firmware/src/dbopl2.c` — DOSBox's `dbopl` (GPL-2+) as one OPL2: 9 channels, 18 operators, no OPL3 modes,
   no floating point — every table the original computes with floats is generated for 49716 Hz by
   `host/dbopl_gen.c` into `dbopl2_tables.h`. The sample loop is linked into RAM (`.ram_code`, app.ld) and the
@@ -95,7 +128,7 @@ As Dinghy: Linux x86-64, Python 3 with Pillow, JieLi's Linux toolchain (`tools/g
 three boot files of the AC79 SDK at tag `AC79NN_SDK_V1.2.1_2023-12-13` (hash-checked by the build).
 
 ```sh
-JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK ./build.sh --release 0.3.4
+JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK ./build.sh --release 0.4
 tests/run_host.sh                 # the same app on this computer: WAV + screen PNGs, no FM-1 needed
 ```
 
