@@ -4,7 +4,7 @@ Custom firmware for the M-VAVE FM-1 that plays the **SoundFX Macs Opera** songs 
 LINEL's games (Michael Tschögl, 1990–92) and of Eclipse's **Stone Age** (Thomas Detert, 1992) — through an
 OPL2 emulation, exactly the way FXDRIVER V1.06 drove a Sound Blaster.
 
-**Status: 0.4 — it is a tracker now.** EDIT turns the tracker screen into an editor: cursor on the knobs,
+**Status: 0.4.1 — it is a tracker now.** EDIT turns the tracker screen into an editor: cursor on the knobs,
 notes from the keys, a song screen for the order list and an instrument screen for the patches, SAVE to one of
 nine flash slots, and the slots are plain `.CMF` files, the format SoundFX Macs Opera / FXDRIVER read. Proof:
 a song edited on the (host-mode) FM-1, saved, and played by Stone Age's own driver in DOSBox gives a register
@@ -77,7 +77,7 @@ any firmware that has the update path (stock V14/V15, Felucca, SLOOP, Dinghy, �
 
 ```sh
 pip3 install mido python-rtmidi
-python3 tools/fm1_install.py oplbox-0.4.fwsc        # asks before it writes, restarts into OPLBOX
+python3 tools/fm1_install.py oplbox-0.4.1.fwsc        # asks before it writes, restarts into OPLBOX
 python3 tools/fm1_install.py --info                 # what the connected FM-1 runs
 ```
 
@@ -89,7 +89,7 @@ OPLBOX answers the updater like every firmware in the family.
 
 **If it will not start, or will not answer the installer:** hold **OCT−** (only OCT−) *before* switching on,
 switch on, keep holding until the screen says `OPLBOX USB RESCUE` → no sound, only the updater; install
-anything from there. The key is read in the first 50 ms after power-up, so it must already be down. A
+anything from there. The key is read in the first 50 ms after power-up, so it must already be down. (0.4.1: on some boards the keys cannot be read at all until the screen's pins are set up, so the rescue never opened; the screen is now set up before the check, after dinghy PR #4.) A
 firmware that crashes twice at boot goes to the rescue by itself. If even that is gone, the chip's own boot
 ROM still updates over USB (FM-1-transporter).
 
@@ -128,7 +128,7 @@ As Dinghy: Linux x86-64, Python 3 with Pillow, JieLi's Linux toolchain (`tools/g
 three boot files of the AC79 SDK at tag `AC79NN_SDK_V1.2.1_2023-12-13` (hash-checked by the build).
 
 ```sh
-JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK ./build.sh --release 0.4
+JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK ./build.sh --release 0.4.1
 tests/run_host.sh                 # the same app on this computer: WAV + screen PNGs, no FM-1 needed
 ```
 

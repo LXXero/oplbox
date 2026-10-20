@@ -1,3 +1,9 @@
+# OPLBOX 0.4.1 (identity FM-1_964)
+
+- USB rescue: the screen's pins are set up before the OCT- check at power-on. On some boards no key reads as
+  pressed until that happens, so holding OCT- never opened the rescue (dinghy PR #4, sgarrettnelson). One line
+  in fm1_cstart(); nothing else changed.
+
 # OPLBOX 0.4 (identity FM-1_964) — the editor
 
 - **EDIT**: the tracker screen becomes an editor. K1/K2 cursor, SELECT order position, keys enter notes (and

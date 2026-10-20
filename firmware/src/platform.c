@@ -326,6 +326,9 @@ void fm1_cstart(void)
     fm1_mailbox_clear();
     fm1_guard_enable(FM1_GUARD_STACK | FM1_GUARD_WRITE | FM1_GUARD_BUS | FM1_GUARD_PC);
     fm1_boot.p3_rst = (uint8_t)p3;
+    fm1_lcd_hw_init();                          /* on some boards no key reads closed until the screen's pins are
+                                                 * set up (the backlight pin, PA2, is the suspect): dinghy PR #4,
+                                                 * sgarrettnelson. Idempotent; lcd_init() does it again later. */
     if (boot_mode == BOOT_RECOVERY || recovery_key())
         recovery_main();                        /* OCT- at power-on: the USB rescue */
     flash_ok = FL_FAR(fl_jedec_ram)() == 0x856014u;
