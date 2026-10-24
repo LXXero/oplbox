@@ -250,3 +250,21 @@ two bars).
 - Not tested on hardware yet.
 - No sign of USB power: on USB the count is the charging battery's. Felucca shows a bolt when a USB host is
   configured (`usb.config && !usb.suspended`); OPLBOX could do the same.
+
+## 7. WiFi on our own driver — stage 0 done (the map)
+
+xero: "i would rather keep it gpl and just build our own wifi firmware". OPLBOX stays GPL-3.0-only and does not
+link JieLi's binary WiFi archives.
+
+**Done.** `docs/WIFI.md`: licence provenance of the archives, what has source and what is binary only, the
+registers and the internal SDIO bus the radio uses, the power-up and calibration sequence, what fm1-radio links,
+OPLBOX's size, audio and flash limits, and a plan in nine stages (one task each).
+
+**Found.** The MAC driver in `wl_wifi*.a` is compiled from Ralink's GPL-2.0-or-later Linux driver plus Linux's
+GPL-2.0 `wext-core.c`, so its Apache-2.0 label is doubtful; the WiFi core's MAC is register-compatible with Ralink's
+RT2800 family (Linux `rt2800.h`, GPL-2.0-or-later); the radio and internal bus (`wl_rf_common.a`) show no third-party code,
+and the archives are LLVM bitcode, readable as LLVM IR. JieLi's stack (about 330 KB of code) would not fit beside
+OPLBOX (238 KB free) anyway.
+
+**Next.** Stage 1 (register header and extracted tables, host only), then stage 2, the first hardware test: xero
+flashes a diagnostic build and reads four register values and a RAM pattern check off the screen.
