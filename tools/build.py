@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
-"""Build Dinghy (on Felucca / SLOOP's platform): the app, the update loader and an installable .fwsc package.
+"""Build OPLBOX (on Felucca / SLOOP's platform, based on Dinghy by zvenson): the app, the update loader and an
+installable .fwsc package.
 
   tools/build.py [--release X.Y[-suffix]]
 
-Outputs in build/: dinghy.bin (app), loader/ota.bin (update loader),
-dinghy.fwsc (package). See README.md for the toolchain and the SDK.
+Outputs in build/: oplbox.bin (app), loader/ota.bin (update loader),
+oplbox.fwsc (package; oplbox-X.Y.fwsc with --release X.Y). See README.md for the toolchain and the SDK.
 
 The JieLi toolchain is Linux x86-64 only. JIELI_TOOLCHAIN points at it; on
 macOS (or with JIELI_DOCKER=1) each tool runs in a linux/amd64 container.

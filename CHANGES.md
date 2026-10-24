@@ -1,3 +1,8 @@
+# Unreleased
+
+- Docs: the Dinghy-era names (`dinghy.c`, `dinghy.fwsc`, "Build Dinghy") now say OPLBOX, with Dinghy credited as the
+  base; `CREDITS.md` added; Dinghy is a fetch-only `upstream` remote, nothing merged from it.
+
 # OPLBOX 0.4.2 (identity FM-1_964)
 
 - USB: a SysEx from the computer (the installer's identity query, `fm1_install.py --info`, the first stage of an

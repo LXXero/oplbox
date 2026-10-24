@@ -7,8 +7,8 @@ still open. Line numbers are `firmware/src/oplbox.c` unless another file is name
 
 https://github.com/zvenson/dinghy, default branch `main`.
 
-**Today.** OPLBOX is a copy of Dinghy 0.3. This checkout has only `origin` (git@github.com:LXXero/oplbox.git,
-branch `master`) and no remote for Dinghy; its history starts at OPLBOX 0.1 (6353ff6), so git does not know
+**Today.** OPLBOX is a copy of Dinghy 0.3. This checkout has `origin` (git@github.com:LXXero/oplbox.git,
+branch `main`) and a fetch-only `upstream` remote for Dinghy (added later; nothing merged from it); its history starts at OPLBOX 0.1 (6353ff6), so git does not know
 the relationship and every upstream change has to be carried over by hand. Compared file by file with Dinghy's
 tags (a clone in /tmp, no remote added):
 
@@ -43,7 +43,7 @@ took 0.4:
   recording (item 2) a second input.
 
 **Open questions.**
-- Keep tracking upstream? If yes: add Dinghy as a remote (not done in this task), merge or cherry-pick 0.4's
+- Keep tracking upstream? If yes: add Dinghy as a remote (done: `upstream`, fetch-only), merge or cherry-pick 0.4's
   platform and HAL files, and decide whether to offer OPLBOX's platform changes (`FL_RANGE_OK` and the PR #4
   line) back upstream. If no: say in README.md that OPLBOX is based on Dinghy 0.3 plus PR #4 and is no
   longer synced.
@@ -51,7 +51,7 @@ took 0.4:
   IN, the test suite.
 - If tracking: record in CHANGES.md which upstream commit each port came from.
 - Either way: update the Dinghy-era docs above to name `oplbox.c`, and write or drop the `CREDITS.md`
-  reference.
+  reference. **Done:** the docs name `oplbox.c`, and `CREDITS.md` is written.
 
 ## 2. The 0.5 items — xero said yes to all three
 
