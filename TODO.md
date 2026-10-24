@@ -80,46 +80,26 @@ writes one with `macsop_parse()` (to check it) and `slot_program()`. A host comm
 - USB-MIDI SysEx throughput for a 32 KiB slot. 0.4.2 fixed the FM-1 dropping off USB on SysEx, so this needs
   a test on hardware.
 
-### 2b. Live recording while playing
+### 2b. Live recording while playing — built, host-tested, not yet tried on hardware
 
-**Today.** In EDIT the tracker screen follows the cursor, not the playback (:472). A key writes the note at
-the cursor and steps (:823–834). `audition()` (:689) does nothing while `playing`, so a key pressed during
-playback is written to the cell but is not heard. REC is the loop-mode toggle and is ignored while editing
-(:794), so it is free in EDIT.
+REC in EDIT arms it (LED, `REC` in the status line; REC outside EDIT is still the loop toggle). While the song
+plays and recording is armed, a key writes its note into the cursor's column at the player's position
+(`pos_order`/`pos_row` after `tick_row()`; the row that played last until half a row has passed, then the next
+one), and is heard through the write queue (`macsop_play_note()` → `opl_write()`, with the ISR held off for the
+note). Key-up writes nothing; the note rings until the next note in the column. Each recorded note is one undo step.
+A recorded note in the next row sounds twice (now, and again when that row plays), which is a retrigger.
+Decided by xero ("i think thats fine yeah"): cursor's column, key-up writes nothing, REC arms in EDIT.
+Checked by `tests/script_rec.txt`.
 
-**Where.** `app_main()`'s pattern editor block (:805). While playing and recording, write at the player's
-position (`pos_order`/`pos_row`, set in `tick_row()` :88) instead of at the cursor, and play the key through
-the write queue (`opl_write()` :72) on a channel the song is not using at that moment.
+**Still open.** Record MIDI in too (`app_main()` still discards `midi_get()`); quantise to something coarser than a row.
 
-**Open questions.**
-- Rounding: a key pressed late in a row goes into that row, or into the next one if it is past half of it?
-  The row is 55 / 110 / 220 ms at speed 1 / 2 / 3.
-- Which column does it record into: the cursor's column, or the next free one?
-- Key-up writes a key off (`==`) or leaves the note ringing?
-- Record MIDI in too (needs `app_main()` to stop discarding `midi_get()`, :724)?
-- REC as record arm in EDIT, with its LED (:896)?
-- The player and the key share the column's channel: which one wins until the next row?
-- The main loop writes cells while the ISR reads the same pattern. A cell is written whole (`macsop_cell.u`),
-  which is safe for one cell; say so in a comment.
+### 2c. Undo — built, host-tested, not yet tried on hardware
 
-### 2c. Undo
-
-**Today.** Every edit changes `song` in place: cells (`c->u = t.u`, :816–837), the order list (:847–863),
-instruments (:876–885), speed and rhythm (:848–849). Nothing keeps the old value. `song` is about 186 KB in
-the 336 KiB `.pool` (app.ld), next to `slot_buf` (32 KiB), so a second copy of the song does not fit. A log of
-(address, old value) entries does, since a cell is one `uint32_t`.
-
-**Where.** A small undo log in `oplbox.c` written by every edit site above. Each edit site already sets
-`moved = 1`, so they are easy to find.
-
-**Open questions.**
-- Which button: ENV and LFO (`platform.c:21`) are not used anywhere in OPLBOX.
-- How many steps, and does a key held while scrolling count as one step?
-- Inserting or deleting an order position moves the whole list: log the list (198 bytes) instead of single
-  entries.
-- Does the log survive SAVE, a song change, a power-off? (A song change reloads `song` from flash, :770, so
-  the simplest answer is no.)
-- Redo?
+ENV in EDIT (any editing screen) undoes one step; no redo. A log of (offset into `song`, size, old value), 3 scalars
+a step, 32 steps in a ring, the oldest dropped; an order-list insert or delete keeps the whole 198-byte list. A
+knob turned on and on (same control, same value, within 500 ms) is one step. A song change (`load_song()`) clears it;
+SAVE does not; it is not saved. Covers cells, the order list and its length, new patterns and instruments, speed,
+rhythm, instrument fields and names. Checked by `tests/script_undo.txt`.
 
 ## 3. A working arpeggiator, with the stock FM-1's settings
 

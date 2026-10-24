@@ -1,0 +1,26 @@
+# t(ms) what ...   : live recording (REC armed in EDIT, then PLAY), checked against the song itself (exits 1 when a check fails)
+# Song 0 plays at speed 2 (110 ms a row); PLAY at 500 ms, so row N starts near 530 + 110 N ms. The cursor stays at row 0.
+100 btn 12
+200 btn 8
+300 btn 6
+400 btn 13
+500 btn 12
+# early in row 3 (about 30 ms in, under half a row): the note goes into row 3. Key 26 is note 91.
+870 empty 0 3 0
+890 keys 0x4000000
+900 keys 0
+910 note 0 3 0 91
+# late in row 6 (about 75 ms in, past half a row): the note goes into row 7, the next one
+1250 empty 0 7 0
+1265 keys 0x4000000
+1275 keys 0
+1285 note 0 7 0 91
+# nothing was written at the cursor
+1290 note 0 0 0 78
+# each recorded note is one undo step: the last one first
+1300 btn 4
+1310 empty 0 7 0
+1320 note 0 3 0 91
+1330 btn 4
+1340 empty 0 3 0
+1700 end

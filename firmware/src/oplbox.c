@@ -20,6 +20,7 @@
  *   K3             note +- semitone             K4       instrument    ALGO  volume    PRESETS  step
  *   FX             key off (==)                 SCL      clear the cell        GLO   end of pattern here
  *   PLAY           play from the cursor / pause SAVE     save the song to its flash slot (or the first free one)
+ *   ENV            undo one edit (32 steps, no redo)    REC   arm recording: keys during playback land on the playing row
  *   song screen:   SELECT position, K1 pattern number, GLO insert, SCL delete, ARP new pattern, K2 speed, K3 rhythm
  *   instrument:    PRESETS instrument, SELECT parameter, K1 value (name: K1 position, K2 character), ARP new, keys audition
  *
@@ -54,6 +55,7 @@ static volatile uint32_t pos_order, pos_row;  /* where the player is, for the sc
 static volatile uint32_t rows_done;           /* rows played since the song started */
 static volatile uint32_t overload;            /* the ISR could not keep up for 1/4 s and stopped itself */
 static uint32_t over_n;                       /* consecutive interrupts over budget */
+static uint32_t undo_cnt, undo_head;          /* the editor's undo log (see "undo" below): steps held, next slot */
 #define ISR_BUDGET_US 5805u                   /* 256 frames at 44.1 kHz */
 
 /* OPL2 runs at 49716 Hz; the FM-1 at 44100. Native samples are generated as needed and interpolated:
@@ -286,6 +288,7 @@ static void chip_silence(void)                /* every key off, so a paused song
 static void load_song(uint32_t i)             /* with the ISR off the chip (chip_run == 0) */
 {
     cur = i;
+    undo_cnt = 0;                             /* a new song: the log is about the old one */
     chip_reset();
     chip_mute(mute_mask);                     /* the reset cleared the chip's copy: a restart keeps the mutes */
     if (i < N_SONGS)
@@ -418,6 +421,13 @@ static uint32_t pct_colour(uint32_t us)      /* the load figure: amber past 85 %
 static uint32_t edit;                         /* EDIT: the tracker screen follows the cursor; keys write notes */
 static uint32_t cur_order, cur_row, cur_col;  /* the cursor */
 static uint32_t ed_instr = 1, ed_vol = 127, ed_step = 1;
+static uint32_t rec_arm;                      /* REC in EDIT: keys played during playback are written where the song is */
+/* Where the song is, for recording. The ISR's pos_order/pos_row are the row that plays NEXT (macsop_tick plays a
+ * row, then moves on). Main keeps the row that played last, (rec_o, rec_r), and when it began (rec_ms, the
+ * first loop pass that saw rows_done change): a key later than half a row after that goes into the next row. */
+static uint32_t rec_o, rec_r, rec_ms, rec_ok;
+static uint32_t rec_no, rec_nr, rec_seen;     /* the next row as of the last change, and rows_done then */
+static void rec_resync(void) { rec_no = player.order_idx; rec_nr = player.row; rec_seen = rows_done; rec_ok = 0; }
 static int32_t kb_oct;                        /* keyboard octave shift, -3..3 */
 static uint32_t ins_sel;                      /* the instrument editor's instrument, 0.. */
 static uint32_t ins_param, ins_namepos;       /* its cursor: parameter row; character in the name */
@@ -442,6 +452,7 @@ static void draw_status(int play, int loop_all)
     else if (edit) {
         p = cat(s, "OCT"); *p++ = (char)('3' + kb_oct); *p++ = ' '; p = cat(p, "STEP"); p = catn(p, ed_step, 1);
         *p++ = ' '; p = cat(p, "I"); p = catn(p, ed_instr, 2);
+        if (rec_arm) p = cat(p, " REC");
         cv_text(4, 20, &FONT_S, s, C_MUTE);
     } else
         cv_text(4, 20, &FONT_S, loop_all ? "ALL IN TURN" : "LOOP SONG", C_MUTE);
@@ -728,6 +739,86 @@ static macsop_cell *cursor_cell(void)
     uint16_t pat = macsop_order_pattern(&player, (uint16_t)cur_order);
     return pat == 0xFFFF ? 0 : &song.pat[pat].cell[cur_row][cur_col];
 }
+/* ---- undo: a log of what the song held before each edit (ENV in EDIT undoes one step, no redo). Not a copy of
+ * the song (190 KB; the pool has no room for a second): each step keeps up to 3 scalars as (offset into `song`,
+ * size, old value), and, for an insert or delete in the order list, the whole list (198 bytes). 32 steps in a
+ * ring, the oldest dropped. A knob turned on and on is one step: the same control on the same value within
+ * UNDO_MERGE_MS of its last click adds nothing. Cleared when a song loads (load_song), not saved. */
+#define UNDO_N 32u
+#define UNDO_MERGE_MS 500u
+typedef struct {
+    uint32_t off[3], old[3];                  /* the scalars, restored last to first */
+    uint8_t size[3], n;
+    uint8_t merge;                            /* which control made it (0: none, never merged into) */
+    uint8_t list;                             /* the order list was kept too, in undo_list[this slot] */
+    uint8_t view, a, b, c;                    /* where the cursors were, to put them back */
+} undo_step;
+static undo_step undo_log[UNDO_N];
+static uint16_t undo_list[UNDO_N][MACSOP_MAX_ORDERS] __attribute__((section(".pool")));
+static uint32_t undo_t;                       /* ms of the last change logged */
+
+static undo_step *undo_last(void) { return undo_cnt ? &undo_log[(undo_head + UNDO_N - 1u) % UNDO_N] : 0; }
+
+static undo_step *undo_push(void)             /* a new step at the cursors as they are now */
+{
+    undo_step *u = &undo_log[undo_head];
+    memset(u, 0, sizeof *u);
+    u->view = (uint8_t)view;
+    if (view == V_INS) { u->a = (uint8_t)ins_sel; u->b = (uint8_t)ins_param; u->c = (uint8_t)ins_namepos; }
+    else if (view == V_SONG) u->a = (uint8_t)song_pos;
+    else { u->a = (uint8_t)cur_order; u->b = (uint8_t)cur_row; u->c = (uint8_t)cur_col; }
+    undo_head = (undo_head + 1u) % UNDO_N;
+    if (undo_cnt < UNDO_N) undo_cnt++;
+    return u;
+}
+
+static void undo_add(undo_step *u, const void *p, uint32_t size)   /* one more scalar of the song, before it changes */
+{
+    uint32_t i = u->n++;
+    u->off[i] = (uint32_t)((const uint8_t *)p - (const uint8_t *)&song);
+    u->size[i] = (uint8_t)size; u->old[i] = 0;
+    memcpy(&u->old[i], p, size);              /* little-endian: the low bytes are the value */
+}
+
+/* Call before changing the scalar at p (1, 2 or 4 bytes). merge: the control's id, to fold a run of clicks
+ * into one step, or 0 for a step of its own. Returns the step (for undo_add, or to move its cursors). */
+static undo_step *undo_save(const void *p, uint32_t size, uint32_t merge)
+{
+    undo_step *u = undo_last();
+    uint32_t off = (uint32_t)((const uint8_t *)p - (const uint8_t *)&song);
+    if (merge && u && u->merge == merge && u->n == 1u && u->off[0] == off && fm1_ms - undo_t < UNDO_MERGE_MS) {
+        undo_t = fm1_ms;
+        return u;
+    }
+    u = undo_push();
+    u->merge = (uint8_t)merge;
+    undo_add(u, p, size);
+    undo_t = fm1_ms;
+    return u;
+}
+
+static void undo_save_orders(void)            /* before an insert or delete moves the order list */
+{
+    undo_step *u = undo_push();
+    memcpy(undo_list[(undo_head + UNDO_N - 1u) % UNDO_N], song.order, sizeof song.order);
+    u->list = 1;
+    undo_add(u, &song.n_orders, 2);
+    undo_t = fm1_ms;
+}
+
+static undo_step *undo_pop(void)              /* put the last step back; the step (valid until the next edit), or 0 */
+{
+    undo_step *u;
+    uint32_t i;
+    if (!undo_cnt) return 0;
+    undo_head = (undo_head + UNDO_N - 1u) % UNDO_N; undo_cnt--;
+    u = &undo_log[undo_head];
+    if (u->list) memcpy(song.order, undo_list[undo_head], sizeof song.order);
+    for (i = u->n; i-- > 0;)
+        memcpy((uint8_t *)&song + u->off[i], &u->old[i], u->size[i]);   /* a cell is one aligned 32-bit store: whole */
+    return u;
+}
+
 static void cursor_step(void) { cur_row = (cur_row + ed_step) % MACSOP_ROWS; }
 static uint32_t key_note(uint32_t key) { int32_t n = 65 + (int32_t)key + 12 * kb_oct; return n < 24 ? 24u : n > 119 ? 119u : (uint32_t)n; }
 static int32_t wrap(int32_t v, int32_t n) { return ((v % n) + n) % n; }
@@ -736,6 +827,18 @@ static void audition(int ch, uint32_t note, uint32_t instr)   /* a key held: tha
 {
     if (!playing) macsop_play_note(&player, ch, (int)note, (int)instr, (int)ed_vol);
 }
+
+#ifdef DINGHY_HOST
+/* tests/host.c checks: the cell at (order position, row, column), whole; row 99 asks for the number of order positions,
+ * row 98 for a checksum of the whole order list */
+static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
+{
+    if (row == 99u) return song.n_orders;
+    if (row == 98u) { uint32_t i, h = 0; for (i = 0; i < MACSOP_MAX_ORDERS; i++) h = h * 31u + song.order[i]; return h; }
+    uint16_t pat = macsop_order_pattern(&player, (uint16_t)order);
+    return pat == 0xFFFF ? ~0u : song.pat[pat].cell[row][col].u;
+}
+#endif
 
 static void save_song(void)
 {
@@ -788,6 +891,7 @@ static void app_main(void)
         /* ---- the views and the modes */
         if (b & (1u << BTN_EDIT)) {
             edit ^= 1u;
+            if (!edit) rec_arm = 0;
             if (edit) { cur_order = pos_order; cur_row = pos_row; cur_col = 0; song_pos = cur_order; if (view != V_SONG && view != V_INS) view = V_TRACK; }
             else if (view == V_SONG || view == V_INS) view = V_TRACK;
             redraw = 1;
@@ -829,6 +933,7 @@ static void app_main(void)
                     if (macsop_seek(&player, (uint16_t)(view == V_SONG ? song_pos : cur_order), (uint16_t)(view == V_SONG ? 0u : cur_row)))
                         song_over = 0;
                 }
+                rec_resync();
                 chip_run = 1; playing = 1;
             } else
                 pause_song();
@@ -839,8 +944,22 @@ static void app_main(void)
             else { chip_off(); reload_song(); chip_run = 1; playing = play ? 1u : 0u; }
             shown_order = ~0u; redraw |= edit;
         }
-        if ((b & (1u << BTN_REC)) && !edit) {
-            set.loop_all ^= 1u; dirty = 1; t_change = fm1_ms; shown_order = ~0u;
+        if (b & (1u << BTN_REC)) {
+            if (edit) { rec_arm ^= 1u; say(rec_arm ? "REC ARMED" : "REC OFF"); shown_order = ~0u; }
+            else { set.loop_all ^= 1u; dirty = 1; t_change = fm1_ms; shown_order = ~0u; }
+        }
+        if (edit && (b & (1u << BTN_ENV))) {      /* undo one edit */
+            undo_step *u = undo_pop();
+            if (u) {
+                view = u->view;
+                if (view == V_INS) { ins_sel = u->a < song.n_instr ? u->a : song.n_instr - 1u; ins_param = u->b; ins_namepos = u->c; }
+                else if (view == V_SONG) { song_pos = u->a < song.n_orders ? u->a : song.n_orders - 1u; cur_order = song_pos; }
+                else { cur_order = u->a < song.n_orders ? u->a : song.n_orders - 1u; cur_row = u->b; cur_col = u->c < tr_ncol() ? u->c : 0u; }
+                if (view == V_INS) macsop_refresh_instr(&player, (int)ins_sel);   /* channels playing it hear it */
+                say("UNDONE");
+            } else
+                say("NOTHING TO UNDO");
+            redraw = 1;
         }
         if ((b & (1u << BTN_SAVE)) && edit) { save_song(); redraw = 1; }
         if ((b & (1u << BTN_GLO)) && !edit) {   /* the battery's smoothed ADC count, to tune BATT_LEVEL by */
@@ -856,6 +975,13 @@ static void app_main(void)
             for (k = 0; k < 9u; k++)
                 if (down & (1u << WHITE_KEY[k])) { mute_mask ^= 1u << k; chip_mute(mute_mask); }
 
+        /* ---- which row just played, and when (recording) */
+        if (!playing || rows_done < rec_seen) rec_resync();
+        else if (rows_done != rec_seen) {
+            rec_o = rec_no; rec_r = rec_nr; rec_ok = 1; rec_ms = fm1_ms;
+            rec_no = pos_order; rec_nr = pos_row; rec_seen = rows_done;
+        }
+
         /* ---- the pattern editor */
         if (edit && view == V_TRACK) {
             macsop_cell *c;
@@ -868,28 +994,57 @@ static void app_main(void)
             if (c) {
                 if (k3 && c->f.note >= 24u && c->f.note <= 119u) {
                     int32_t n = (int32_t)c->f.note + k3; macsop_cell t = *c;
-                    t.f.note = (uint8_t)(n < 24 ? 24 : n > 119 ? 119 : n); c->u = t.u; moved = 1;
+                    t.f.note = (uint8_t)(n < 24 ? 24 : n > 119 ? 119 : n);
+                    if (t.u != c->u) undo_save(&c->u, 4, 1);
+                    c->u = t.u; moved = 1;
                     audition((int)cur_col, t.f.note, t.f.instr);
                 }
                 if (k4) { int32_t v = (int32_t)ed_instr + k4; ed_instr = (uint32_t)(v < 1 ? 1 : v > (int32_t)song.n_instr ? (int32_t)song.n_instr : v);
-                          if (c->f.note >= 24u) { macsop_cell t = *c; t.f.instr = (uint8_t)ed_instr; c->u = t.u; } moved = 1; }
+                          if (c->f.note >= 24u && c->f.instr != (uint8_t)ed_instr) { macsop_cell t = *c; t.f.instr = (uint8_t)ed_instr; undo_save(&c->u, 4, 2); c->u = t.u; } moved = 1; }
                 if (alg) { int32_t v = (int32_t)ed_vol + alg * 4; ed_vol = (uint32_t)(v < 0 ? 0 : v > 127 ? 127 : v);
-                           if (c->f.note >= 24u) { macsop_cell t = *c; t.f.vol = (uint8_t)ed_vol; c->u = t.u; } moved = 1; }
-                if (down) {                   /* a key: the note into the cell, hear it, step on */
+                           if (c->f.note >= 24u && c->f.vol != (uint8_t)ed_vol) { macsop_cell t = *c; t.f.vol = (uint8_t)ed_vol; undo_save(&c->u, 4, 3); c->u = t.u; } moved = 1; }
+                if (down) {
                     for (k = 0; k < 27u; k++)
                         if (down & (1u << k)) {
-                            macsop_cell t = *c;
+                            macsop_cell t;
+                            if (rec_arm && playing && rec_ok) {
+                                /* recording: the note goes where the song is, not at the cursor, in the cursor's column.
+                                 * The row that played last, or the next one when the key is later than half a row. */
+                                uint32_t len_ms = (SPR_Q16[song.speed] >> 16) * 1000u / 49716u;
+                                uint32_t to = rec_o, tr = rec_r, f;
+                                uint16_t pat;
+                                if ((fm1_ms - rec_ms) * 2u > len_ms) { to = pos_order; tr = pos_row; }
+                                pat = macsop_order_pattern(&player, (uint16_t)to);
+                                if (pat != 0xFFFF && tr < MACSOP_ROWS) {
+                                    macsop_cell *rc = &song.pat[pat].cell[tr][cur_col];
+                                    undo_step *u = undo_save(&rc->u, 4, 0);
+                                    u->view = V_TRACK; u->a = (uint8_t)to; u->b = (uint8_t)tr; u->c = (uint8_t)cur_col;
+                                    t = *rc;
+                                    t.f.note = (uint8_t)key_note(k); t.f.instr = (uint8_t)ed_instr;
+                                    if (!rc->f.note) { t.f.vol = (uint8_t)ed_vol; t.f.pitch = 32; }
+                                    /* main writes a cell the ISR may read: one aligned 32-bit store of the whole
+                                     * macsop_cell, so the player sees the old cell or the new one, never half of each */
+                                    rc->u = t.u;
+                                    f = irq_save();   /* the ISR ticks the player: not in the middle of this note */
+                                    macsop_play_note(&player, (int)cur_col, t.f.note, t.f.instr, (int)ed_vol);   /* its register writes go through the write queue */
+                                    irq_restore(f);
+                                    if (to == cur_order) moved = 1;
+                                }
+                                break;
+                            }
+                            t = *c;               /* a key: the note into the cell, hear it, step on */
                             t.f.note = (uint8_t)key_note(k); t.f.instr = (uint8_t)ed_instr;
                             if (!c->f.note) { t.f.vol = (uint8_t)ed_vol; t.f.pitch = 32; }
+                            undo_save(&c->u, 4, 0);
                             c->u = t.u;
                             audition((int)cur_col, t.f.note, t.f.instr); held_ch = cur_col + 1u;
                             cursor_step(); moved = 1;
                             break;
                         }
                 }
-                if (b & (1u << BTN_FX))  { macsop_cell t; t.u = 0; t.f.note = 4; c->u = t.u; cursor_step(); moved = 1; }
-                if (b & (1u << BTN_SEL)) { c->u = 0; cursor_step(); moved = 1; }
-                if (b & (1u << BTN_GLO)) { macsop_cell t; t.u = 0; t.f.note = c->f.note == 1 ? 0 : 1; t.f.vol = 127; t.f.pitch = 32; c->u = t.u; moved = 1; }
+                if (b & (1u << BTN_FX))  { macsop_cell t; t.u = 0; t.f.note = 4; undo_save(&c->u, 4, 0); c->u = t.u; cursor_step(); moved = 1; }
+                if (b & (1u << BTN_SEL)) { undo_save(&c->u, 4, 0); c->u = 0; cursor_step(); moved = 1; }
+                if (b & (1u << BTN_GLO)) { macsop_cell t; t.u = 0; t.f.note = c->f.note == 1 ? 0 : 1; t.f.vol = 127; t.f.pitch = 32; undo_save(&c->u, 4, 0); c->u = t.u; moved = 1; }
             }
             if (up && held_ch) { audition((int)(held_ch - 1u), 0, 0); held_ch = 0; }
             if (moved) { draw_tracker_head(); draw_tracker(); shown_order = ~0u; }
@@ -899,21 +1054,25 @@ static void app_main(void)
         if (edit && view == V_SONG) {
             uint32_t moved = 0;
             if (spin) { song_pos = (uint32_t)wrap((int32_t)song_pos + spin, (int32_t)song.n_orders); moved = 1; }
-            if (k1 && song_pos < song.n_orders) { song.order[song_pos] = (uint16_t)wrap((int32_t)song.order[song_pos] + k1, (int32_t)song.n_patterns); moved = 1; }
-            if (k2) { int32_t v = (int32_t)song.speed + k2; song.speed = (uint8_t)(v < 1 ? 1 : v > 3 ? 3 : v); moved = 1; }
-            if (k3) { song.rhythm ^= 1u; moved = 1; }
+            if (k1 && song_pos < song.n_orders) { undo_save(&song.order[song_pos], 2, 4); song.order[song_pos] = (uint16_t)wrap((int32_t)song.order[song_pos] + k1, (int32_t)song.n_patterns); moved = 1; }
+            if (k2) { int32_t v = (int32_t)song.speed + k2; v = v < 1 ? 1 : v > 3 ? 3 : v;
+                      if (v != (int32_t)song.speed) { undo_save(&song.speed, 1, 7); song.speed = (uint8_t)v; } moved = 1; }
+            if (k3) { undo_save(&song.rhythm, 1, 0); song.rhythm ^= 1u; moved = 1; }
             if ((b & (1u << BTN_GLO)) && song.n_orders < MACSOP_MAX_ORDERS) {   /* insert: a copy of this position after it */
                 uint32_t i;
+                undo_save_orders();
                 for (i = song.n_orders; i > song_pos + 1u; i--) song.order[i] = song.order[i - 1u];
                 song.order[song_pos + 1u] = song.order[song_pos]; song.n_orders++; song_pos++; moved = 1;
             }
             if ((b & (1u << BTN_SEL)) && song.n_orders > 1u) {                   /* delete this position */
                 uint32_t i;
+                undo_save_orders();
                 for (i = song_pos; i + 1u < song.n_orders; i++) song.order[i] = song.order[i + 1u];
                 song.n_orders--; if (song_pos >= song.n_orders) song_pos = song.n_orders - 1u; moved = 1;
             }
             if ((b & (1u << BTN_ARP)) && song.n_patterns < MACSOP_MAX_PATTERNS) {   /* a new empty pattern, here */
                 uint32_t r, cc;
+                undo_add(undo_save(&song.order[song_pos], 2, 0), &song.n_patterns, 2);   /* the order entry and the count */
                 for (r = 0; r <= MACSOP_ROWS; r++) for (cc = 0; cc < MACSOP_CHANNELS; cc++) song.pat[song.n_patterns].cell[r][cc].u = 0;
                 song.order[song_pos] = song.n_patterns++; moved = 1;
             }
@@ -928,15 +1087,19 @@ static void app_main(void)
             if (spin) { ins_param = (uint32_t)wrap((int32_t)ins_param + spin, (int32_t)INS_PARAMS); moved = 1; }
             if (ins_param == 0) {
                 if (k1) { ins_namepos = (uint32_t)wrap((int32_t)ins_namepos + k1, 13); moved = 1; }
-                if (k2) { int32_t ch = in->name[ins_namepos] ? in->name[ins_namepos] : ' '; ch += k2; if (ch < 32) ch = 32; if (ch > 126) ch = 126; in->name[ins_namepos] = (char)ch; moved = 1; }
+                if (k2) { int32_t ch = in->name[ins_namepos] ? in->name[ins_namepos] : ' '; ch += k2; if (ch < 32) ch = 32; if (ch > 126) ch = 126;
+                          undo_save(&in->name[ins_namepos], 1, 6); in->name[ins_namepos] = (char)ch; moved = 1; }
             } else if (k1) {
                 uint8_t *f = ins_field(in, ins_param);
                 int32_t v = (int32_t)*f + k1, mx = (int32_t)ins_max(ins_param);
-                *f = (uint8_t)(v < 0 ? 0 : v > mx ? mx : v);
+                v = v < 0 ? 0 : v > mx ? mx : v;
+                if (v != (int32_t)*f) undo_save(f, 1, 5);
+                *f = (uint8_t)v;
                 macsop_refresh_instr(&player, (int)ins_sel);   /* channels playing it hear the change */
                 moved = 1;
             }
             if ((b & (1u << BTN_ARP)) && song.n_instr < MACSOP_MAX_INSTR) {   /* a new instrument: a copy of this one */
+                undo_save(&song.n_instr, 2, 0);
                 song.instr[song.n_instr] = *in; ins_sel = song.n_instr++; moved = 1;
             }
             if (down)                         /* audition on channel 1 */
@@ -948,7 +1111,7 @@ static void app_main(void)
 
         /* ---- LEDs and the screen */
         fm1_led_key(BTN_PLAY, play);
-        fm1_led_key(BTN_REC, set.loop_all && !edit);
+        fm1_led_key(BTN_REC, edit ? (int)rec_arm : (int)set.loop_all);   /* EDIT: armed to record; else loop mode */
         fm1_led_key(BTN_EDIT, (int)edit);
         fm1_led_key(BTN_SEQ, view == V_TRACK || view == V_SONG || view == V_INS);
         fm1_led_key(BTN_FX, view == V_SCOPE);
