@@ -24,7 +24,13 @@ round-trips through the editor's model byte for byte (`host/roundtrip.c`, 18 of 
 | **REC** | loop one song ↔ play them all in turn (the LED shows which) |
 | **SEQ** | jukebox screen ↔ **tracker screen**: the pattern scrolling by, one column per channel, the playing row in the middle. Notes as `C4` / `c4` (lowercase = sharp), `==` key off, `EN` end of pattern. Rhythm songs show 11 columns (6 + BD SD TM TC HH), melodic songs 9. |
 | **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel, labelled `06 produc` (instrument number, then name; `--` = the driver's default patch). The first nine white keys (F3–G4) mute / unmute channels 1–9: red label, dim trace, key LED lit. Mutes survive a restart, clear on a song change. |
+| **GLO** | the battery's raw ADC count in the status line for two seconds, e.g. `BATTERY 0571 (2/3)` (count, bars), to tune the battery icon by |
 | **MASTER** | volume |
+
+**Battery.** Every screen shows a battery at the top right: 3 bars, red outline when empty. It reads ADC ch3
+(the battery divider) once a second, smoothed over a few seconds. The bars switch at raw counts 531 / 561 / 591,
+the thresholds Felucca and SLOOP use; they are not converted to volts and have not been checked against a meter
+on OPLBOX. They live in one table, `BATT_LEVEL` in `firmware/src/oplbox.c`.
 
 **Editing** — **EDIT** (LED lit). The tracker screen follows the cursor instead of the playback; SEQ now cycles
 tracker → song → instrument screens. Everything edits live: a change is heard on the next row.

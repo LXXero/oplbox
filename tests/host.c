@@ -32,6 +32,12 @@ static uint32_t fm1_input_note_edges(void) { return 0; }   /* (the script sets f
 static int32_t host_enc[7];
 static int32_t fm1_enc_take(uint32_t e) { int32_t v = e < 7u ? host_enc[e] : 0; if (e < 7u) host_enc[e] = 0; return v; }
 static void fm1_led_key(uint32_t id, int on) { (void)id; (void)on; }
+/* fm1_adc.h stand-in: a battery at two bars of three (the thresholds are in oplbox.c, BATT_LEVEL) */
+#ifndef HOST_BATT
+#define HOST_BATT 575
+#endif
+enum { FM1_ADC_BATT = 3, FM1_ADC_MASTER = 4 };
+static int32_t fm1_adc_read(uint32_t ch) { return ch == FM1_ADC_BATT ? HOST_BATT : -1; }
 
 /* the screen: 240 x 240 RGB565, as the ST7789 gets it (gfx.c sends the bytes swapped) */
 static uint16_t fb[240 * 240];

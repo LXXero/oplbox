@@ -1,5 +1,11 @@
 # Unreleased
 
+- Battery icon at the top right of every screen: 3 bars from ADC ch3, read once a second and smoothed, with a
+  little hysteresis so it does not flicker; red outline when empty. The thresholds are raw counts (531 / 561 /
+  591, Felucca's and SLOOP's), not volts, and not yet checked on hardware. GLO outside the editor shows the
+  smoothed count in the status line, to tune `BATT_LEVEL` by. The jukebox's and the editor's top lines are
+  centred in 220 px now, left of the icon. The host build (`tests/host.c`) reads a fixed count, `HOST_BATT`.
+
 - Docs: the Dinghy-era names (`dinghy.c`, `dinghy.fwsc`, "Build Dinghy") now say OPLBOX, with Dinghy credited as the
   base; `CREDITS.md` added; Dinghy is a fetch-only `upstream` remote, nothing merged from it.
 
