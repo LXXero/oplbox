@@ -20,10 +20,7 @@ tags (a clone in /tmp, no remote added):
 - `dinghy.c` became `firmware/src/oplbox.c` (the whole app; `tools/build.py` compiles it under that name).
 - `tools/build.py`: OPLBOX's own build. `PRODUCT = "FM-1_960"` (OPLBOX's 96N identity, not Dinghy's 99N),
   output names `oplbox.*`, and `dbopl2.c` as a separate object at -O2 with the app and platform at -Os
-  (0.4.2). Its docstring still says "Build Dinghy … dinghy.bin … dinghy.fwsc".
-- Docs still written for Dinghy: `docs/API.md` ("# Dinghy API", `dinghy.c`), `docs/MAKE-IT-YOURS.md`,
-  `docs/RULES.md` (`dinghy.c`, `build/dinghy.dis`) and `LICENSING.md` (`firmware/src/dinghy.c`, "Dinghy is
-  free software"). README.md refers to a `CREDITS.md` that is not in the tree.
+  (0.4.2).
 - Everything OPLBOX adds (`macsop.c/.h`, `dbopl2*`, `opl3.c`, `opl2fast.c`, `songs.h`, `host/`, `tests/`
   scripts) has no counterpart upstream.
 
@@ -50,7 +47,7 @@ took 0.4:
 - Which parts of 0.4 are wanted on their own if the whole release is not taken: the MIDI clock in, TRS MIDI
   IN, the test suite.
 - If tracking: record in CHANGES.md which upstream commit each port came from.
-- Either way: update the Dinghy-era docs above to name `oplbox.c`, and write or drop the `CREDITS.md`
+- Either way: update the Dinghy-era docs to name `oplbox.c`, and write or drop the `CREDITS.md`
   reference. **Done:** the docs name `oplbox.c`, and `CREDITS.md` is written.
 
 ## 2. The 0.5 items — xero said yes to all three

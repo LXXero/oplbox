@@ -9,6 +9,10 @@
 - Docs: the Dinghy-era names (`dinghy.c`, `dinghy.fwsc`, "Build Dinghy") now say OPLBOX, with Dinghy credited as the
   base; `CREDITS.md` added; Dinghy is a fetch-only `upstream` remote, nothing merged from it.
 
+- `tests/run_host.sh` checks what it makes and exits 1 on a regression: the screen at 3000 ms is not blank, the
+  battery icon shows 2 bars of 3 for `HOST_BATT` 575, and the WAV is 6.5 s of 16-bit stereo 44.1 kHz and not
+  silent. Before, it only wrote the files and always passed.
+
 # OPLBOX 0.4.2 (identity FM-1_964)
 
 - USB: a SysEx from the computer (the installer's identity query, `fm1_install.py --info`, the first stage of an
