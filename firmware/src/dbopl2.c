@@ -25,7 +25,7 @@
 #include "dbopl2_tables.h"
 
 /* taps for an oscilloscope view: a channel's own samples (index 0..8; the rhythm block taps 6 = bass drum,
- * 7 = hi-hat + snare, 8 = tom + cymbal) before they are summed, kept here with the generator
+ * 7 = snare, 8 = hi-hat + tom + cymbal) before they are summed, kept here with the generator
  * (DBOPL2_SCOPE_N samples per channel, dbopl2.h). No-ops without DBOPL2_SCOPE_N. */
 #ifdef DBOPL2_SCOPE_N
 volatile uint32_t dbopl2_scope_on;
@@ -454,7 +454,7 @@ static DBOPL2_RAMCODE uint32_t chip_forward_lfo(dbopl2 *chip, uint32_t samples)
 static DBOPL2_RAMCODE __attribute__((always_inline)) inline void ch_percussion(dbchan *c, dbopl2 *chip, int32_t *output, uint32_t i, const int32_t keep[3])
 {
     int32_t mod = (int32_t)((uint32_t)(c->old[0] + c->old[1]) >> c->feedback);
-    int32_t sample, bd, hs, tc;
+    int32_t sample, bd, hh = 0, sd = 0, rest;
     uint32_t noiseBit, c2, c5, phaseBit, hhVol, sdVol, tcVol;
     c->old[0] = c->old[1];                   /* bass drum: op 0 with feedback, op 1 */
     c->old[1] = op_get_sample(&c->op[0], mod);
@@ -469,24 +469,22 @@ static DBOPL2_RAMCODE __attribute__((always_inline)) inline void ch_percussion(d
     hhVol = op_forward_volume(OP(c, 2));     /* hi-hat */
     if (!ENV_SILENT(hhVol)) {
         uint32_t hhIndex = (phaseBit << 8) | (0x34u << (phaseBit ^ (noiseBit << 1)));
-        sample += op_get_wave(OP(c, 2), hhIndex, hhVol);
+        hh = op_get_wave(OP(c, 2), hhIndex, hhVol);
     }
     sdVol = op_forward_volume(OP(c, 3));     /* snare */
     if (!ENV_SILENT(sdVol)) {
         uint32_t sdIndex = (0x100u + (c2 & 0x100u)) ^ (noiseBit << 8);
-        sample += op_get_wave(OP(c, 3), sdIndex, sdVol);
+        sd = op_get_wave(OP(c, 3), sdIndex, sdVol);
     }
-    hs = sample - bd;
-    DBOPL2_TAP(7, i, hs << 1);
-    sample += op_get_sample(OP(c, 4), 0);    /* tom */
+    DBOPL2_TAP(7, i, sd << 1);
+    rest = hh + op_get_sample(OP(c, 4), 0);  /* tom */
     tcVol = op_forward_volume(OP(c, 5));     /* cymbal */
     if (!ENV_SILENT(tcVol)) {
         uint32_t tcIndex = (1u + phaseBit) << 8;
-        sample += op_get_wave(OP(c, 5), tcIndex, tcVol);
+        rest += op_get_wave(OP(c, 5), tcIndex, tcVol);
     }
-    tc = sample - bd - hs;
-    DBOPL2_TAP(8, i, tc << 1);
-    output[0] += ((bd & keep[0]) + (hs & keep[1]) + (tc & keep[2])) << 1;
+    DBOPL2_TAP(8, i, rest << 1);
+    output[0] += ((bd & keep[0]) + (sd & keep[1]) + (rest & keep[2])) << 1;
 }
 
 /* one channel (three in rhythm mode) over a block; returns the next channel */

@@ -31,7 +31,7 @@ typedef struct {
     int8_t vibratoSign;
     uint8_t vibratoShift, tremoloValue, vibratoStrength, tremoloStrength, waveFormMask;
     uint32_t mute;                           /* bit n: channel n left out of the mix (6, 7, 8 in rhythm mode:
-                                              * bass drum, hi-hat + snare, tom + cymbal); the chip runs as before */
+                                              * bass drum, snare, hi-hat + tom + cymbal); the chip runs as before */
 } dbopl2;
 
 void dbopl2_reset(dbopl2 *chip);

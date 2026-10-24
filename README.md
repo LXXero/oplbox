@@ -23,7 +23,7 @@ round-trips through the editor's model byte for byte (`host/roundtrip.c`, 18 of 
 | **OCT−  OCT+** or the **SELECT** knob | previous / next song: the 18 built in, then slots 1–9 |
 | **REC** | loop one song ↔ play them all in turn (the LED shows which) |
 | **SEQ** | jukebox screen ↔ **tracker screen**: the pattern scrolling by, one column per channel, the playing row in the middle. Notes as `C4` / `c4` (lowercase = sharp), `==` key off, `EN` end of pattern. Rhythm songs show 11 columns (6 + BD SD TM TC HH), melodic songs 9. |
-| **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel, labelled `06 produc` (instrument number, then name; `--` = the driver's default patch). The first nine white keys (F3–G4) mute / unmute channels 1–9: red label, dim trace, key LED lit. Mutes survive a restart, clear on a song change. |
+| **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel, labelled `06 produc` (instrument number, then name; `--` = the driver's default patch). In a rhythm song boxes 7-9 are the drums: `BD`, `SD`, `HH TM CY`. The first nine white keys (F3–G4) mute / unmute channels 1–9: red label, dim trace, key LED lit. Mutes survive a restart, clear on a song change. |
 | **GLO** | the battery's raw ADC count in the status line for two seconds, e.g. `BATTERY 0571 (2/3)` (count, bars), to tune the battery icon by |
 | **MASTER** | volume |
 

@@ -1,5 +1,9 @@
 # Unreleased
 
+- Scope screen, rhythm songs: boxes 7-9 are now bass drum / snare / hi-hat + tom + cymbal (before: bass drum /
+  hi-hat + snare / tom + cymbal) and are labelled `BD`, `SD`, `HH TM CY`. Box 9 was dark in 17 of the 18 songs:
+  no melodic song uses a ninth channel, and the tom and cymbal almost never sound (see the commit message).
+  The mute keys follow the boxes. The mix is unchanged.
 - Undo: ENV in EDIT takes back the last edit on the tracker, song and instrument screens (cells, order list,
   patterns and instruments added, speed, rhythm, instrument fields and names). A log of what the song held
   before each edit, 32 steps, oldest dropped; an insert or delete in the order list keeps the whole list
