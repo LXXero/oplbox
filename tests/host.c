@@ -96,9 +96,11 @@ static void app_main(void);
  * argument) replaces it, a line each: "T keys MASK" (hex or decimal), "T btn ID", "T enc ID CLICKS", "T midi ST D1 D2",
  * "T end", and checks on the pattern cell at (order position O, row R, column C), which make the run exit 1 when they fail:
  * "T save O R C" (remember the cell), "T same O R C" (it is the remembered one), "T differs O R C" (it is not),
- * "T note O R C N" (its note is N), "T empty O R C" (its note is 0) */
-typedef struct { uint32_t t, keys; int btn; uint8_t st, d1, d2; int enc, clicks; int chk; uint32_t o, r, c, v; } host_ev_t;
-enum { CHK_SAVE = 1, CHK_SAME, CHK_DIFFERS, CHK_NOTE, CHK_EMPTY };
+ * "T note O R C N" (its note is N), "T empty O R C" (its note is 0), "T is O R C V" (the whole value is V),
+ * "T within O R C LO HI" (LO <= the whole value <= HI). The app may answer rows a pattern does not have with
+ * other state (oplbox.c host_cell: 99, 98, 97, 96) */
+typedef struct { uint32_t t, keys; int btn; uint8_t st, d1, d2; int enc, clicks; int chk; uint32_t o, r, c, v, v2; } host_ev_t;
+enum { CHK_SAVE = 1, CHK_SAME, CHK_DIFFERS, CHK_NOTE, CHK_EMPTY, CHK_IS, CHK_WITHIN };
 static const host_ev_t SCRIPT0[] = {
     {200, 1u << 7, -1, 0, 0, 0},                                /* C4 */
     {700, 1u << 7 | 1u << 11 | 1u << 14, -1, 0, 0, 0},          /* + E4 G4: a chord */
@@ -130,10 +132,11 @@ static void read_script(const char *path)
         else if (!strcmp(what, "btn")) { sscanf(line, "%*u %*s %d", &e.btn); }
         else if (!strcmp(what, "enc")) { sscanf(line, "%*u %*s %d %d", &e.enc, &e.clicks); }
         else if (!strcmp(what, "midi")) { sscanf(line, "%*u %*s %i %u %u", (int *)&a, &b, &c); e.st = (uint8_t)a; e.d1 = (uint8_t)b; e.d2 = (uint8_t)c; }
-        else if (!strcmp(what, "save") || !strcmp(what, "same") || !strcmp(what, "differs") || !strcmp(what, "note") || !strcmp(what, "empty")) {
+        else if (!strcmp(what, "save") || !strcmp(what, "same") || !strcmp(what, "differs") || !strcmp(what, "note") || !strcmp(what, "empty")
+                 || !strcmp(what, "is") || !strcmp(what, "within")) {
             e.chk = !strcmp(what, "save") ? CHK_SAVE : !strcmp(what, "same") ? CHK_SAME : !strcmp(what, "differs") ? CHK_DIFFERS
-                  : !strcmp(what, "note") ? CHK_NOTE : CHK_EMPTY;
-            sscanf(line, "%*u %*s %u %u %u %u", &e.o, &e.r, &e.c, &e.v);
+                  : !strcmp(what, "note") ? CHK_NOTE : !strcmp(what, "is") ? CHK_IS : !strcmp(what, "within") ? CHK_WITHIN : CHK_EMPTY;
+            sscanf(line, "%*u %*s %u %u %u %u %u", &e.o, &e.r, &e.c, &e.v, &e.v2);
         }
         else continue;
         ev[n++] = e;
@@ -194,7 +197,8 @@ static void platform_poll(void)                 /* one call = one millisecond */
             const host_ev_t *e = &script[step];
             uint32_t u = host_cell(e->o, e->r, e->c);
             int ok = e->chk == CHK_SAVE || (e->chk == CHK_SAME ? u == host_saved : e->chk == CHK_DIFFERS ? u != host_saved
-                   : e->chk == CHK_NOTE ? (u & 0xFFu) == e->v : (u & 0xFFu) == 0);
+                   : e->chk == CHK_NOTE ? (u & 0xFFu) == e->v : e->chk == CHK_IS ? u == e->v
+                   : e->chk == CHK_WITHIN ? u >= e->v && u <= e->v2 : (u & 0xFFu) == 0);
             if (e->chk == CHK_SAVE) host_saved = u;
             printf("%6u ms  cell (%u,%u,%u) = %08X: %s\n", fm1_ms, e->o, e->r, e->c, u, ok ? "ok" : "FAIL");
             host_failed += !ok;

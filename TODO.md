@@ -109,46 +109,55 @@ knob turned on and on (same control, same value, within 500 ms) is one step. A s
 SAVE does not; it is not saved. Covers cells, the order list and its length, new patterns and instruments, speed,
 rhythm, instrument fields and names. Checked by `tests/script_undo.txt`.
 
-## 3. A working arpeggiator, with the stock FM-1's settings
+## 3. A working arpeggiator — built, host-tested, not yet tried on hardware
 
-**The stock arpeggiator** (M-VAVE FM-1 user manual, ARP section and the ARP mode knob table):
-- Mode: Up, Down, Inclusive (low → high → low, endpoints played twice), Exclusive (endpoints once), Random,
-  Order (the order the keys were pressed), Repeat (each note repeated before the next).
-- Page 1 (SELECT turns pages): K1 Mode, K2 Octave 1–4, K3 Rate, K4 Tempo 30–300 BPM.
-- Page 2: K1 Gate 20–100 %, K2 Swing 50–75 %, K3 Latch on/off.
-- Rates for OPLBOX: 1/4, 1/8, 1/8T, 1/16, 1/32. The manual does not list the stock rate values; check them on
-  stock firmware.
-- ARP toggles the arpeggiator and opens its settings. With SEQ running, ARP shows "Disable SEQ to enter".
+Decided by xero ("um okay sure whatever you want for the arp"): the colony's proposed defaults, below.
 
-**Today.** There is no arpeggiator. `BTN_ARP` is used only while editing: on the song screen it makes a new
-empty pattern (:860), on the instrument screen a new instrument copied from the current one (:884). On the
-tracker screen (edit or not), the jukebox and the scope, ARP does nothing. Outside EDIT the keys do nothing
-either, except on the scope, where the first nine white keys mute channels (:800).
+**Controls.** ARP outside EDIT turns the arp on and opens its settings screen, or turns it off (and leaves the
+screen). LFO outside EDIT opens the settings, or turns their page (SELECT keeps picking the song). SEQ / FX leave
+the screen as usual; the arp plays on. In EDIT, ARP keeps its old meanings (new pattern on the song screen, new
+instrument on the instrument screen), and entering EDIT gives the keys back to the editor (held or latched arp
+notes stop). The ARP LED shows whether the arp is on.
+- Page 1: K1 mode (Up, Down, Inclusive, Exclusive, Random, Order, Repeat), K2 octaves 1–4, K3 rate
+  (1/4, 1/8, 1/8T, 1/16, 1/32), K4 tempo 30–300 BPM. Page 2: K1 gate 20–100 % (steps of 5), K2 swing 50–75 %,
+  K3 latch (right on, left off). The screen also shows the channel the arp is on and how many notes it holds.
+- Keys: with the arp on, held keys feed it (jukebox, tracker and settings screens). On the scope screen the
+  first nine white keys stay the mutes and feed nothing; a key let go there still leaves the arp.
+- Latch: notes stay after the keys are up; a key pressed when every key was up starts a new chord. Latch off
+  keeps only the keys still down.
+- Inclusive plays the ends twice (C E G G E C), Exclusive once (C E G E), Repeat each note twice, Order the notes
+  as pressed. Octaves go up octave by octave; notes above B7 fold down an octave.
 
-**Where.** A new arp state and step function in `oplbox.c`. The note on/off goes through
-`macsop_play_note()` (macsop.c), the same path as `audition()`. The timing: the ISR already counts native
-samples for the row clock (`row_acc`, `tick_row()` :83–91). An arp clock beside it in `refill()` (:142) keeps
-time in the audio stream; a clock in `app_main()` from `fm1_ms` would jitter by the main loop's latency.
+**Sound and timing.** The arp clock runs in the audio ISR beside the row clock (`arp_acc`, native samples in Q8,
+in `refill()` / `next_native()`), so steps keep the audio stream's time. Each step and each gate's end is one
+`macsop_play_note()` (the `audition()` path): a few queued register writes, less than one row of the song. Swing
+only lengthens every other step and shortens the next, so it adds no ISR work; it is in. Instrument: the
+editor's `ed_instr`; volume `ed_vol`.
 
-**What it conflicts with.**
-- ARP on the song and instrument screens (new pattern / new instrument). Either the arp is not available
-  there, or those two functions move to another button.
-- The stock settings page uses SELECT and K1–K4. Outside EDIT, SELECT picks the song (:765); K1–K4 are free.
-  In EDIT, K1–K4 and SELECT are the cursor and the cell values.
-- On the scope screen, the first nine white keys are the channel mutes.
-- Channels: while a song plays, the player uses all 9 channels (or 6 + drums). The arp needs one of them.
-- "Disable SEQ to enter" does not apply: in OPLBOX, SEQ switches screens.
+**Channel.** While a song plays: the highest melodic channel whose column has no note in the playing pattern and
+whose envelope has ended (the arp's own note aside); else the highest channel muted on the scope (let back into
+the mix for the arp); else the last melodic one (6 in rhythm mode, 9 otherwise). Never the rhythm-mode drums
+7–9. With no song playing, the highest channel not muted. While the arp holds a channel the player skips that
+column (`macsop.skip`, the one change in `macsop.c`), so the song's notes there are not heard. Picked again when
+the pattern changes and when playback starts, given back when the notes stop.
 
-**Open questions.**
-- Which channel does the arp play on while a song plays: a fixed one (9?), one the song leaves silent, or a
-  muted one (`mute_mask`, :275)?
-- Which instrument: the song's (`ed_instr`, :378) or a separate bank (item 5)?
-- Tempo: its own 30–300 BPM as on stock firmware, follow the song's row rate, or follow a MIDI clock (needs
-  Dinghy 0.4's clock in, item 1)?
-- Where do the settings live (pages on the tracker screen, a new view in the `V_*` enum at :661), and are
-  they kept in the settings sector (`set`, :708)?
-- Gate and swing finer than the arp clock's tick cost ISR time; the ISR has a tight budget
-  (`ISR_BUDGET_US`, the overload guard at :189).
+**Settings.** Kept in the settings sector after the song and loop mode (10 bytes instead of 2). A sector written
+by an older OPLBOX still loads (its 2 bytes, the arp at defaults); an older OPLBOX reading the new sector sees
+the length differ and starts at song 1 with loop off. Whether the arp is on is not kept.
+
+**Checked** by `tests/script_arp.txt` in `tests/run_host.sh` (new `is` / `within` checks in `tests/host.c`, arp
+state in `host_cell()` rows 96–97): first note and channel, gate off at 50 %, step order Up and Down, 6214–6215
+native samples a step at 120 BPM 1/16 and 8 steps in a second, 12429 at 60 BPM, legato at gate 100 %, release
+on key up, latch and a new latched chord, the free channel 6 in pattern 0 of STARDUST FALLING with the player
+skipping it, and the muted channel 3 taken (and unmuted) in pattern 2, which uses all six columns.
+
+**Left out / not checked.**
+- Nothing tried on hardware: the ISR time of an arp step is reasoned, not measured (`fm1_ticks()` is 0 on the host).
+- The stock rate values are still not checked against stock firmware.
+- No MIDI clock sync (needs Dinghy 0.4's clock in, item 1); MIDI in does not feed the arp.
+- The borrowed or muted channel keeps the arp's instrument when the song gets it back, until the song's next
+  note there names one.
+- Swing, Random, Inclusive / Exclusive / Order / Repeat and octaves above 1 have no host check of their own.
 
 ## 4. Save an arpeggio into the tracker as a track
 

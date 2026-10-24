@@ -25,7 +25,18 @@ round-trips through the editor's model byte for byte (`host/roundtrip.c`, 18 of 
 | **SEQ** | jukebox screen ↔ **tracker screen**: the pattern scrolling by, one column per channel, the playing row in the middle. Notes as `C4` / `c4` (lowercase = sharp), `==` key off, `EN` end of pattern. Rhythm songs show 11 columns (6 + BD SD TM TC HH), melodic songs 9. |
 | **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel, labelled `06 produc` (instrument number, then name; `--` = the driver's default patch). In a rhythm song boxes 7-9 are the drums: `BD`, `SD`, `HH TM CY`. The first nine white keys (F3–G4) mute / unmute channels 1–9: red label, dim trace, key LED lit. Mutes survive a restart, clear on a song change. |
 | **GLO** | the battery's raw ADC count in the status line for two seconds, e.g. `BATTERY 0571 (2/3)` (count, bars), to tune the battery icon by |
+| **ARP** | the arpeggiator on (its settings screen opens) / off; the LED shows it. Not in EDIT, where ARP keeps its editor meaning |
+| **LFO** | the arpeggiator's settings screen: open it, or turn its page |
 | **MASTER** | volume |
+
+**Arpeggiator.** With ARP on, held keys play an arpeggio in the current instrument (`I03` in the editor).
+Not from the scope screen, whose keys stay the mutes; EDIT gives the keys back to the editor. While a song plays
+it takes a channel the playing pattern leaves silent, else a channel muted on the scope (heard again, for the
+arp), else the last melodic one (6 in rhythm songs, 9 otherwise; never the drums); the song's notes in that column
+are left out while it plays there. The settings screen shows the channel. Page 1: **K1** mode (up, down,
+inclusive, exclusive, random, order, repeat), **K2** octaves 1–4, **K3** rate (1/4 1/8 1/8T 1/16 1/32), **K4**
+tempo 30–300 BPM. Page 2 (LFO): **K1** gate 20–100 %, **K2** swing 50–75 %, **K3** latch (right on, left off).
+The settings survive a restart; the arp itself starts off.
 
 **Battery.** Every screen shows a battery at the top right: 3 bars, red outline when empty. It reads ADC ch3
 (the battery divider) once a second, smoothed over a few seconds. The bars switch at raw counts 531 / 561 / 591,

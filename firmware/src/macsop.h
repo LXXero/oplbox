@@ -49,6 +49,7 @@ typedef struct {
     uint8_t  done;
     const macsop_instr *cur_instr[MACSOP_CHANNELS];
     uint8_t  bx[9], bd;
+    uint16_t skip;                     /* bit n: column n's cells are not played (OPLBOX's arpeggiator has the channel) */
 } macsop;
 
 /* ---- the song */
