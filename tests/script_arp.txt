@@ -1,0 +1,82 @@
+# t(ms) what ...   : the arpeggiator, checked against its own state and the chip (exits 1 when a check fails).
+# Row 97 / 96 of host_cell (oplbox.c) are the arp: 97 col 0 steps, 1 last step's channel (0-based), 2 native samples
+# between the last two steps, 3 last note, 4 the chip's key-on bit there, 5 player.skip, 6 channel held (255 none),
+# 7 the chip's mute mask, 8 the order position; 96 col N the note N steps back.
+# Song 0 (STARDUST FALLING) is in rhythm mode (melodic channels 1-6), speed 2 (109.9 ms a row), 64 rows a pattern;
+# pattern 0 (order 1) leaves column 6 empty, pattern 2 (order 3) uses all six.
+100 btn 12
+200 btn 10
+# ---- no song playing. The defaults: up, 1 octave, 1/16, 120 BPM (125 ms, 6214.5 native samples a step), gate 50 %
+# C4 E4 G4 (keys 7 11 14: notes 72 76 79) on channel 6, the highest melodic one
+1000 keys 0x4880
+1030 is 0 97 6 5
+1030 is 0 97 5 32
+1030 is 0 97 3 72
+1030 is 0 97 4 1
+# the gate: off after half a step
+1100 is 0 97 4 0
+1160 is 0 97 3 76
+1290 is 0 97 3 79
+1410 is 0 97 3 72
+1410 within 0 97 2 6214 6215
+# the tempo: 8 steps in the first 1000 ms
+1990 is 0 97 0 8
+# K1: down. Steps 10, 11, 12 (pos 9, 10, 11) are G4 E4 C4
+2050 enc 2 1
+2400 is 0 96 2 79
+2400 is 0 96 1 76
+2400 is 0 96 0 72
+2400 is 0 97 0 12
+# K4: 60 BPM, 250 ms (12429 samples) a step, from the step after next
+2450 enc 5 -60
+2800 within 0 97 2 12428 12430
+2800 is 0 97 0 14
+# page 2, K1: gate 100 % (legato: still keyed late in a step)
+2850 btn 5
+2860 enc 2 10
+3200 is 0 97 4 1
+# every key up: the arp stops and gives the channel back
+3300 keys 0
+3320 is 0 97 6 255
+3320 is 0 97 5 0
+3320 is 0 97 4 0
+# K3: latch. The chord plays on after the keys are up; a new key after every key was up replaces it
+3400 enc 4 1
+3500 keys 0x4880
+3600 keys 0
+4000 is 0 97 6 5
+4000 within 0 97 0 17 99
+4100 keys 0x200
+4150 keys 0
+4400 is 0 96 0 74
+4400 is 0 96 1 74
+# latch off: no key is down, so it stops
+4500 enc 4 -1
+4550 is 0 97 6 255
+# ---- the song playing. Channel 3 muted on the scope first (key 4, A3), back to the jukebox
+4900 btn 2
+4950 keys 0x10
+4960 keys 0
+4970 btn 2
+4980 is 0 97 7 4
+5000 btn 12
+# order 1, pattern 0: column 6 is free, the arp takes it and the player leaves it alone
+5100 keys 0x4880
+5200 is 0 97 8 0
+5200 is 0 97 6 5
+5200 is 0 97 5 32
+5200 is 0 97 1 5
+# order 3, pattern 2 uses all six columns: the muted channel 3, let back into the mix for the arp
+19300 is 0 97 8 2
+19300 is 0 97 6 2
+19300 is 0 97 5 4
+19300 is 0 97 7 0
+19300 is 0 97 1 2
+# keys up: the channel back to the song, muted again
+19400 keys 0
+19450 is 0 97 6 255
+19450 is 0 97 5 0
+19450 is 0 97 7 4
+# ARP off
+19500 btn 10
+19600 end

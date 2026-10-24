@@ -420,7 +420,7 @@ int macsop_tick(macsop *m)
         return 0;
     p = &s->pat[s->order[m->order_idx]];
     for (c = 0; c < MACSOP_CHANNELS; c++)
-        if (p->cell[m->row][c].f.note)
+        if (p->cell[m->row][c].f.note && !((m->skip >> c) & 1u))
             note_event(m, c, &p->cell[m->row][c]);
     if (!advance_row(m)) {
         m->done = 1;

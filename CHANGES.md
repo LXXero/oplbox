@@ -1,5 +1,12 @@
 # Unreleased
 
+- Arpeggiator: ARP outside EDIT turns it on and opens its settings (LFO opens them / turns the page). Held keys
+  feed it; modes up, down, inclusive, exclusive, random, order, repeat; 1–4 octaves; 1/4 1/8 1/8T 1/16 1/32;
+  30–300 BPM; gate 20–100 %; swing 50–75 %; latch. Its clock runs in the audio ISR beside the row clock. While a
+  song plays it takes a channel the pattern leaves silent, else a muted one, else the last melodic one, and the
+  player skips that column (`macsop.skip`). Settings kept in the settings sector (10 bytes; an older sector still
+  loads). `tests/script_arp.txt` checks it on the host (new script checks `is` and `within`). Not run on hardware.
+
 - Undo: ENV in EDIT takes back the last edit on the tracker, song and instrument screens (cells, order list,
   patterns and instruments added, speed, rhythm, instrument fields and names). A log of what the song held
   before each edit, 32 steps, oldest dropped; an insert or delete in the order list keeps the whole list

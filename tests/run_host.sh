@@ -11,6 +11,8 @@ build/host/oplbox build/host/oplbox
 # the editor's undo and live recording, checked against the song in memory: each script exits 1 when a check fails
 build/host/oplbox build/host/undo tests/script_undo.txt
 build/host/oplbox build/host/rec tests/script_rec.txt
+# the arpeggiator: steps, tempo, gate, latch and the channel it takes, checked against its state and the chip
+build/host/oplbox build/host/arp tests/script_arp.txt
 python3 - <<'PY'
 import array, sys, wave
 from pathlib import Path
@@ -45,11 +47,20 @@ s = array.array("h", w.readframes(w.getnframes()))
 peak = max(map(abs, s), default=0)
 check(peak > 1000, f"WAV is silent (peak {peak})")
 
+# the arp (tests/script_arp.txt): heard while the chord is held with the song paused (1.0-3.3 s), quiet once
+# every key is up (3.4-3.49 s), quiet again when latch off stops it (4.6-4.9 s)
+a = wave.open("build/host/arp.wav")
+s2 = array.array("h", a.readframes(a.getnframes()))
+def apeak(t0, t1): return max(map(abs, s2[int(t0 * 44100) * 2:int(t1 * 44100) * 2]), default=0)
+check(apeak(1.0, 3.3) > 1000, f"arp not heard while the chord is held (peak {apeak(1.0, 3.3)})")
+check(apeak(3.4, 3.49) < 100, f"arp still sounding after the keys are up (peak {apeak(3.4, 3.49)})")
+check(apeak(4.6, 4.9) < 100, f"arp still sounding after latch off (peak {apeak(4.6, 4.9)})")
+
 for p in sorted(Path("build/host").glob("oplbox-*.ppm")):
     Image.open(p).resize((480, 480), Image.NEAREST).save(p.with_suffix(".png"))
     p.unlink()
     print("screen ->", p.with_suffix(".png"))
 for b in bad: print("FAIL:", b, file=sys.stderr)
 if bad: sys.exit(1)
-print("checks passed: screen, battery icon, sound (peak %d)" % peak)
+print("checks passed: screen, battery icon, sound (peak %d), arp sound" % peak)
 PY
