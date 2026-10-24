@@ -582,8 +582,8 @@ static void draw_tracker(void)                /* the rows around the one in focu
     }
 }
 
-/* ---- the scope screen: nine boxes, one oscilloscope per channel (rhythm mode: 6 = bass drum, 7 = hi-hat +
- * snare, 8 = tom + cymbal), each labelled with the instrument the channel plays. The trace is the channel's
+/* ---- the scope screen: nine boxes, one oscilloscope per channel (rhythm mode: 6 = bass drum, 7 = snare,
+ * 8 = hi-hat + tom + cymbal), each labelled with the instrument the channel plays (rhythm boxes: the drums). The trace is the channel's
  * own output before mixing, 4 native samples a pixel (6 ms across a box), triggered on a rising zero crossing. */
 #define SC_TOP 20u
 #define SC_BOXW 80u
@@ -619,7 +619,10 @@ static void draw_scope(void)
             if (peak < 48) peak = 48;
             for (k = 1; k < 200u; k++)        /* trigger: the first rising zero crossing */
                 if (snap[k - 1] < 0 && snap[k] >= 0) { t = k; break; }
-            {   /* "03 produc": the instrument's number first (what the tracker shows), then its name */
+            if (song.rhythm && ch >= 6u) {    /* the rhythm block: the drums that box mixes, not an instrument */
+                const char *d = ch == 6u ? "BD" : ch == 7u ? "SD" : "HH TM CY";
+                for (k = 0; (name[k] = d[k]) != 0; k++) {}
+            } else {   /* "03 produc": the instrument's number first (what the tracker shows), then its name */
                 int no = macsop_channel_instr_no(&player, (int)ch);
                 uint32_t j = 0;
                 if (no) { name[j++] = (char)('0' + no / 10); name[j++] = (char)('0' + no % 10); }

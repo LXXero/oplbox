@@ -33,11 +33,19 @@ took 0.4:
 - Dinghy 0.4's `platform.c` defines `static slot_load()` / `slot_save()`. `oplbox.c:254` defines its own
   `slot_save()`, so the build fails until one of them is renamed.
 - Dinghy 0.4's FM-1 slots are at 0x97000, 8 × 16 KiB (to 0xB7000). That overlaps OPLBOX's slots at 0x98000,
-  9 × 32 KiB (`SLOT_BASE`, `oplbox.c:197`). A Dinghy slot holds 16 KiB − 12 bytes; four of the 18 built-in
+  9 × 32 KiB (`SLOT_BASE`, `oplbox.c:200`). A Dinghy slot holds 16 KiB − 12 bytes; four of the 18 built-in
   songs are bigger than that (TRADINTR 28510 B, ECHOS 26260, DR_TALE 21014, GOLDVAL 20953). So OPLBOX would
   keep its own slots and change `FL_RANGE_OK`, which moved to `store.h` in 0.4.
 - The MIDI clock in would give the arpeggiator (item 3) an external clock, and TRS MIDI IN would give live
   recording (item 2) a second input.
+
+**Which base.** xero said to keep syncing unless OPLBOX plans its own base, and asked about fm1-base.
+[docs/BASE.md](docs/BASE.md) compares Dinghy 0.4, fm1-base, felucca-bsp, Felucca and M-VAVE's FM1 Open SDK
+(licence, activity, flash map, audio, SysEx, MIDI clock and TRS, simulator, update and rescue, porting size). It
+recommends moving the platform files onto felucca-bsp, keeping the app and the OCT− rescue, and taking only
+`midi_uart.c` from Dinghy 0.4. It also found two problems in OPLBOX's current copy: `ota.c` refuses M-VAVE's V16
+writer, and the update loader can erase a song slot that happens to look like an update record. Its last section
+has the two questions for xero. The questions below are from before it.
 
 **Open questions.**
 - Keep tracking upstream? If yes: add Dinghy as a remote (done: `upstream`, fetch-only), merge or cherry-pick 0.4's
