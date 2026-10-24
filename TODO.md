@@ -240,3 +240,19 @@ editor (column, row, transpose, instrument).
   (:756), so holding them would also change the song.
 - Show the change on screen like stock (the preset list, the algorithm diagram): a line in the status area
   (`say()`, :385) or a new view?
+
+## 6. Battery indicator — in progress
+
+**Done (branch `oplbox/battery-indicator`).** A 3-bar battery icon at the top right of every screen
+(`batt_draw`), fed from ADC ch3 once a second (`batt_poll`, IIR over ~4 s, 4 counts of hysteresis). GLO outside
+the editor shows `BATTERY <count> (<bars>/3)` in the status line. The host build shows it at `HOST_BATT` (575,
+two bars).
+
+**Open.**
+- The thresholds 531 / 561 / 591 are raw counts from Felucca (`firmware/src/ui_draw.c` `batt_level`, "the stock
+  thresholds") and SLOOP (same numbers). No source gives the divider ratio or the ADC reference, so there is no
+  conversion to volts. Check on the FM-1: note the GLO count on a full battery, and again when the stock
+  firmware's battery shows one bar / empty, then set `BATT_LEVEL`.
+- Not tested on hardware yet.
+- No sign of USB power: on USB the count is the charging battery's. Felucca shows a bolt when a USB host is
+  configured (`usb.config && !usb.suspended`); OPLBOX could do the same.

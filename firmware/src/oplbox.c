@@ -12,6 +12,7 @@
  * Jukebox / tracker / scope:
  *   OCT- OCT+      previous / next song         SELECT   turn: pick a song (18 built in, then 9 flash slots)
  *   REC            loop one song <-> play them all in turn (the LED says which)
+ *   GLO            the battery's raw ADC count in the status line, for a moment (the icon at the top right)
  *   scope: the first nine white keys (F3..G4) mute / unmute channels 1..9 (key LED = muted)
  * Editing (EDIT, LED lit; the tracker screen follows the cursor, not the playback):
  *   K1 / K2        cursor column / row          SELECT   order position
@@ -339,6 +340,47 @@ static void u2s(char *s, uint32_t v, uint32_t digits)   /* decimal, fixed width,
 static char *cat(char *d, const char *s) { while (*s) *d++ = *s++; *d = 0; return d; }
 static char *catn(char *d, uint32_t v, uint32_t digits) { u2s(d, v, digits); return d + digits; }
 
+/* ---- the battery: ADC ch3 (PB1, the battery divider), read once a second, smoothed, drawn as a 3-bar icon at
+ * the top right of every screen (x 225..238, y 5..14). The top lines are centred and at most 23 characters
+ * (184 px), so they end by x 212; the two longer ones, the jukebox's (25 with a version like 0.4.2) and the
+ * editor's cursor line (26), are centred in 220 px and end by x 214.
+ * The thresholds are raw ADC counts, not volts: 531 / 561 / 591 for 1 / 2 / 3 bars, the values Felucca and
+ * SLOOP use (Felucca firmware/src/ui_draw.c batt_level, which calls them the stock thresholds; SLOOP
+ * firmware/src/ui_draw.c, the same numbers). Neither gives the divider ratio or the ADC reference, so the count
+ * is not converted to a voltage, and the levels are not checked against a meter on OPLBOX. To tune them: GLO
+ * (outside the editor) shows the smoothed count in the status line; BATT_LEVEL is the table to change. */
+static const uint16_t BATT_LEVEL[3] = { 531, 561, 591 };   /* raw count at which 1, 2, 3 bars show */
+#define BATT_HYST 4                           /* counts past a threshold before the bars change: no flicker */
+static int32_t batt_avg;                      /* the smoothed count x 16; 0 = not read yet */
+static uint32_t batt_lvl;                     /* bars shown, 0..3 */
+
+static void batt_draw(void)                   /* the icon; after anything that redraws the top line */
+{
+    uint32_t i;
+    uint16_t edge = batt_avg && !batt_lvl ? C_RED : C_MUTE;
+    cv_begin(14, 10, C_BLACK);
+    cv_rect(0, 0, 12, 1, edge); cv_rect(0, 9, 12, 1, edge);   /* the body, 12 x 10 */
+    cv_rect(0, 0, 1, 10, edge); cv_rect(11, 0, 1, 10, edge);
+    cv_rect(12, 3, 2, 4, edge);               /* the terminal */
+    for (i = 0; i < batt_lvl; i++)
+        cv_rect((int32_t)(2u + 3u * i), 2, 2, 6, C_TXT);
+    cv_blit(225, 5);
+}
+
+static void batt_poll(void)                   /* one reading; the icon again when the bars change */
+{
+    int32_t a = fm1_adc_read(FM1_ADC_BATT), raw;
+    uint32_t lvl, first = !batt_avg;
+    if (a <= 0)                               /* -1: the ADC timed out */
+        return;
+    batt_avg = first ? a * 16 : batt_avg + (a * 16 - batt_avg) / 4;   /* about 4 s to settle */
+    raw = batt_avg / 16;
+    lvl = first ? 0u : batt_lvl;
+    while (lvl < 3u && raw >= BATT_LEVEL[lvl] + (first ? 0 : BATT_HYST)) lvl++;
+    while (lvl > 0u && raw < BATT_LEVEL[lvl - 1u] - (first ? 0 : BATT_HYST)) lvl--;
+    if (first || lvl != batt_lvl) { batt_lvl = lvl; batt_draw(); }
+}
+
 static void draw_title(uint32_t i)
 {
     char s[24];
@@ -453,7 +495,7 @@ static void draw_tracker_head(void)           /* the title (or, editing, the cur
             *p++ = 'B'; p = catn(p, k->f.pitch, 2);
         } else
             p = cat(p, "..");
-        draw_text_box(0, 2, 240, &FONT_S, s, C_ACC, 1);
+        draw_text_box(0, 2, 220, &FONT_S, s, C_ACC, 1);   /* 26 characters: left of the battery (batt_draw) */
     } else
         draw_text_box(0, 2, 240, &FONT_S, song_title(cur), C_ACC, 1);
     cv_begin(240, 16, C_BLACK);
@@ -464,6 +506,7 @@ static void draw_tracker_head(void)           /* the title (or, editing, the cur
         cv_text((int32_t)(20u + c * cw + (l[1] ? 0u : 4u)), 0, &FONT_S, l, edit && c == cur_col ? C_ACC : C_MUTE);
     }
     cv_blit(0, 20);
+    batt_draw();
 }
 
 static void draw_tracker(void)                /* the rows around the one in focus, three rows a canvas (CV_MAX) */
@@ -512,6 +555,7 @@ static void draw_scope_frame(void)
 {
     lcd_fill(0, 0, 240, SC_TOP, C_BLACK);
     draw_text_box(0, 2, 240, &FONT_S, song_title(cur), C_ACC, 1);
+    batt_draw();
 }
 
 static void draw_scope(void)
@@ -567,6 +611,7 @@ static void draw_song_frame(void)
     draw_text_box(0, 2, 240, &FONT_S, s, C_ACC, 1);
     p = cat(s, "POSITIONS "); p = catn(p, song.n_orders, 2); p = cat(p, "  PATTERNS "); p = catn(p, song.n_patterns, 2);
     draw_text_box(0, 20, 240, &FONT_S, s, C_MUTE, 1);
+    batt_draw();
 }
 
 static void draw_song(void)
@@ -616,6 +661,7 @@ static void draw_ins_frame(void)
     p = cat(s, "INSTRUMENT "); p = catn(p, ins_sel + 1u, 2); *p++ = '/'; p = catn(p, song.n_instr, 2);
     draw_text_box(0, 2, 240, &FONT_S, s, C_ACC, 1);
     draw_text_box(0, 20, 240, &FONT_S, "KEYS PLAY  K1 VALUE  SEL ROW", C_MUTE, 1);
+    batt_draw();
 }
 
 static void draw_ins(void)
@@ -671,8 +717,8 @@ static void draw_view_frame(void)
     case V_SONG:  draw_song_frame(); draw_song(); break;
     case V_INS:   draw_ins_frame(); draw_ins(); break;
     default:
-        draw_text_box(0, 6, 240, &FONT_S, "OPLBOX " APP_VER " - MACS OPERA", C_MUTE, 1);
-        draw_title(cur); draw_instruments();
+        draw_text_box(0, 6, 220, &FONT_S, "OPLBOX " APP_VER " - MACS OPERA", C_MUTE, 1);   /* left of the battery */
+        draw_title(cur); draw_instruments(); batt_draw();
     }
 }
 
@@ -707,13 +753,14 @@ static void app_main(void)
 {
     struct { uint8_t song, loop_all; } set = {0, 0};
     uint32_t shown_order = ~0u, shown_row = ~0u, t_status = 0, t_change = 0, dirty = 0, play = 0, next = 0;
-    uint32_t t_scope = 0, keys_prev = 0, redraw = 0, head_dirty = 0, held_ch = 0;
+    uint32_t t_scope = 0, keys_prev = 0, redraw = 0, head_dirty = 0, held_ch = 0, t_batt = 0;
     int32_t spin, k1, k2, k3, k4, alg, pre;
     settings_load(&set, sizeof set);
     if (set.song >= N_ALL) set.song = 0;
     set.loop_all &= 1u;
 
     load_song(set.song);
+    batt_poll();
     draw_view_frame();
     play = 1; playing = 1; chip_run = 1;      /* a jukebox starts playing */
 
@@ -731,6 +778,7 @@ static void app_main(void)
         if (overload && play) {               /* the ISR stopped itself: show it as paused, PLAY tries again */
             play = 0; chip_silence(); shown_order = ~0u;
             draw_text_box(0, view == V_JUKE ? 78u : 2u, 240, &FONT_S, "AUDIO OVERLOAD - PAUSED", C_RED, 1);
+            batt_draw();
         }
         if (song_over) {                      /* the ISR stopped at the end */
             next = set.loop_all && !edit ? 1 : 0;
@@ -795,6 +843,13 @@ static void app_main(void)
             set.loop_all ^= 1u; dirty = 1; t_change = fm1_ms; shown_order = ~0u;
         }
         if ((b & (1u << BTN_SAVE)) && edit) { save_song(); redraw = 1; }
+        if ((b & (1u << BTN_GLO)) && !edit) {   /* the battery's smoothed ADC count, to tune BATT_LEVEL by */
+            static char bm[24];
+            char *p = cat(bm, "BATTERY ");
+            p = catn(p, (uint32_t)(batt_avg / 16), 4); *p++ = ' '; *p++ = '(';
+            p = catn(p, batt_lvl, 1); p = cat(p, "/3)");
+            say(bm); shown_order = ~0u;
+        }
 
         /* ---- the scope's mutes */
         if (view == V_SCOPE && down)
@@ -899,6 +954,7 @@ static void app_main(void)
         fm1_led_key(BTN_FX, view == V_SCOPE);
         for (k = 0; k < 9u; k++) fm1_led_key(14u + WHITE_KEY[k], view == V_SCOPE && (int)((mute_mask >> k) & 1u));
         if (redraw) { draw_view_frame(); redraw = 0; shown_order = ~0u; }
+        if (fm1_ms - t_batt >= 1000u) { t_batt = fm1_ms; batt_poll(); }   /* the battery: once a second */
         if (view == V_SCOPE && fm1_ms - t_scope > 50u) {          /* the scope: 20 frames a second */
             t_scope = fm1_ms;
             draw_scope();

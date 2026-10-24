@@ -69,7 +69,7 @@ The panel is scanned at 10 kHz in the background and debounced.
 | `fm1_input_note_edges()` | keys pressed since the last call (bits): a press shorter than a loop pass still counts |
 | `fm1_enc_take(ENC_...)` | detents turned since the last call, + = clockwise |
 | `fm1_adc_read(FM1_ADC_MASTER)` | the MASTER knob, 0..1023 (-1 = not ready). platform.c already makes it the volume |
-| `fm1_adc_read(FM1_ADC_BATT)` | the battery voltage, raw |
+| `fm1_adc_read(FM1_ADC_BATT)` | the battery divider, raw 0..1023 (-1 = not ready). No conversion to volts is known; OPLBOX's icon (`batt_poll` / `batt_draw` in oplbox.c) uses Felucca's and SLOOP's raw thresholds 531 / 561 / 591 |
 
 Buttons (ids 0..13):
 
