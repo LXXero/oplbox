@@ -1,212 +1,242 @@
-# OPLBOX TODO
+# OPLBOX — TODO
 
-What is planned after 0.4.2, in order. Each item says what exists today, which code it touches, and what is
-still open. Line numbers are for `firmware/src/oplbox.c` at 0.4.2 (a4b62d9).
+In order. Each item says what exists today (as of 0.4.2, commit a4b62d9), where the change goes, and what is
+still open. Line numbers are `firmware/src/oplbox.c` unless another file is named.
 
 ## 1. Upstream: Dinghy (zvenson)
 
-Upstream: https://github.com/zvenson/dinghy (default branch `main`).
+https://github.com/zvenson/dinghy, default branch `main`.
 
-**Today**
+**Today.** OPLBOX is a copy of Dinghy 0.3. This checkout has only `origin` (git@github.com:LXXero/oplbox.git,
+branch `master`) and no remote for Dinghy; its history starts at OPLBOX 0.1 (6353ff6), so git does not know
+the relationship and every upstream change has to be carried over by hand. Compared file by file with Dinghy's
+tags (a clone in /tmp, no remote added):
 
-- This checkout has one remote, `origin` (`git@github.com:LXXero/oplbox.git`). There is no `upstream` remote
-  here; xero set one up on another machine. Adding it here is a separate step (`git remote add upstream
-  https://github.com/zvenson/dinghy`), not done in this change.
-- The history shares no commit with Dinghy: the first commit, `6353ff6 Release 0.1`, adds the whole tree
-  (68 files) at once. `git merge` with upstream has no merge base, so changes from Dinghy come over by hand
-  (as the 0.4.1 fix did).
-- Which Dinghy version 0.1 started from is not recorded anywhere in the tree.
+- `firmware/src/usb.c`, `ota.c`, `gfx.c`, `lcd.c`, `recovery.c`, `docs/API.md`: identical to Dinghy v0.3.
+- `firmware/src/platform.c`: v0.3 plus two changes. `FL_RANGE_OK` lets the app write the song slots
+  (0x98000–0xE0000), and `fm1_cstart()` calls `fm1_lcd_hw_init()` before the OCT− rescue check. The second
+  one is dinghy PR #4 (sgarrettnelson), cited in README.md ("after dinghy PR #4") and CHANGES.md 0.4.1.
+  PR #4 is still open upstream and is not in Dinghy 0.4.
+- `dinghy.c` became `firmware/src/oplbox.c` (the whole app; `tools/build.py` compiles it under that name).
+- `tools/build.py`: OPLBOX's own build. `PRODUCT = "FM-1_960"` (OPLBOX's 96N identity, not Dinghy's 99N),
+  output names `oplbox.*`, and `dbopl2.c` as a separate object at -O2 with the app and platform at -Os
+  (0.4.2). Its docstring still says "Build Dinghy … dinghy.bin … dinghy.fwsc".
+- Docs still written for Dinghy: `docs/API.md` ("# Dinghy API", `dinghy.c`), `docs/MAKE-IT-YOURS.md`,
+  `docs/RULES.md` (`dinghy.c`, `build/dinghy.dis`) and `LICENSING.md` (`firmware/src/dinghy.c`, "Dinghy is
+  free software"). README.md refers to a `CREDITS.md` that is not in the tree.
+- Everything OPLBOX adds (`macsop.c/.h`, `dbopl2*`, `opl3.c`, `opl2fast.c`, `songs.h`, `host/`, `tests/`
+  scripts) has no counterpart upstream.
 
-**How far it has diverged**
+**Dinghy 0.4** (7c31bb2, 2026-10-23; HEAD is 22acb91, a CI change) was a large release: 41 files, about
+4000 lines. It adds TRS MIDI IN (`midi_uart.c`), MIDI clock and transport in, a MIDI channel setting,
+`store.h` with blobs and slots, `fm1_flash_map.h` (FL_GUARD), LCD_IDLE, the update loader's screen, the SMK-37
+boards, a test suite and a CI release with attestation. `platform.c` changes by about 230 lines. If OPLBOX
+took 0.4:
 
-- The app: Dinghy's `firmware/src/dinghy.c` became `firmware/src/oplbox.c` (a different program: the Macs
-  Opera player, the tracker editor, the flash slots). Added beside it: `macsop.c`/`.h`, `dbopl2.c`/`.h`,
-  `dbopl2_tables.h`, `opl2fast.c`, `opl3.c`/`.h`, `songs.h`, `host/`, `tools/gen_songs.py`.
-- The platform (`platform.c`, `usb.c`, `ota.c`, `recovery.c`, `lcd.c`, `gfx.c`, `libc.c`, `bootguard.h`,
-  `uac_fir.h`, `firmware/hal/`, `firmware/loader/`, `tools/`) is still Dinghy's / Felucca's / SLOOP's code with
-  OPLBOX changes:
-  - `tools/build.py`: `PRODUCT = "FM-1_960"` (OPLBOX's 96N identity instead of Dinghy's 99N), the output names
-    `oplbox.*`, and since 0.4.2 the OPL core compiled as its own object at -O2 while the app and platform stay
-    at -Os like Dinghy.
-  - `fm1_cstart()`: the screen's pins are set up before the OCT− rescue check, taken from dinghy PR #4
-    (sgarrettnelson). README.md (Install) and CHANGES.md (0.4.1) cite that PR.
-- Docs still written for Dinghy: `docs/API.md` ("# Dinghy API", examples refer to `dinghy.c`),
-  `docs/MAKE-IT-YOURS.md`, `docs/RULES.md` (`dinghy.c`, `build/dinghy.dis`), the header of `tools/build.py`
-  ("Build Dinghy … dinghy.bin … dinghy.fwsc"), and `LICENSING.md` (`firmware/src/dinghy.c`, "Dinghy is free
-  software"). README.md refers to a `CREDITS.md` that is not in the tree.
+- Dinghy 0.4's `platform.c` defines `static slot_load()` / `slot_save()`. `oplbox.c:254` defines its own
+  `slot_save()`, so the build fails until one of them is renamed.
+- Dinghy 0.4's FM-1 slots are at 0x97000, 8 × 16 KiB (to 0xB7000). That overlaps OPLBOX's slots at 0x98000,
+  9 × 32 KiB (`SLOT_BASE`, `oplbox.c:197`). A Dinghy slot holds 16 KiB − 12 bytes; four of the 18 built-in
+  songs are bigger than that (TRADINTR 28510 B, ECHOS 26260, DR_TALE 21014, GOLDVAL 20953). So OPLBOX would
+  keep its own slots and change `FL_RANGE_OK`, which moved to `store.h` in 0.4.
+- The MIDI clock in would give the arpeggiator (item 3) an external clock, and TRS MIDI IN would give live
+  recording (item 2) a second input.
 
-**Open questions**
+**Open questions.**
+- Keep tracking upstream? If yes: add Dinghy as a remote (not done in this task), merge or cherry-pick 0.4's
+  platform and HAL files, and decide whether to offer OPLBOX's platform changes (`FL_RANGE_OK` and the PR #4
+  line) back upstream. If no: say in README.md that OPLBOX is based on Dinghy 0.3 plus PR #4 and is no
+  longer synced.
+- Which parts of 0.4 are wanted on their own if the whole release is not taken: the MIDI clock in, TRS MIDI
+  IN, the test suite.
+- If tracking: record in CHANGES.md which upstream commit each port came from.
+- Either way: update the Dinghy-era docs above to name `oplbox.c`, and write or drop the `CREDITS.md`
+  reference.
 
-- Keep tracking upstream, or treat OPLBOX as a fork that only picks up platform fixes by hand? Dinghy had a
-  major overhaul in 0.4; nobody has yet compared it with this tree. A first step is a diff of upstream's
-  platform files (`platform.c`, `usb.c`, `ota.c`, `recovery.c`, `tools/build.py`) against ours, listing which
-  upstream changes are fixes we want (USB, rescue, updater) and which only serve `dinghy.c`.
-- If we keep tracking: add the `upstream` remote here (as on xero's other machine), and record in
-  CHANGES.md which upstream commit each port came from.
-- Update the Dinghy-era docs (API.md, RULES.md, LICENSING.md, build.py header) to name `oplbox.c`, and
-  write or drop the `CREDITS.md` reference.
-
-## 2. 0.5: the items CHANGES.md lists as "not yet"
+## 2. The 0.5 items — xero said yes to all three
 
 CHANGES.md line 34 (0.4): "Not yet: pulling/pushing .CMF files over USB (0.5), live recording while playing,
-undo." xero wants all three.
+undo."
 
-### 2a. Pull and push .CMF slot files over USB
+### 2a. Pull and push `.CMF` slot files over USB
 
-**Today**
+**Today.** The slots are plain `.CMF` files behind a 16-byte header (magic "OPLS", length, CRC):
+`slot_len()` :244, `slot_save()` :254, `slot_program()` :219, `slot_ptr()` :218. The host build writes
+`build/host/slotN.cmf` (:207); the device has no way out. USB is MIDI only (`usb.c`; CDC and UAC are off).
+`usb.c:sysex_byte()` recognises only two SysEx messages, the UBOOT key (F0 22 24 35 7D F7) and the M-UPGRADE
+key (F0 22 24 35 7F F7). The updater's frames go to `sx_frame[640]` for `ota.c`. `midi_get()` gives the app
+channel and realtime messages only, and `app_main()` throws them away (:724).
 
-- Slots: nine 32 KiB slots at `SLOT_BASE 0x98000` (`oplbox.c:196–260`): a 16-byte header (magic `OPLS`, length,
-  CRC32) and a plain `.CMF`. `slot_len()`, `slot_save()`, `slot_program()` (header written last, so a cut save
-  stays empty). The host build writes `build/host/slotN.cmf`; the device has no way out.
-- USB: `usb.c` assembles SysEx (`sysex_byte()`, line 675); a frame reaches the main loop through
-  `ota_frame_get()` and replies go out with `ota_wire_send()` (line 818), both under `FELUCCA_OTA`. The
-  updater's protocol (`ota.c`: `F0 pack7(00 59 cmd len24 body chk) F7`) and the UBOOT soft key
-  (`F0 22 24 35 7D F7`) use this path. `oplbox.c:723–725` drains incoming MIDI and drops it.
-- `tools/fm1_install.py` already talks SysEx to the device (`--info`, install).
+**Where.** A new SysEx command in `usb.c:sysex_byte()` (or a third key next to the two above), 7-bit packed
+the way `ota.c` frames are. A handler in `oplbox.c` that reads a slot with `slot_ptr()`/`slot_len()` and
+writes one with `macsop_parse()` (to check it) and `slot_program()`. A host command in `tools/`, next to
+`fm1_install.py`, which already uses mido for SysEx.
 
-**Work**: a SysEx command set for list / read slot / write slot (7-bit packed, chunked, CRC-checked), a
-handler in `app_main()` that takes frames the updater does not claim, and a host tool (a new
-`tools/fm1_slots.py`, or subcommands in `fm1_install.py`). Writing a slot erases flash, which stalls the sound
-(see `settings_save` at line 914): do it with playback paused, like SAVE does (`save_song()`, `chip_off()`).
-
-**Open questions**
-
-- How to tell OPLBOX's frames from the updater's in `ota_frame_get()` without breaking installs (a different
-  command byte in the same `00 59` framing, or our own manufacturer ID).
-- Push into the playing slot: reload it (`load_song()`) or refuse?
-- USB-MIDI SysEx throughput for a 32 KiB slot; 0.4.2 fixed USB dropping off on SysEx, so this needs a test on
-  hardware.
+**Open questions.**
+- New command bytes or the M-UPGRADE framing? The command bytes must not collide with stock or Felucca
+  SysEx.
+- Push goes straight to flash (an erase stalls the sound, like SAVE, :700) or into RAM as the current song?
+- Reject files that are bigger than a slot (32 KiB − 16) or that `macsop_parse()` refuses (more than 64
+  patterns or instruments, `macsop.h`).
+- Can the FM-1 Firmware Hub (web MIDI) do it too, or only the Python tool?
+- Push into the slot that is playing: reload it (`load_song()`, :285) or refuse?
+- USB-MIDI SysEx throughput for a 32 KiB slot. 0.4.2 fixed the FM-1 dropping off USB on SysEx, so this needs
+  a test on hardware.
 
 ### 2b. Live recording while playing
 
-**Today**: keys enter notes only in EDIT on the tracker screen, at the cursor, then step by `ed_step`
-(`oplbox.c:823–834`, `cursor_step()` line 685). While playing in EDIT the screen follows the cursor, not the
-playback, and `audition()` (line 689) plays nothing while `playing` is set.
+**Today.** In EDIT the tracker screen follows the cursor, not the playback (:472). A key writes the note at
+the cursor and steps (:823–834). `audition()` (:689) does nothing while `playing`, so a key pressed during
+playback is written to the cell but is not heard. REC is the loop-mode toggle and is ignored while editing
+(:794), so it is free in EDIT.
 
-**Work**: a record state (REC is free while editing: `oplbox.c:794` uses it only when `!edit`) where a key
-writes its note into the row the player is on (`pos_order`, `pos_row`, set by the ISR in `tick_row()`) on the
-cursor's channel, and is heard at once.
+**Where.** `app_main()`'s pattern editor block (:805). While playing and recording, write at the player's
+position (`pos_order`/`pos_row`, set in `tick_row()` :88) instead of at the cursor, and play the key through
+the write queue (`opl_write()` :72) on a channel the song is not using at that moment.
 
-**Open questions**
-
-- Quantize to the current row or to the nearest row (a key just before the next row lands on it)?
-- Key release: write a key off (`note 4`) at the row where the key goes up?
-- The player's writes and the key's audition share one channel: which one wins until the next row.
-- The cell writes come from the main loop while the ISR reads the same pattern; cells are written whole
-  (`macsop_cell.u`), which is safe for one cell, but say so in a comment.
+**Open questions.**
+- Rounding: a key pressed late in a row goes into that row, or into the next one if it is past half of it?
+  The row is 55 / 110 / 220 ms at speed 1 / 2 / 3.
+- Which column does it record into: the cursor's column, or the next free one?
+- Key-up writes a key off (`==`) or leaves the note ringing?
+- Record MIDI in too (needs `app_main()` to stop discarding `midi_get()`, :724)?
+- REC as record arm in EDIT, with its LED (:896)?
+- The player and the key share the column's channel: which one wins until the next row?
+- The main loop writes cells while the ISR reads the same pattern. A cell is written whole (`macsop_cell.u`),
+  which is safe for one cell; say so in a comment.
 
 ### 2c. Undo
 
-**Today**: no undo; every edit writes `song` in place (`.pool`, 190 KB of the RAM pool for the song model).
+**Today.** Every edit changes `song` in place: cells (`c->u = t.u`, :816–837), the order list (:847–863),
+instruments (:876–885), speed and rhythm (:848–849). Nothing keeps the old value. `song` is about 186 KB in
+the 336 KiB `.pool` (app.ld), next to `slot_buf` (32 KiB), so a second copy of the song does not fit. A log of
+(address, old value) entries does, since a cell is one `uint32_t`.
 
-**Work**: an undo log of (pattern, row, channel, old cell) entries for cell edits, plus whole-record entries for
-order list and instrument edits; a key to undo (candidates: a button combination, since every button already
-has a job in EDIT).
+**Where.** A small undo log in `oplbox.c` written by every edit site above. Each edit site already sets
+`moved = 1`, so they are easy to find.
 
-**Open questions**
+**Open questions.**
+- Which button: ENV and LFO (`platform.c:21`) are not used anywhere in OPLBOX.
+- How many steps, and does a key held while scrolling count as one step?
+- Inserting or deleting an order position moves the whole list: log the list (198 bytes) instead of single
+  entries.
+- Does the log survive SAVE, a song change, a power-off? (A song change reloads `song` from flash, :770, so
+  the simplest answer is no.)
+- Redo?
 
-- How much RAM is left after the pool for a log, and how many steps that buys.
-- Which key or combination undoes; redo too?
-- Undo across SAVE, or clear the log on save?
+## 3. A working arpeggiator, with the stock FM-1's settings
 
-## 3. A working arpeggiator, with the stock firmware's modes
+**The stock arpeggiator** (M-VAVE FM-1 user manual, ARP section and the ARP mode knob table):
+- Mode: Up, Down, Inclusive (low → high → low, endpoints played twice), Exclusive (endpoints once), Random,
+  Order (the order the keys were pressed), Repeat (each note repeated before the next).
+- Page 1 (SELECT turns pages): K1 Mode, K2 Octave 1–4, K3 Rate, K4 Tempo 30–300 BPM.
+- Page 2: K1 Gate 20–100 %, K2 Swing 50–75 %, K3 Latch on/off.
+- Rates for OPLBOX: 1/4, 1/8, 1/8T, 1/16, 1/32. The manual does not list the stock rate values; check them on
+  stock firmware.
+- ARP toggles the arpeggiator and opens its settings. With SEQ running, ARP shows "Disable SEQ to enter".
 
-Wanted: all the settings the stock M-VAVE FM-1 arpeggiator has: rates 1/4, 1/8, 1/8T, 1/16, 1/32, note length
-(gate), and the stock firmware's other arp settings.
+**Today.** There is no arpeggiator. `BTN_ARP` is used only while editing: on the song screen it makes a new
+empty pattern (:860), on the instrument screen a new instrument copied from the current one (:884). On the
+tracker screen (edit or not), the jukebox and the scope, ARP does nothing. Outside EDIT the keys do nothing
+either, except on the scope, where the first nine white keys mute channels (:800).
 
-**Today**
+**Where.** A new arp state and step function in `oplbox.c`. The note on/off goes through
+`macsop_play_note()` (macsop.c), the same path as `audition()`. The timing: the ISR already counts native
+samples for the row clock (`row_acc`, `tick_row()` :83–91). An arp clock beside it in `refill()` (:142) keeps
+time in the audio stream; a clock in `app_main()` from `fm1_ms` would jitter by the main loop's latency.
 
-- No arpeggiator. `BTN_ARP` (`platform.c:22`) is read in two places, both only in EDIT:
-  - song screen: a new, empty pattern at this position (`oplbox.c:860–864`);
-  - instrument screen: a new instrument, a copy of this one (`oplbox.c:884–886`).
-- In play mode (not EDIT) ARP does nothing; nor do `BTN_ENV`, `BTN_LFO`, K1–K4, ALGO and PRESETS
-  (`alg` and `pre` are read at line 729 but used only by the editors).
-- Notes from the keys only play in EDIT (tracker or instrument screen), through `audition()` →
-  `macsop_play_note()`, which keys one note on one channel.
+**What it conflicts with.**
+- ARP on the song and instrument screens (new pattern / new instrument). Either the arp is not available
+  there, or those two functions move to another button.
+- The stock settings page uses SELECT and K1–K4. Outside EDIT, SELECT picks the song (:765); K1–K4 are free.
+  In EDIT, K1–K4 and SELECT are the cursor and the cell values.
+- On the scope screen, the first nine white keys are the channel mutes.
+- Channels: while a song plays, the player uses all 9 channels (or 6 + drums). The arp needs one of them.
+- "Disable SEQ to enter" does not apply: in OPLBOX, SEQ switches screens.
 
-**Work**: an arp engine clocked from the row clock or its own timer, held-key list from `fm1_in.notes`, notes out
-through `macsop_play_note()` on a channel the song does not use.
-
-**Conflicts with ARP**
-
-- If ARP toggles the arpeggiator everywhere, "new pattern" and "new instrument" need another key in the song
-  and instrument screens. If the arp is play-mode only, ARP keeps its editor jobs and only means "arp on/off"
-  outside EDIT; then the arp cannot run while editing.
-- The keys: outside EDIT, the first nine white keys mute channels on the scope screen (`oplbox.c:800–802`), so the
-  arp cannot take keys on that screen.
-
-**Open questions**
-
-- The stock arp's full list of settings is not confirmed: the M-VAVE manual's arpeggiator section has not been
-  read yet (the user manual PDF circulates on Amazon's listing). Likely candidates to check against it:
-  direction (up, down, up/down, random, as played), octave range, latch/hold.
-- Which channel the arp plays on while a song plays: a song can use all 9 channels (or 6 + 5 drums in rhythm
-  mode), so there may be none free.
-- Clock: the song's row rate (18.2 / 9.1 / 4.55 rows/s) or a tempo of its own; follow incoming MIDI clock
-  (today all MIDI in is drained and dropped, `oplbox.c:723–725`)?
-- Gate below one row: the player keys notes per row; a gate shorter than a row needs a timer of its own in the
-  ISR, which runs on a tight budget (`ISR_BUDGET_US`, the overload guard at line 189).
+**Open questions.**
+- Which channel does the arp play on while a song plays: a fixed one (9?), one the song leaves silent, or a
+  muted one (`mute_mask`, :275)?
+- Which instrument: the song's (`ed_instr`, :378) or a separate bank (item 5)?
+- Tempo: its own 30–300 BPM as on stock firmware, follow the song's row rate, or follow a MIDI clock (needs
+  Dinghy 0.4's clock in, item 1)?
+- Where do the settings live (pages on the tracker screen, a new view in the `V_*` enum at :661), and are
+  they kept in the settings sector (`set`, :708)?
+- Gate and swing finer than the arp clock's tick cost ISR time; the ISR has a tight budget
+  (`ISR_BUDGET_US`, the overload guard at :189).
 
 ## 4. Save an arpeggio into the tracker as a track
 
-Wanted: record the arp's output as ordinary note rows in a pattern (a bassline generator and similar), so the
-saved song stays a plain `.CMF` that FXDRIVER / SoundFX Macs Opera play.
+A bassline generator and similar: the arp's output is written as ordinary note rows (note, instrument, volume,
+pitch 32) in one column of a pattern, so the saved song is still a plain `.CMF` that FXDRIVER / SoundFX Macs
+Opera plays. No new data in the file.
 
-**Today**: cells are `{note, instr, vol, pitch}` (`macsop.h:27`); `note 4` is key off, `note 1` ends the
-pattern. `macsop_write()` writes any song the model holds, and the editor already writes cells this way
-(`oplbox.c:823–837`).
+**Today.** The cell is `{note, instr, vol, pitch}` (`macsop.h`). A note sounds until a key off (note 4, `==`)
+or the next note in its column. A pattern has 64 rows (row 64 only holds end marks). The format has no effect
+column, no per-pattern tempo and no tempo command. The only timing is the song's speed 1–3: 18.2 / 9.1 / 4.55
+rows per second (`SPR_Q16`, :61; the song screen's K2, :848). Up to 64 patterns and 99 order positions.
 
-**Format limits**
+**Where.** The write goes through the same cell code as the pattern editor (:823–837): a loop that runs the arp
+step function from item 3 offline and writes cells from the cursor down, then continues into new patterns
+(:860) when it runs past row 63.
 
-- Time is rows only. The song has one speed for the whole song, 1–3 = 18.2 / 9.1 / 4.55 rows per second
-  (`macsop.h:38`, `SPR_Q16` at `oplbox.c:61`). There is no effect column and no tempo change.
-- So an arp rate is a whole number of rows. 1/16 = 1 row at speed 1 means a quarter note is 4 rows = 273 BPM.
-  1/8T (a third of a quarter) and 1/32 (an eighth of a quarter) are whole rows together only if a quarter
-  is a multiple of 24 rows (45.5 BPM at speed 1). In practice 1/32 and the triplet rates are tied to the song
-  speed and to how many rows a quarter note gets.
-- Note length (gate) is also whole rows: a key off cell after N rows. A gate shorter than one row cannot be
-  written.
-- 64 rows per pattern (`MACSOP_ROWS`), 64 patterns (`MACSOP_MAX_PATTERNS`), 99 order positions. A long arp
-  spills over patterns.
-- One cell per channel per row: the arp takes one channel of the pattern.
+**Format limits.**
+- Every arp step must be a whole number of rows. With N rows per quarter note, the tempo is
+  60 × rows per second / N. At speed 1: N = 4 (row = 1/16) is 273 BPM; N = 8 (row = 1/32) is 136.5 BPM. At
+  speed 2 the tempos halve, at speed 3 they halve again.
+- 1/32 needs at least 8 rows a quarter. 1/8T needs N divisible by 3. All five rates at once need N = 24:
+  45.5 BPM at speed 1 and slower at the others. In practice, the rate picks the tempo: 1/32 and the triplet
+  rates only work at some song speeds, and a stock tempo (30–300 BPM) is kept only if it matches one of these
+  values.
+- Gate is a key off N × gate rows after the note, rounded to a row. A step of one row cannot have a gate
+  shorter than 100 %.
+- Swing is alternating long and short steps, so it needs at least 2 rows a step and rounds to whole rows.
+- One column is one voice, and the arp is monophonic, so this fits. In rhythm mode only columns 1–6 are
+  melodic.
 
-**Open questions**
+**Open questions.**
+- How long: one pattern, a number of bars, or until the key is released?
+- Write into the cursor's column of the current pattern (overwriting what is there), or always into a new
+  pattern?
+- Should velocity from the keys go into the volume byte, or use `ed_vol`?
+- Does SAVE then need a warning when the song's speed does not give the arp's tempo?
+- Record live while the song plays (needs 2b), or render offline from a held chord and the arp settings?
 
-- Write over an existing channel, or only into empty channels / a new pattern (`BTN_ARP`'s song-screen job
-  already makes new patterns)?
-- Record live while the song plays (needs 2b) or render offline from a held chord and the arp settings?
-- Volume per step: cells carry `vol`, so accents could be written; does the stock arp have accents to copy?
+## 5. Change the instrument while playing (with an arp running too)
 
-## 5. Change the instrument while playing (and while the arp runs)
+**Stock firmware.** PRESETS scrolls through 128 presets and loads each one at once. ALGORITHM picks one of 32
+6-operator algorithms; holding OCT− / OCT+ and turning ALGORITHM transposes −12…+12 semitones.
 
-Wanted, as on the stock firmware: PRESETS scrolls through the instruments, ALGORITHM changes the sound.
+**OPL2.** Two operators a channel, no 4-op algorithms. The per-channel equivalents are the connection bit
+(FM: operator 1 modulates operator 2; or additive) and feedback 0–7, both in register 0xC0 + channel, both
+already fields in `macsop_instr` (`feedback`, `connection`) and rows 25–26 of the instrument screen
+(`ins_field()` :597).
 
-**Today**
+**Options for ALGO.**
+- Connection and feedback as one list: FM with feedback 0…7, then additive with feedback 0…7 (16 steps).
+- Modulator TL (operator 1 `tl`, 0–63): the brightness of an FM sound, the most audible single parameter.
+- Others: operator 1 MULT, the waveforms (`wave` 0–3), the release rates.
 
-- In the tracker editor: ALGO is the volume of the cell and of new notes (`oplbox.c:821–822`), PRESETS is the
-  step after a note, 0–16 (`oplbox.c:811`). In the instrument editor PRESETS picks the instrument
-  (`oplbox.c:872`) and K1 changes the selected parameter, heard at once through `macsop_refresh_instr()`
-  (`oplbox.c:881`). In play mode (not EDIT) neither knob does anything.
-- OPL2 has no 4-operator algorithms. Per channel it has the connection bit (FM: op 1 modulates op 2; or
-  additive: both heard) and feedback 0–7 on op 1. The instrument model already holds both
-  (`macsop_instr.feedback`, `.connection`, `macsop.h:19`; params 25 and 26 in `ins_field()`, line 597).
+**Today.**
+- Outside EDIT, PRESETS and ALGO do nothing (`pre` and `alg` are read at :729 and used only in the editors).
+- On the tracker screen in EDIT: ALGO is the volume of the cell and of new notes (:821), PRESETS is the step
+  after a note, 0–16 (:811).
+- On the instrument screen: PRESETS picks the instrument (:872), and a change heard at once is already there.
+  `macsop_refresh_instr()` (:881) sends the new registers to every channel playing that instrument.
 
-**Options for ALGO** (play mode)
+**How the play-mode mapping would differ from the editor's.** Outside EDIT: PRESETS = which instrument the
+keys / the arp play, ALGO = the sound (one of the options above). In EDIT the two knobs keep their editor
+meaning (volume, step), so the same knob does different things in the two modes. The other choice is to move
+the editor to match play mode and give step and volume to other controls; K1–K4 are taken in the tracker
+editor (column, row, transpose, instrument).
 
-- Step through the 16 combinations of connection × feedback (FM fb 0–7, then ADD fb 0–7).
-- Modulator TL (`op[0].tl`, 0–63): the brightness of an FM sound, the most audible single control.
-- Others to consider: modulator MULT, the wave selects (`wave`, 0–3 on OPL2 when wave select is on).
-
-**How the play-mode mapping differs from the editor's**
-
-- Play mode: PRESETS = instrument (as in the instrument editor), ALGO = sound (connection/feedback or TL).
-- Tracker editor: PRESETS = step, ALGO = volume. Keep that, or move the editor to match play mode and give step
-  and volume to other knobs (K1–K4 are taken by cursor, row, transpose, instrument).
-
-**Open questions**
-
-- Which channel(s) the change applies to while a song plays: the arp's channel, the channel the keys play on,
-  or every channel using that instrument (`macsop_refresh_instr()` already does the last).
-- Is a play-mode change an edit of the song (saved with SAVE) or a temporary change that a song reload drops?
-- The stock firmware's PRESETS / ALGORITHM behaviour while its arp runs has not been checked against the device
-  or its manual.
+**Open questions.**
+- Does turning ALGO while playing change the song's instrument (heard on every channel playing it, and saved
+  with SAVE), or a copy only the keys / arp use, which a song reload drops?
+- What the stock firmware's PRESETS / ALGORITHM do while its arp runs has not been checked on the device.
+- PRESETS goes through the song's instruments (`n_instr`, up to 64, often under 10), or a fixed bank, e.g.
+  every instrument of the 18 built-in songs?
+- Keep stock's hold OCT−/OCT+ + ALGORITHM for transpose? Outside EDIT, OCT−/OCT+ are previous / next song
+  (:756), so holding them would also change the song.
+- Show the change on screen like stock (the preset list, the algorithm diagram): a line in the status area
+  (`say()`, :385) or a new view?
