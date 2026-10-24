@@ -1,5 +1,18 @@
 # Unreleased
 
+- Undo: ENV in EDIT takes back the last edit on the tracker, song and instrument screens (cells, order list,
+  patterns and instruments added, speed, rhythm, instrument fields and names). A log of what the song held
+  before each edit, 32 steps, oldest dropped; an insert or delete in the order list keeps the whole list
+  (198 bytes). A knob turned on and on within half a second is one step. No redo. A song change clears it;
+  SAVE does not, and the log is not saved.
+- Live recording: REC in EDIT arms it (LED, `REC` in the status line). While the song plays, a key writes its
+  note into the cursor's column at the player's row, rounded to the nearest row (past half a row goes into the
+  next one), and sounds. Key-up writes nothing. Each recorded note is one undo step. REC outside EDIT is
+  still the loop-mode toggle.
+- `tests/run_host.sh` also runs `tests/script_undo.txt` and `tests/script_rec.txt`: the host build checks pattern
+  cells and the order list in memory (new script commands `save`, `same`, `differs`, `note`, `empty`) and exits 1 when a check
+  fails. Not run on hardware: the firmware build needs the JieLi toolchain, which is not on this machine.
+
 - Battery icon at the top right of every screen: 3 bars from ADC ch3, read once a second and smoothed, with a
   little hysteresis so it does not flicker; red outline when empty. The thresholds are raw counts (531 / 561 /
   591, Felucca's and SLOOP's), not volts, and not yet checked on hardware. GLO outside the editor shows the

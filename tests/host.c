@@ -89,11 +89,16 @@ static int midi_get(uint8_t *st, uint8_t *d1, uint8_t *d2)
 static void midi_send(uint32_t st, uint32_t d1, uint32_t d2) { printf("%6u ms  MIDI out %02X %u %u\n", fm1_ms, st, d1, d2); }
 
 static void app_audio(int32_t *out, uint32_t n);
+static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col);   /* the app: a pattern cell, whole */
 static void app_main(void);
 
 /* the script: at t ms, keys down (bit k = key k, 0 = F3), a button edge, a MIDI message. A script file (the second
- * argument) replaces it, a line each: "T keys MASK" (hex or decimal), "T btn ID", "T midi ST D1 D2", "T end" */
-typedef struct { uint32_t t, keys; int btn; uint8_t st, d1, d2; int enc, clicks; } host_ev_t;
+ * argument) replaces it, a line each: "T keys MASK" (hex or decimal), "T btn ID", "T enc ID CLICKS", "T midi ST D1 D2",
+ * "T end", and checks on the pattern cell at (order position O, row R, column C), which make the run exit 1 when they fail:
+ * "T save O R C" (remember the cell), "T same O R C" (it is the remembered one), "T differs O R C" (it is not),
+ * "T note O R C N" (its note is N), "T empty O R C" (its note is 0) */
+typedef struct { uint32_t t, keys; int btn; uint8_t st, d1, d2; int enc, clicks; int chk; uint32_t o, r, c, v; } host_ev_t;
+enum { CHK_SAVE = 1, CHK_SAME, CHK_DIFFERS, CHK_NOTE, CHK_EMPTY };
 static const host_ev_t SCRIPT0[] = {
     {200, 1u << 7, -1, 0, 0, 0},                                /* C4 */
     {700, 1u << 7 | 1u << 11 | 1u << 14, -1, 0, 0, 0},          /* + E4 G4: a chord */
@@ -105,6 +110,7 @@ static const host_ev_t SCRIPT0[] = {
     {3400, 0, -1, 0, 0, 0},
 };
 static const host_ev_t *script = SCRIPT0;
+static uint32_t host_saved, host_failed;
 static uint32_t script_n = sizeof SCRIPT0 / sizeof SCRIPT0[0], end_ms = 6500, frame_fps;
 static const uint32_t SHOT[] = {3000, 9000, 12500};
 
@@ -116,7 +122,7 @@ static void read_script(const char *path)
     uint32_t n = 0;
     if (!f) { perror(path); exit(1); }
     while (fgets(line, sizeof line, f) && n < 4096u) {
-        host_ev_t e = {0, 0, -1, 0, 0, 0, -1, 0};
+        host_ev_t e = {0, 0, -1, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0};
         unsigned a = 0, b = 0, c = 0;
         if (line[0] == '#' || sscanf(line, "%u %15s", &e.t, what) != 2) continue;
         if (!strcmp(what, "end")) { end_ms = e.t; continue; }
@@ -124,6 +130,11 @@ static void read_script(const char *path)
         else if (!strcmp(what, "btn")) { sscanf(line, "%*u %*s %d", &e.btn); }
         else if (!strcmp(what, "enc")) { sscanf(line, "%*u %*s %d %d", &e.enc, &e.clicks); }
         else if (!strcmp(what, "midi")) { sscanf(line, "%*u %*s %i %u %u", (int *)&a, &b, &c); e.st = (uint8_t)a; e.d1 = (uint8_t)b; e.d2 = (uint8_t)c; }
+        else if (!strcmp(what, "save") || !strcmp(what, "same") || !strcmp(what, "differs") || !strcmp(what, "note") || !strcmp(what, "empty")) {
+            e.chk = !strcmp(what, "save") ? CHK_SAVE : !strcmp(what, "same") ? CHK_SAME : !strcmp(what, "differs") ? CHK_DIFFERS
+                  : !strcmp(what, "note") ? CHK_NOTE : CHK_EMPTY;
+            sscanf(line, "%*u %*s %u %u %u %u", &e.o, &e.r, &e.c, &e.v);
+        }
         else continue;
         ev[n++] = e;
     }
@@ -179,7 +190,15 @@ static void platform_poll(void)                 /* one call = one millisecond */
     static int32_t blk[2u * HALF_FRAMES];
     fm1_ms++;
     while (step < script_n && script[step].t <= fm1_ms) {
-        if (script[step].st) {
+        if (script[step].chk) {
+            const host_ev_t *e = &script[step];
+            uint32_t u = host_cell(e->o, e->r, e->c);
+            int ok = e->chk == CHK_SAVE || (e->chk == CHK_SAME ? u == host_saved : e->chk == CHK_DIFFERS ? u != host_saved
+                   : e->chk == CHK_NOTE ? (u & 0xFFu) == e->v : (u & 0xFFu) == 0);
+            if (e->chk == CHK_SAVE) host_saved = u;
+            printf("%6u ms  cell (%u,%u,%u) = %08X: %s\n", fm1_ms, e->o, e->r, e->c, u, ok ? "ok" : "FAIL");
+            host_failed += !ok;
+        } else if (script[step].st) {
             mq[mq_w % 64u][0] = script[step].st; mq[mq_w % 64u][1] = script[step].d1; mq[mq_w % 64u][2] = script[step].d2;
             mq_w++;
         } else if (script[step].btn >= 0)
@@ -213,7 +232,7 @@ static void platform_poll(void)                 /* one call = one millisecond */
         write_ppm(SHOT[shot++]);
     if (fm1_ms >= end_ms) {
         write_wav();
-        exit(0);
+        exit(host_failed ? 1 : 0);
     }
 }
 

@@ -49,7 +49,14 @@ tracker → song → instrument screens. Everything edits live: a change is hear
 | **GLO** | end the pattern at this row (`EN`) / undo that |
 | **PLAY** | play from the cursor / pause |
 | **HOME** | cursor to row 0 |
+| **ENV** | undo the last edit, in any editing screen (32 steps, no redo; a song change clears them). A knob turned on and on is one step |
+| **REC** | arm recording (`REC` in the status line, LED lit); press again to disarm |
 | **SAVE** | save the song to its flash slot (a built-in song goes to the first empty slot; the status line says which) |
+
+**Recording while the song plays.** Arm REC, press PLAY, and play the keys: each note goes into the cursor's
+column at the row the song is on (the row that just played, or the next one when the key comes more than half a
+row after it begins), and sounds. Letting go of a key writes nothing, so the note rings until the next note in
+that column. Each recorded note is one ENV step. With REC armed and the song paused, keys write at the cursor as usual.
 
 | song screen (SEQ once) | |
 | --- | --- |

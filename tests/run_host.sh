@@ -8,6 +8,9 @@ mkdir -p build/host
 rm -f build/host/oplbox-*.ppm build/host/oplbox-*.png build/host/oplbox.wav
 cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -DDBOPL2_SCOPE_N=512 -Ifirmware/src -Ifirmware/gen -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c
 build/host/oplbox build/host/oplbox
+# the editor's undo and live recording, checked against the song in memory: each script exits 1 when a check fails
+build/host/oplbox build/host/undo tests/script_undo.txt
+build/host/oplbox build/host/rec tests/script_rec.txt
 python3 - <<'PY'
 import array, sys, wave
 from pathlib import Path
