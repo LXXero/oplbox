@@ -4,7 +4,7 @@
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p build/host
-cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -Ifirmware/src -Ifirmware/gen -o build/host/oplbox firmware/src/oplbox.c
+cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -DDBOPL2_SCOPE_N=512 -Ifirmware/src -Ifirmware/gen -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c
 build/host/oplbox build/host/oplbox
 python3 - <<'PY'
 from pathlib import Path

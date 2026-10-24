@@ -10,18 +10,31 @@
  * a block of samples runs operator by operator without the chip's 36-slot pipeline. Not
  * cycle-exact, but it is the sound of DOSBox, which is where most people heard these songs. */
 #include <stdint.h>
+#include "dbopl2.h"
 
-#ifndef DBOPL2_RAMDATA
-#define DBOPL2_RAMDATA                       /* the wave and volume tables: where they live */
-#endif
-#ifndef DBOPL2_RAMCODE
-#define DBOPL2_RAMCODE                       /* the per-sample code: where it lives */
+/* Its own object in the firmware (tools/build.py): this file is compiled at -O2, the app and the platform at
+ * -Os. The USB stack misbehaves at -O2 (USB-MIDI IN babbles on the device, dinghy tools/build.py), so the two
+ * are not built together any more (0.4.2). DBOPL2_ON_DEVICE puts the tables and the sample loop in RAM. */
+#ifdef DBOPL2_ON_DEVICE
+#define DBOPL2_RAMDATA __attribute__((section(".data.dbopl2")))      /* wave and volume tables in RAM, not flash */
+#define DBOPL2_RAMCODE __attribute__((section(".ram_code.dbopl2")))  /* the sample loop in RAM (app.ld, build.py) */
+#else
+#define DBOPL2_RAMDATA
+#define DBOPL2_RAMCODE
 #endif
 #include "dbopl2_tables.h"
 
 /* taps for an oscilloscope view: a channel's own samples (index 0..8; the rhythm block taps 6 = bass drum,
- * 7 = hi-hat + snare, 8 = tom + cymbal) before they are summed. No-ops unless the app defines them. */
-#ifndef DBOPL2_TAP
+ * 7 = hi-hat + snare, 8 = tom + cymbal) before they are summed, kept here with the generator
+ * (DBOPL2_SCOPE_N samples per channel, dbopl2.h). No-ops without DBOPL2_SCOPE_N. */
+#ifdef DBOPL2_SCOPE_N
+volatile uint32_t dbopl2_scope_on;
+int16_t dbopl2_scope[9][DBOPL2_SCOPE_N];
+uint32_t dbopl2_scope_w;
+#define DBOPL2_TAP(ch, i, s) do { if (dbopl2_scope_on) dbopl2_scope[ch][(dbopl2_scope_w + (i)) & (DBOPL2_SCOPE_N - 1u)] = (int16_t)(s); } while (0)
+#define DBOPL2_TAP_ZERO(ch, n) do { if (dbopl2_scope_on) { uint32_t k_; for (k_ = 0; k_ < (n); k_++) dbopl2_scope[ch][(dbopl2_scope_w + k_) & (DBOPL2_SCOPE_N - 1u)] = 0; } } while (0)
+#define DBOPL2_TAP_ADVANCE(n) (dbopl2_scope_w += (n))
+#else
 #define DBOPL2_TAP(ch, i, s) ((void)0)       /* sample i of this block, channel ch */
 #define DBOPL2_TAP_ZERO(ch, n) ((void)0)     /* the channel was skipped as silent for n samples */
 #define DBOPL2_TAP_ADVANCE(n) ((void)0)      /* a block of n samples is done */
@@ -46,35 +59,6 @@
 enum { ST_OFF, ST_RELEASE, ST_SUSTAIN, ST_DECAY, ST_ATTACK };
 enum { MASK_KSR = 0x10, MASK_SUSTAIN = 0x20, MASK_VIBRATO = 0x40, MASK_TREMOLO = 0x80 };
 enum { SM_FM, SM_AM, SM_PERC };
-
-typedef struct {
-    const int16_t *waveBase;                 /* waveform: a window of WaveTable */
-    uint32_t waveMask, waveStart;
-    uint32_t waveIndex, waveAdd, waveCurrent;
-    uint32_t chanData, freqMul, vibrato;
-    int32_t sustainLevel, totalLevel;
-    uint32_t currentLevel;
-    int32_t volume;
-    uint32_t attackAdd, decayAdd, releaseAdd, rateIndex;
-    uint8_t rateZero, keyOn, reg20, reg40, reg60, reg80, regE0, state, tremoloMask, vibStrength, ksr;
-} dbop;
-
-typedef struct {
-    dbop op[2];
-    uint32_t chanData;
-    int32_t old[2];
-    uint8_t mode, feedback, regB0, regC0, perc;   /* perc: channels 6-8, whose C0 is frozen in rhythm mode */
-} dbchan;
-
-typedef struct {
-    uint32_t lfoCounter, noiseCounter, noiseValue;
-    dbchan chan[9];
-    uint8_t reg08, regBD, vibratoIndex, tremoloIndex;
-    int8_t vibratoSign;
-    uint8_t vibratoShift, tremoloValue, vibratoStrength, tremoloStrength, waveFormMask;
-    uint32_t mute;                           /* bit n: channel n left out of the mix (6, 7, 8 in rhythm mode:
-                                              * bass drum, hi-hat + snare, tom + cymbal); the chip runs as before */
-} dbopl2;
 
 static const uint16_t WaveBaseTable[8]  = { 0, 512, 512, 2048, 2560, 3072, 256, 1024 };
 static const uint16_t WaveMaskTable[8]  = { 1023, 1023, 511, 511, 1023, 1023, 512, 1023 };
@@ -299,7 +283,7 @@ static void chip_writeBD(dbopl2 *chip, uint8_t val)
     }
 }
 
-static void dbopl2_write(dbopl2 *chip, uint32_t reg, uint8_t val)
+void dbopl2_write(dbopl2 *chip, uint32_t reg, uint8_t val)
 {
     uint32_t hi = reg & 0xf0, k;
     dbop *o;
@@ -325,7 +309,7 @@ static void dbopl2_write(dbopl2 *chip, uint32_t reg, uint8_t val)
     }
 }
 
-static void dbopl2_reset(dbopl2 *chip)
+void dbopl2_reset(dbopl2 *chip)
 {
     static const uint8_t LO_CH[6] = { 0, 1, 2, 0, 1, 2 }, LO_OP[6] = { 0, 0, 0, 1, 1, 1 };
     uint32_t i;
@@ -543,7 +527,7 @@ static DBOPL2_RAMCODE __attribute__((noinline)) dbchan *ch_block_perc(dbchan *c,
 
 /* total mono samples ADDED into output (the caller zeroes it: this code lives in RAM on the FM-1 and may not
  * call flash, which a zeroing loop can turn into); dbopl's GenerateBlock2 otherwise */
-static DBOPL2_RAMCODE void dbopl2_generate(dbopl2 *chip, uint32_t total, int32_t *output)
+DBOPL2_RAMCODE void dbopl2_generate(dbopl2 *chip, uint32_t total, int32_t *output)
 {
     while (total > 0) {
         uint32_t samples = chip_forward_lfo(chip, total);

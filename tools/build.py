@@ -37,7 +37,8 @@ APP_SLOT = fm1pkg_make.APP_SLOT
 LOADER_LOAD = 0x01C0A800
 LOADER_NAME = b"usb_hid_ota.bin"    # the file name the SPL looks for
 DOCKER_IMAGE = os.environ.get("JIELI_DOCKER_IMAGE", "debian:bookworm-slim")
-CFLAGS = ["-Os", "-ffunction-sections", "-fno-builtin", "-Wall", "-Wno-unused-function"]
+CFLAGS = ["-Os", "-ffunction-sections", "-fno-builtin", "-Wall", "-Wno-unused-function"]   # keep -Os for the app: see build_app
+SCOPE_N = 512                       # the scope screen's taps per channel (dbopl2.h, DBOPL2_SCOPE_N)
 LINE = re.compile(r"^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2} )+)\s*\t(.*)$")
 
 # SDK files of AC79NN_SDK_V1.2.1_2023-12-13 (the tested version)
@@ -151,15 +152,21 @@ def build_loader():
 # ---- app
 
 def build_app():
-    flags = [*[f for f in CFLAGS if f != "-Os"], "-O2", "-Ifirmware/hal", "-Ifirmware/src", "-Ifirmware/gen", f'-DFELUCCA_ID="{PRODUCT}"', f'-DAPP_VER="{VERSION or "0.0"}"']   # the app at -O2: the OPL core is the budget
+    inc = ["-Ifirmware/hal", "-Ifirmware/src", "-Ifirmware/gen"]
+    # the app (platform included) at -Os like Dinghy: at -O2 the USB stack babbles on the device (USB-MIDI IN,
+    # dinghy tools/build.py; OPLBOX 0.4.1 dropped off USB on every SysEx). The OPL core, the budget, is its own
+    # object at -O2.
+    flags = [*CFLAGS, *inc, f'-DFELUCCA_ID="{PRODUCT}"', f'-DAPP_VER="{VERSION or "0.0"}"', f"-DDBOPL2_SCOPE_N={SCOPE_N}"]
+    core = [*[f for f in CFLAGS if f != "-Os"], "-O2", *inc, "-DDBOPL2_ON_DEVICE", f"-DDBOPL2_SCOPE_N={SCOPE_N}"]
     cmds = [("cc", "-c", FW / "crt0.S", "-o", OUT / "crt0.o"),
             ("cc", "-c", FW / "hal" / "fm1_vec.S", "-o", OUT / "fm1_vec.o"),
             ("cc", "-c", FW / "hal" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
-            ("cc", *flags, "-c", FW / "src" / "oplbox.c", "-o", OUT / "oplbox.o")]
+            ("cc", *flags, "-c", FW / "src" / "oplbox.c", "-o", OUT / "oplbox.o"),
+            ("cc", *core, "-c", FW / "src" / "dbopl2.c", "-o", OUT / "dbopl2.o")]
     tc_all(*cmds)
     elf = OUT / "oplbox.elf"
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o",
-       OUT / "fm1_isr.o", OUT / "oplbox.o", "-o", elf)
+       OUT / "fm1_isr.o", OUT / "oplbox.o", OUT / "dbopl2.o", "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin", "ramcode.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),

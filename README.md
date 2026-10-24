@@ -105,7 +105,8 @@ quiet moment the main loop sees the press, pauses, and the installer gets its an
   the 18 files byte for byte and hashes the register streams.
 - `firmware/src/dbopl2.c` — DOSBox's `dbopl` (GPL-2+) as one OPL2: 9 channels, 18 operators, no OPL3 modes,
   no floating point — every table the original computes with floats is generated for 49716 Hz by
-  `host/dbopl_gen.c` into `dbopl2_tables.h`. The sample loop is linked into RAM (`.ram_code`, app.ld) and the
+  `host/dbopl_gen.c` into `dbopl2_tables.h`. Its own object at -O2 (the app and the platform build at -Os, see
+  0.4.2 in CHANGES.md). The sample loop is linked into RAM (`.ram_code`, app.ld) and the
   wave / volume tables into `.data`, so nothing hot runs out of the SPI flash. One fix over the r3635 code the
   tables come from: the noise LFSR counter is masked as later DOSBox does (r3635's mask let it run hundreds of
   steps a sample, which is why rhythm-mode songs cost ten times the others). `host/dbcmp.c` runs it in lockstep

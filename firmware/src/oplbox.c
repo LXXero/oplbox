@@ -122,19 +122,13 @@ static int32_t next_native(void)
     return opl2_generate(&chip);
 }
 #else
-#ifndef DINGHY_HOST
-#define DBOPL2_RAMDATA __attribute__((section(".data.dbopl2")))      /* wave and volume tables in RAM, not flash */
-#define DBOPL2_RAMCODE __attribute__((section(".ram_code.dbopl2")))  /* the sample loop in RAM (app.ld, build.py) */
-#endif
-/* the scope screen's taps: each channel's last SCOPE_N native samples, written by the ISR when the screen is up */
-#define SCOPE_N 512u
-static volatile uint32_t scope_on;
-static int16_t scope[9][SCOPE_N];
-static uint32_t scope_w;
-#define DBOPL2_TAP(ch, i, s) do { if (scope_on) scope[ch][(scope_w + (i)) & (SCOPE_N - 1u)] = (int16_t)(s); } while (0)
-#define DBOPL2_TAP_ZERO(ch, n) do { if (scope_on) { uint32_t k_; for (k_ = 0; k_ < (n); k_++) scope[ch][(scope_w + k_) & (SCOPE_N - 1u)] = 0; } } while (0)
-#define DBOPL2_TAP_ADVANCE(n) (scope_w += (n))
-#include "dbopl2.c"
+/* the core is its own object (tools/build.py, tests/run_host.sh: dbopl2.c at -O2 with DBOPL2_SCOPE_N; the app,
+ * the USB stack included, at -Os). The scope screen reads the taps the generator keeps (dbopl2.h). */
+#include "dbopl2.h"
+#define SCOPE_N DBOPL2_SCOPE_N
+#define scope_on dbopl2_scope_on
+#define scope dbopl2_scope
+#define scope_w dbopl2_scope_w
 static dbopl2 chip;
 #define NAT_CHUNK 128u                        /* native samples generated per block (a row is >= 2731) */
 static int32_t nat[NAT_CHUNK];

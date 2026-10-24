@@ -1,3 +1,13 @@
+# OPLBOX 0.4.2 (identity FM-1_964)
+
+- USB: a SysEx from the computer (the installer's identity query, `fm1_install.py --info`, the first stage of an
+  install) dropped the FM-1 off USB: a burst of babble, a disconnect, a re-enumeration a second later; plain MIDI
+  did not. The app was built at -O2 with the platform inside it, and the USB stack babbles at -O2 (Dinghy keeps
+  -Os for that reason, its tools/build.py). Now the app and the platform build at -Os like Dinghy and the OPL
+  core (`dbopl2.c`) is its own object at -O2, with its own header; the scope taps moved with it. Installs over
+  a running OPLBOX no longer need the USB rescue.
+- `tests/run_host.sh` compiles the core separately too.
+
 # OPLBOX 0.4.1 (identity FM-1_964)
 
 - USB rescue: the screen's pins are set up before the OCT- check at power-on. On some boards no key reads as
