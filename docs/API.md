@@ -153,7 +153,39 @@ USB-MIDI, class compliant, cable 0.
 | `midi_send(status, d1, d2)` | send one message (from the main loop only) |
 
 `status` includes the channel: `0x90` note on channel 1, `0x93` channel 4; a note on with velocity 0 is a
-note off. SysEx is the platform's (the updater): it does not reach the app.
+note off. SysEx does not reach `midi_get`: the platform takes it (the updater's keys and frames). A frame in the
+updater's framing whose command is not the updater's goes to the app's `app_usb_cmd(d, n)` in the main loop
+(`d` decoded, the command `d[2]`, the body from `d + 6`); OPLBOX's are the song slots below.
+
+## Song slots over SysEx
+
+`tools/fm1_slot.py pull SLOT FILE` and `push SLOT FILE` copy a slot's `.CMF` to and from a computer
+(`firmware/src/slot_sysex.c`). The messages use the updater's framing (`ota.c`), 7-bit packed:
+`F0 pack7(00 59 cmd len24 body ~sum(body)) F7`, numbers little-endian.
+
+| cmd | from the computer | from the FM-1 |
+| --- | --- | --- |
+| `0x60` pull | `slot off24` | `slot status total24 off24 data`: up to 512 bytes of the file from `off` |
+| `0x61` push | `slot len24 crc32` (CRC-32 as zlib) | first the updater's read requests (`0x30`, the file at address 0, 512 bytes a request; answer them as an update is answered), then `slot status` |
+
+`slot` is 0..8 for the jukebox's SLOT 1..9; a reply to a bad slot number says `0x7F`. The file is the song's
+bytes; the slot's 16-byte header stays on the FM-1, which writes it. A push holds the main loop (the screen) until
+it is done; the sound goes on until the slot is written, which stalls it as SAVE does.
+
+| status | |
+| --- | --- |
+| 0 | done |
+| 1 | bad request: slot, length or offset |
+| 2 | pull: the slot is empty |
+| 3 | push: bigger than a slot (32 KiB − 16 = 32752 bytes) |
+| 4 | push: the slot's song is in the player (playing or paused, its edits are in RAM): pick another song first |
+| 5 | push: the transfer failed (no answer within 3 × 5 s for a request, 30 s for the whole file, or a CRC mismatch) |
+| 6 | push: not a `.CMF` the player takes (`macsop_check`, the same rules as `macsop_parse`) |
+| 7 | push: the flash write failed |
+
+The command bytes are none of the stock updater's (`0x11` handshake, `0x30` read) or fm1-base's (`0x41`-`0x43`
+backup and restore, `0x50`-`0x54` the screen mirror). The other SysEx in the family has its own header and never
+reaches here: the stock keys `F0 22 24 35 7D/7F F7` and Felucca's editor `F0 7D 46 4C`.
 
 ## Settings
 

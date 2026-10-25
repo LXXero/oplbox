@@ -16,7 +16,7 @@
 typedef struct { uint8_t ksl, mult, ar, sl, eg, dr, rr, tl, am, vib, ksr, wave; } macsop_slot;
 typedef struct {
     macsop_slot op[2];
-    uint8_t  feedback, connection;     /* 0..7; 0 = FM (op 1 modulates op 2), 1 = additive */
+    uint8_t  feedback, connection;     /* 0..7; 1 = FM (op 1 modulates op 2), 0 = additive: C0 bit 0 is 1 - connection */
     uint16_t spare15, spare25;         /* words 15 and 25 of the record: unused, kept as read */
     char     name[14];                 /* 13 bytes as in the file (NUL padded), then a NUL */
 } macsop_instr;
@@ -54,6 +54,7 @@ typedef struct {
 
 /* ---- the song */
 int      macsop_parse(macsop_song *s, const uint8_t *blob, uint32_t size);   /* 0, or < 0: not a CMF / too big */
+int      macsop_check(const uint8_t *blob, uint32_t size);                   /* macsop_parse's answer, no song needed */
 uint32_t macsop_write(const macsop_song *s, uint8_t *out, uint32_t cap);     /* bytes written, 0 if cap is too small */
 uint32_t macsop_size(const macsop_song *s);                                  /* bytes macsop_write needs */
 void     macsop_song_init(macsop_song *s);                                   /* an empty song: one pattern, one order */
@@ -69,6 +70,8 @@ int      macsop_load(macsop *m, macsop_song *s, const uint8_t *blob, uint32_t si
                      void (*write)(void *, uint16_t, uint8_t), void *ctx);
 /* key a note on a channel by hand (the editor's audition): instr 1..n, vol 0..127; note 0 = off */
 void     macsop_play_note(macsop *m, int ch, int note, int instr, int vol);
+/* the same with an instrument that need not be in the song (a copy the caller changes): its registers are sent each time */
+void     macsop_play_patch(macsop *m, int ch, int note, const macsop_instr *in, int vol);
 /* instrument i (0..) was edited: channels playing it get the new registers */
 void     macsop_refresh_instr(macsop *m, int i);
 

@@ -403,3 +403,19 @@ present in `/tmp/wifimap.ix6m` only for read-only `nm`/section inspection.
 from the exact upstream file; historical Linux v2.6.32/v2.6.37 Ralink and
 WEXT bodies were not checked. These limits are why the code-copy and
 license-provenance verdicts remain UNCHECKED rather than inferred from names.
+
+## Follow-up (2026-10-25)
+
+`WIFI.md` was corrected for the five WRONG rows: the `wext-core.c.o` count (7), the `wl_rf_common.a` provenance
+(new section "What `wl_rf_common.a` carries": 8 of 13 members clean, 5 with Ralink and Linux header lineage), the
+GPL source wording (GPLv3 section 6), the `MACRegTable` attribution, and the `wl_rf_common.a` total (16,017 B,
+recounted from the same `wifi.elf`). Three UNCHECKED rows moved:
+
+- Every one of the 22 table addresses is named in `rt2800.h`: confirmed (v6.6).
+- The 22 `MACRegTable` values: all 22 equal Ralink's `MACRegTable` in Linux v2.6.32 staging `rtmp_init.c`
+  (RT2870 build). Whether the MAC is literally an RT2800-family chip stays unchecked.
+- The WEXT lineage: all 7 function names are in Linux `wext-core.c` v2.6.33 and v2.6.37; the bodies were not
+  compared, so copying stays unchecked.
+
+The licence-compatibility verdicts stay evidence, not a legal opinion. `WIFI.md` now uses `wl_rf_common.a` as a
+source of facts only; "What stages 1 and 3 may take from `wl_rf_common.a`" lists the limits.
