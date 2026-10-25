@@ -15,6 +15,8 @@
  *   GLO            the battery's raw ADC count in the status line, for a moment (the icon at the top right)
  *   scope: the first nine white keys (F3..G4) mute / unmute channels 1..9 (key LED = muted)
  *   ARP            the arpeggiator on (its settings open) / off  LFO   the arp's settings: open, or the next page
+ *   PRESETS        the instrument the keys / the arp play (one of the song's; the editor's I too)
+ *   ALGO           its connection and feedback, FM 0-7 then additive 0-7, on a copy the song never hears (see below)
  * Arpeggiator (ARP on, outside EDIT): held keys play an arpeggio instead of nothing, on a channel the song leaves
  * free (see "the arpeggiator"); not from the scope screen, whose keys stay the mutes; EDIT gives the keys back
  * to the editor. Its settings screen (LFO turns the page; SEQ / FX leave it, the arp plays on):
@@ -77,6 +79,8 @@ static uint32_t arp_acc;                      /* the arpeggiator's clock: native
 static void tick_arp(void);                   /* (the arpeggiator, below) */
 static void arp_follow(void);
 static void arp_drop(void);
+#define LIVE_OWN 0xFFu
+static volatile uint32_t live_alg = LIVE_OWN; /* ALGO's copy (the keys' instrument, below): its step 0-15, or none */
 #ifdef DINGHY_HOST
 static uint32_t host_nat;                     /* native samples generated, for tests/host.c's arp checks */
 #endif
@@ -93,6 +97,7 @@ static volatile uint32_t wq_w, wq_r;
  * (A0 | B0's block and F-number bits << 8) and the time of the last key-on, the gap before it, and how many */
 static uint8_t host_a0[9], host_b0[9];
 static uint32_t host_kon_n[9], host_kon_at[9], host_kon_gap[9], host_kon_pitch[9];
+static uint8_t host_c0[9];                    /* C0 + channel as last written: feedback << 1 | C0 bit 0 (1: additive) */
 #endif
 static void opl_write(void *ctx, uint16_t reg, uint8_t val)
 {
@@ -105,6 +110,7 @@ static void opl_write(void *ctx, uint16_t reg, uint8_t val)
     irq_restore(f);
 #ifdef DINGHY_HOST
     if (reg >= 0xA0u && reg <= 0xA8u) host_a0[reg - 0xA0u] = val;
+    if (reg >= 0xC0u && reg <= 0xC8u) host_c0[reg - 0xC0u] = val;
     if (reg >= 0xB0u && reg <= 0xB8u) {
         i = reg - 0xB0u;
         if ((val & 0x20u) && !(host_b0[i] & 0x20u)) {
@@ -336,6 +342,7 @@ static void load_song(uint32_t i)             /* with the ISR off the chip (chip
 {
     cur = i;
     undo_cnt = 0;                             /* a new song: the log is about the old one */
+    live_alg = LIVE_OWN;                      /* and ALGO's copy is of the old one's instrument */
     chip_reset();
     arp_drop();                               /* the reset took the arp's note: it picks a channel again */
     chip_mute(mute_mask);                     /* the reset cleared the chip's copy: a restart keeps the mutes */
@@ -484,6 +491,54 @@ static uint32_t song_pos;                     /* the song editor's cursor: order
 static const char *msg; static uint32_t msg_until;   /* a line in the status area, for a moment */
 
 static void say(const char *m) { msg = m; msg_until = fm1_ms + 2000u; }
+
+/* ---- the instrument the keys and the arp play outside EDIT (TODO.md 5). PRESETS picks one of the song's: ed_instr,
+ * the editor's too, so what was played is what the editor writes. ALGO steps through connection and feedback as one
+ * list, FM with feedback 0-7 (steps 0-7), then additive with feedback 0-7 (8-15), on a copy only the keys and the arp
+ * play: the song keeps its own (its channels, SAVE). Loading a song drops the copy, and so does another instrument
+ * (PRESETS, or K4 in the editor); edits to the instrument in the editor reach the copy when EDIT ends. */
+static uint32_t live_src;                     /* the instrument (1..) the copy is of */
+static macsop_instr live_patch;               /* the copy: the ISR plays it, main writes it with the ISR held off */
+
+static uint32_t live_step_of(const macsop_instr *in)   /* the list's step for an instrument: the file's 1 is FM */
+{
+    return ((in->connection & 1u) ? 0u : 8u) + (in->feedback & 7u);
+}
+
+static void live_set(uint32_t step)           /* the copy of ed_instr (1..n_instr) at this step, or none (LIVE_OWN) */
+{
+    uint32_t f = irq_save();
+    if (step != LIVE_OWN) {
+        live_patch = song.instr[ed_instr - 1u];
+        live_patch.connection = step < 8u ? 1u : 0u; live_patch.feedback = (uint8_t)(step & 7u);
+    }
+    live_alg = step; live_src = ed_instr;
+    irq_restore(f);
+}
+
+static void live_note(uint32_t ch, uint32_t note, uint32_t vol)   /* (ISR) a note in the keys' instrument */
+{
+    if (live_alg != LIVE_OWN) macsop_play_patch(&player, (int)ch, (int)note, &live_patch, (int)vol);
+    else macsop_play_note(&player, (int)ch, (int)note, (int)(ed_instr <= song.n_instr ? ed_instr : 1u), (int)vol);
+}
+
+static void live_say(void)                    /* "I03 BRASS", or with a copy "I03 FM FB 5" / "I03 ADDITIVE FB 5" */
+{
+    static char m[24];
+    const char *nm = song.instr[ed_instr - 1u].name;
+    uint32_t i, n;
+    char *p = cat(m, "I");
+    p = catn(p, ed_instr, 2); *p++ = ' ';
+    if (live_alg == LIVE_OWN) {
+        for (n = 13u; n && (nm[n - 1u] == ' ' || !nm[n - 1u]); n--) { }
+        for (i = 0; i < n; i++) *p++ = nm[i] >= ' ' && nm[i] <= '~' ? nm[i] : '?';
+        *p = 0;
+    } else {
+        p = cat(p, live_alg < 8u ? "FM FB " : "ADDITIVE FB ");
+        catn(p, live_alg & 7u, 1);
+    }
+    say(m);
+}
 
 static void draw_status(int play, int loop_all)
 {
@@ -905,8 +960,8 @@ static void audition(int ch, uint32_t note, uint32_t instr)   /* a key held: tha
  * melodic one (6 in rhythm mode, 9 otherwise; the rhythm-mode drums, 7-9, never). With no song playing, the highest
  * one not muted. While the arp has a channel the player leaves that column alone (player.skip), and a muted
  * channel is let back into the mix for the arp. Picked again when the pattern changes and when playback starts
- * (tick_row -> arp_follow), given back when the notes stop. The instrument is the editor's (ed_instr), the volume
- * ed_vol. Settings in the settings sector; whether the arp is on is not kept. */
+ * (tick_row -> arp_follow), given back when the notes stop. The instrument is the keys' (live_note: ed_instr, or
+ * ALGO's copy of it), the volume ed_vol. Settings in the settings sector; whether the arp is on is not kept. */
 enum { ARP_UP, ARP_DOWN, ARP_INCL, ARP_EXCL, ARP_RAND, ARP_ORDER, ARP_REPEAT, ARP_MODES };
 #define ARP_NONE 0xFFu
 #define ARP_MAXN 27u                          /* every key at once */
@@ -1009,7 +1064,7 @@ static void tick_arp(void)                    /* (ISR) the arp's next event is d
     if (arp_ch == ARP_NONE) arp_move();
     s = arp_pos++;
     note = arp_note(s);
-    macsop_play_note(&player, (int)arp_ch, (int)note, (int)(ed_instr <= song.n_instr ? ed_instr : 1u), (int)ed_vol);
+    live_note(arp_ch, note, ed_vol);
 #ifdef DINGHY_HOST
     host_arp_gap = host_nat - host_arp_at; host_arp_at = host_nat;
     host_arp_last[host_arp_steps++ & 7u] = note | arp_ch << 8;
@@ -1240,6 +1295,20 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
         default: return chip.mute;
 #endif
         }
+    if (row == 92u) return col < 9u ? host_c0[col] : 0;   /* the keys' instrument (TODO 5): channel col's C0 */
+    if (row == 90u) return (uint32_t)macsop_channel_instr_no(&player, (int)col);   /* its instrument 1.. (0: not the song's) */
+    if (row == 91u) {                         /* col 0 ed_instr, 1 ALGO's step (255: no copy), 2 the song's instrument
+                                               * ed_instr as a step, 4 a hash of the status message (h * 31 + c; 0: none) */
+        uint32_t h = 0; const char *q;
+        switch (col) {
+        case 0: return ed_instr;
+        case 1: return live_alg;
+        case 2: return ed_instr >= 1u && ed_instr <= song.n_instr ? live_step_of(&song.instr[ed_instr - 1u]) : 255u;
+        default:
+            if (msg && (int32_t)(msg_until - fm1_ms) > 0) for (q = msg; *q; q++) h = h * 31u + (uint8_t)*q;
+            return h;
+        }
+    }
     if (row == 95u) return col < 9u ? host_kon_pitch[col] | (uint32_t)(host_b0[col] & 0x20u) << 11 : 0;   /* channel col: */
     if (row == 94u) return col < 9u ? host_kon_gap[col] : 0;   /* the last key-on's pitch (| 0x10000 while keyed), */
     if (row == 93u) return col < 9u ? host_kon_n[col] : 0;     /* native samples since the one before, key-ons so far */
@@ -1328,7 +1397,11 @@ static void app_main(void)
         /* ---- the views and the modes */
         if (b & (1u << BTN_EDIT)) {
             edit ^= 1u;
-            if (!edit) rec_arm = 0;
+            if (!edit) {
+                rec_arm = 0;
+                if (live_alg != LIVE_OWN)     /* the copy again from the instrument as edited; none if K4 picked another */
+                    live_set(live_src == ed_instr && ed_instr <= song.n_instr ? live_alg : LIVE_OWN);
+            }
             else arp_clear();                 /* the keys are the editor's now */
             if (edit) { cur_order = pos_order; cur_row = pos_row; cur_col = 0; song_pos = cur_order; if (view != V_SONG && view != V_INS) view = V_TRACK; }
             else if (view == V_SONG || view == V_INS) view = V_TRACK;
@@ -1447,6 +1520,17 @@ static void app_main(void)
             set.arp_bpm = (uint16_t)arp_bpm;
             dirty = 1; t_change = fm1_ms;
             draw_arp();
+        }
+        /* ---- the keys' instrument (outside EDIT; in EDIT the two knobs keep their editor meanings) */
+        if (!edit && (pre || alg) && song.n_instr) {
+            int32_t v;
+            if (ed_instr < 1u || ed_instr > song.n_instr) ed_instr = 1;   /* from a song with more instruments */
+            if (pre) { ed_instr = (uint32_t)wrap((int32_t)ed_instr - 1 + pre, (int32_t)song.n_instr) + 1u; live_set(LIVE_OWN); }
+            if (alg) {
+                v = (int32_t)(live_alg == LIVE_OWN ? live_step_of(&song.instr[ed_instr - 1u]) : live_alg) + alg;
+                live_set((uint32_t)(v < 0 ? 0 : v > 15 ? 15 : v));
+            }
+            live_say(); shown_order = ~0u;
         }
         if (arp_on && !edit) {                    /* the keys feed it, except on the scope (the mutes); key ups always count */
             if (up && !arp_latch)

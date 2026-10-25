@@ -234,7 +234,7 @@ Checked by `tests/script_arp_write.txt`:
 - Whether a stock tempo should snap to one the song's speed can give, or the speed be offered.
 - Hardware: the write's time on the FM-1 (up to 8 × 64 cells and a pattern clear each, in the main loop).
 
-## 5. Change the instrument while playing (with an arp running too)
+## 5. Change the instrument while playing (with an arp running too) — built, host-tested, not yet tried on hardware
 
 **Stock firmware.** PRESETS scrolls through 128 presets and loads each one at once. ALGORITHM picks one of 32
 6-operator algorithms; holding OCT− / OCT+ and turning ALGORITHM transposes −12…+12 semitones.
@@ -244,34 +244,58 @@ Checked by `tests/script_arp_write.txt`:
 already fields in `macsop_instr` (`feedback`, `connection`) and rows 25–26 of the instrument screen
 (`ins_field()` :597).
 
-**Options for ALGO.**
-- Connection and feedback as one list: FM with feedback 0…7, then additive with feedback 0…7 (16 steps).
-- Modulator TL (operator 1 `tl`, 0–63): the brightness of an FM sound, the most audible single parameter.
-- Others: operator 1 MULT, the waveforms (`wave` 0–3), the release rates.
+**Built.** Outside EDIT, in every view (jukebox, tracker, scope, the arp's settings), `oplbox.c` "the instrument
+the keys and the arp play":
+- **PRESETS** steps through the song's instruments, 1…`n_instr`, wrapping. The number is `ed_instr`, the editor's
+  instrument, so the editor's `I03` and what ARP writes into the tracker (4) are the instrument just played. The
+  status line says `I03 t.detert` (`say()`).
+- **ALGO** steps connection and feedback through one 16-step list: FM with feedback 0–7 (steps 0–7), then additive
+  with feedback 0–7 (8–15), stopping at both ends. The first click starts from the instrument's own step. It
+  changes a copy (`live_patch`) that only the keys and the arp play, not the song: its channels and SAVE keep the
+  song's instrument. The status line says `I03 FM FB 5` / `I03 ADDITIVE FB 5`.
+- The copy is dropped when a song loads (`load_song()`: another song, or power-on) and when PRESETS picks another
+  instrument, and when EDIT ends with K4 having picked another one. When EDIT ends on the same instrument the copy
+  is made again from it, so edits on the instrument screen reach it. A restart of the same song (HOME, the end of a
+  looped song: `reload_song()`, edits kept) keeps it.
+- The arp plays through `live_note()`, which a later MIDI-in path (2b) can share. For the copy it calls
+  `macsop_play_patch()` (new in `macsop.c`), which plays an instrument that isn't in the song and sends its
+  registers on every note, since the copy can change between notes. A change is heard from the arp's next step.
+- In EDIT both knobs keep their editor meanings (tracker: ALGO volume, PRESETS step; instrument screen: PRESETS
+  the instrument). No hold-OCT transpose: outside EDIT, OCT−/OCT+ stay previous / next song.
+- Firmware image +1,084 B, RAM +64 B.
+- Found on the way, fixed in its own commit: the instrument screen's CONNECT showed FM for the file's 0 and ADD
+  for 1. The player writes C0 bit 0 as 1 − connection (FXDRIVER's own writes), so the file's 1 is FM; 164 of the
+  223 instruments in the built-in songs are 1. Only the label and the comment in `macsop.h` changed.
 
-**Today.**
-- Outside EDIT, PRESETS and ALGO do nothing (`pre` and `alg` are read at :729 and used only in the editors).
-- On the tracker screen in EDIT: ALGO is the volume of the cell and of new notes (:821), PRESETS is the step
-  after a note, 0–16 (:811).
-- On the instrument screen: PRESETS picks the instrument (:872), and a change heard at once is already there.
-  `macsop_refresh_instr()` (:881) sends the new registers to every channel playing that instrument.
+Checked by `tests/script_live_instr.txt` against the chip's C0 writes (`host_cell` rows 90–92):
+- PRESETS changes the instrument the arp's channel is keyed with, and wraps from 3 to 11 of 11.
+- ALGO's copy reaches the chip (the exact C0 at steps 11, 0, 15 and 5) while the song's instrument keeps its own
+  connection and feedback. With the song playing, the song's channels on that same instrument keep the song's C0
+  while the arp's channel plays the copy.
+- The status line messages, by hash; the longest, `I09 ADDITIVE FB 7`, fits beside the CPU figure (screenshot).
+- In EDIT the knobs change neither the instrument nor the copy. Leaving EDIT keeps the copy, or drops it after K4.
+  A song load drops it.
+- Each of six planted bugs fails it: the copy not played, the song's instrument changed instead of a copy, the copy
+  kept over a song load, the FM/additive halves swapped, the knobs acting in EDIT, the copy kept after K4.
 
-**How the play-mode mapping would differ from the editor's.** Outside EDIT: PRESETS = which instrument the
-keys / the arp play, ALGO = the sound (one of the options above). In EDIT the two knobs keep their editor
-meaning (volume, step), so the same knob does different things in the two modes. The other choice is to move
-the editor to match play mode and give step and volume to other controls; K1–K4 are taken in the tracker
-editor (column, row, transpose, instrument).
+**Decided** (chosen by the colony; xero can change it):
+- ALGO changes a copy only the keys and the arp use, not the song's instrument.
+- ALGO is connection plus feedback as one 16-step list, not modulator TL or another parameter. It stops at both
+  ends rather than wrapping.
+- PRESETS goes through the song's instruments, not a fixed bank, and moves the editor's instrument with it rather
+  than keeping a separate play-mode one.
+- PRESETS starts the new instrument as itself: an ALGO setting doesn't carry over to it.
+- `reload_song()` (HOME, a looped song starting again) keeps the copy; only loading a song drops it.
+- Shown in the status line with `say()`, not a new view.
+- No hold-OCT transpose.
 
-**Open questions.**
-- Does turning ALGO while playing change the song's instrument (heard on every channel playing it, and saved
-  with SAVE), or a copy only the keys / arp use, which a song reload drops?
+**Still open.**
 - What the stock firmware's PRESETS / ALGORITHM do while its arp runs has not been checked on the device.
-- PRESETS goes through the song's instruments (`n_instr`, up to 64, often under 10), or a fixed bank, e.g.
-  every instrument of the 18 built-in songs?
-- Keep stock's hold OCT−/OCT+ + ALGORITHM for transpose? Outside EDIT, OCT−/OCT+ are previous / next song
-  (:756), so holding them would also change the song.
-- Show the change on screen like stock (the preset list, the algorithm diagram): a line in the status area
-  (`say()`, :385) or a new view?
+- The keys play nothing outside EDIT with the arp off; when 2b's MIDI in plays notes, it should go through
+  `live_note()` so it uses the same instrument.
+- ARP into the tracker (4) writes `ed_instr`, the song's instrument, not ALGO's copy: a written arp sounds as the
+  song's instrument does. Writing the copy as a new instrument would be a separate choice.
+- Hardware: hearing it on the FM-1.
 
 ## 6. Battery indicator — in progress
 

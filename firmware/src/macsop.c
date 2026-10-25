@@ -350,6 +350,20 @@ void macsop_play_note(macsop *m, int ch, int note, int instr, int vol)
     note_event(m, ch, &k);
 }
 
+void macsop_play_patch(macsop *m, int ch, int note, const macsop_instr *in, int vol)
+{
+    if (!valid_ch(m, ch))
+        return;
+    key_off(m, ch);
+    if (note == 0 || note == 4)
+        return;
+    m->cur_instr[ch] = 0;                     /* the copy may have changed since: set_instr sends it again */
+    set_instr(m, ch, in);
+    set_volume(m, ch, vol);
+    if (set_note(m, ch, note, 32))
+        key_on(m, ch);
+}
+
 void macsop_refresh_instr(macsop *m, int i)
 {
     int ch;
