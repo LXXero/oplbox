@@ -262,8 +262,8 @@ OPLBOX's size, audio and flash limits, and a plan in nine stages (one task each)
 
 **Found.** The MAC driver in `wl_wifi*.a` is compiled from Ralink's GPL-2.0-or-later Linux driver plus Linux's
 GPL-2.0 `wext-core.c`, so its Apache-2.0 label is doubtful; the WiFi core's MAC is register-compatible with Ralink's
-RT2800 family (Linux `rt2800.h`, GPL-2.0-or-later); the radio and internal bus (`wl_rf_common.a`) show no third-party code,
-and the archives are LLVM bitcode, readable as LLVM IR. JieLi's stack (about 330 KB of code) would not fit beside
+RT2800 family (Linux `rt2800.h`, GPL-2.0-or-later); the radio and internal bus (`wl_rf_common.a`) carry Ralink and
+Linux header lineage in five of thirteen members (see 7c), and the archives are LLVM bitcode, readable as LLVM IR. JieLi's stack (about 330 KB of code) would not fit beside
 OPLBOX (238 KB free) anyway.
 
 **Next.** Stage 1 (register header and extracted tables, host only), then stage 2, the first hardware test: xero
@@ -338,3 +338,48 @@ a check was added for the one it missed (the diff ignoring read vs write).
 
 **Open.** Whether the WiFi core answers CMD5/CMD3/CMD7 as the card script assumes (ready at once, RCA 1) is stage 2's
 to see on the FM-1. Recorded frames for the format: stage 4 dumps the first real ones.
+
+### 7c. Licence premise for stages 1 and 3, WIFI.md corrected — documents only
+
+**Done.** docs/WIFI.md corrected where docs/WIFI_REVIEW.md marked it WRONG, and the `wl_rf_common.a` question
+settled as far as the archive shows. New sections "What `wl_rf_common.a` carries" and "What stages 1 and 3 may take
+from `wl_rf_common.a`"; corrections in "Licence provenance", "What fm1-radio actually links", "WiFi core registers",
+stages 1, 3 and 5, and "Reproducing the measurements". docs/WIFI_REVIEW.md has a follow-up section listing them.
+
+**Found.**
+- `wl_rf_common.a`: 8 of its 13 members (radio, PHY, calibration: `wf_cfr_init`, `wf_pa_dpd`, `wf_phy_mac_init`,
+  `wf_phy_mac_lib`, `wf_rf_cal`, `wf_rf_init`, `wf_soft_adj`, `wl_rfd_init`) name nothing third-party except the
+  typedefs `u8`/`u16`/`u32`. The other 5 carry lineage: `wl_hw_init` and `wl_usb_to_sdio` were compiled with
+  Ralink's `rtmp_mac.h`/`rtmp_comm.h`/`rtmp_type.h`/`mac_usb.h` (RXWI/TXWI/TXINFO descriptors, 802.11 header);
+  `wl_sdio` and `wl_sdio_host` with Linux-shaped `mmc/*.h`, `device.h` and FreeRTOS V9.0.0 types (GPL-2.0 with the
+  FreeRTOS exception, types only); `wl_usb_to_sdio` and `wl_sdio_host` define Linux USB and MMC core function names
+  as JieLi's emulation; `wf_deep_sleep` defines two empty Ralink-named stubs. The bodies read are JieLi's (stubs, OS
+  calls); the larger ones were not compared.
+- The 22 `MACRegTable` values equal Ralink's own driver (Linux v2.6.32 staging `rtmp_init.c`, RT2870 build), 22 of
+  22; JieLi drops 8 of Ralink's 30. rt2800.h has no values. rt2x00 (`rt2800lib.c` v6.6) uses the same literal for 6
+  and a different `TX_RTY_CFG`; its other 15 are built from fields and were not compared.
+- `wext-core.c.o` defines 7 functions, not 10; all 7 names are in Linux's `wext-core.c` (v2.6.33, v2.6.37). Bodies
+  not compared.
+- `wl_rf_common.a`'s named bytes in fm1-base's `wifi.elf` are 16,017, not 16,018 (`wl_usb_to_sdio` is 4988).
+- The GPL wording now says what GPLv3 section 6 asks (the source given by one of its means), not "physically with".
+
+**Verdict for the plan.** Stages 1 and 3 may go ahead on `wl_rf_common.a` as a source of facts: addresses, values,
+order, bounds, table contents. `tools/wifi_ir.py` may extract constant (target, address, value) rows and constant
+arrays from `wf_phy_mac_init`, `wf_cfr_init` and `wf_phy_mac_lib`, and with `--trace` the power-up write sequence as
+data (placeholders for computed values), with SHA-256/member/function provenance and no control flow or IR comments.
+It reads nothing from the five members with lineage, `wl_wifi*.a` or the Bluetooth archives. Stage 3's code is
+written from a plain description of each step, not translated from IR.
+
+**Decided** (chosen by the colony; xero can change it):
+- No function is translated from `wl_rf_common.a`'s IR, not even from the eight clean members: their Apache-2.0
+  label is not contradicted but not proven (no notice in the archive, a blank copyright line in the SDK's
+  LICENSE). Facts only, and code written from a description.
+- The generated tables are listed in LICENSING.md as register values read from the archive (facts), not as
+  Apache-2.0 code.
+- Stage 5 takes the MAC defaults from Ralink's staging driver (they equal JieLi's); where rt2x00 differs it picks one
+  and says why.
+
+**Open** (marked [unchecked] in WIFI.md). Where JieLi's `inc/linux/` and Ralink headers came from, and which
+Linux version the MMC structures match; the bodies of `usb_submit_urb`, `sdio_recv_int_hdl`, `RTUSBDoubleWrite`
+and the WEXT functions against upstream; rt2x00's 15 field-built defaults; `hsm.a`'s authorship. None of these
+blocks stages 1-3 under the limits above.
