@@ -49,13 +49,26 @@ static void accessors(void)
     wr_refused(fm1_wf_wr, 10, "WF_CON10 does not exist");
     check(fm1_wf_rd(4) == (0x14050u ^ 0x5A5A5A5Au), "WF_CON4 (interrupt) read at 0x14050");
 
-    { uint32_t before = n_wr;
-      fm1_wl30_host_wr(0x1C, 7);
-      check(n_wr == before + 1 && last_addr == 0x30F1Cu, "SDIO host 0x1C at 0x30F1C");
-      fm1_wl30_host_wr(0x20, 7);
-      fm1_wl30_host_wr(0x02, 7);
-      check(n_wr == before + 1, "SDIO host refuses offsets past 0x1C and unaligned ones"); }
-    check(fm1_wl30_host_rd(0x04) == (0x30F04u ^ 0x5A5A5A5Au), "SDIO host 0x04 read at 0x30F04");
+    {
+      static const uint32_t allowed[] = {0x00u, 0x04u, 0x10u, 0x14u, 0x18u, 0x1Cu};
+      static const uint32_t refused[] = {0x02u, 0x08u, 0x0Cu, 0x20u};
+      for (unsigned i = 0; i < sizeof allowed / sizeof allowed[0]; i++) {
+        uint32_t off = allowed[i], before_wr = n_wr, before_rd = n_rd;
+        fm1_wl30_host_wr(off, 7);
+        check(n_wr == before_wr + 1 && last_addr == FM1_WL30_HOST(off) && last_val == 7,
+              "documented SDIO host offset is writable");
+        check(fm1_wl30_host_rd(off) == (FM1_WL30_HOST(off) ^ 0x5A5A5A5Au) &&
+              n_rd == before_rd + 1 && last_addr == FM1_WL30_HOST(off),
+              "documented SDIO host offset is readable");
+      }
+      for (unsigned i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        uint32_t off = refused[i], before_wr = n_wr, before_rd = n_rd;
+        fm1_wl30_host_wr(off, 7);
+        check(n_wr == before_wr, "undocumented SDIO host offset write touches nothing");
+        check(fm1_wl30_host_rd(off) == 0 && n_rd == before_rd,
+              "undocumented SDIO host offset read touches nothing");
+      }
+    }
 
     { uint32_t v = 0xDEADBEEFu, before = n_wr + n_rd;
       check(fm1_wifi_mac_rd(MAC_CSR0, &v) == FM1_WIFI_ENOTYET && v == 0xDEADBEEFu, "mac_rd not built yet");

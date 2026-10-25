@@ -277,7 +277,9 @@ WiFi core's MAC registers in use with their `rt2800.h` names, addresses and mask
 0x0300-range registers and the frame data addresses; the four BBP indirect windows; the key tables at 0x4000,
 0x6000, 0x6800, 0x6C00, 0x7000 with their entry sizes. Addresses and masks only, no register values.
 `firmware/hal/fm1_wifi_hal.c`: CPU-side accessors (bounded index, read-only `WLA_CON31`-`39` refused) and
-`fm1_wifi_cmd52`/`cmd53`/`mac_rd`/`mac_wr`, which return `FM1_WIFI_ENOTYET` until stage 2. `tests/run_host.sh`
+`fm1_wifi_cmd52`/`cmd53`/`mac_rd`/`mac_wr`, which return `FM1_WIFI_ENOTYET` until stage 2. The internal SDIO
+host accessor accepts only its six documented offsets; the host test checks both gaps and other invalid offsets
+touch no register. `tests/run_host.sh`
 compiles both warning-free (`-Werror`), runs `tests/wifi_regs.c` against a fake bus (each accessor hits its
 address) and `tests/wifi_regs.py`, which checks every address and field docs/WIFI.md gives (79) against the header.
 The JieLi compiler builds `fm1_wifi_hal.c` too; nothing links it yet, so the image is unchanged.
