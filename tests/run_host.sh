@@ -23,6 +23,10 @@ python3 tests/wifi_regs.py build/host/wifi_regs.txt
 # against a fake card and must match tests/wifi/sdio_enum_expect.txt (wl30_sdio_enum, docs/WIFI.md)
 cc -std=c11 -Wall -Wextra -Werror -DFM1_WIFI_HOST -DFM1_WIFI_SDIO_MODEL -Ifirmware/hal -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/hal/fm1_wifi_hal.c
 build/host/wifi_model tests/wifi build/host
+# the WPA2 key primitives (firmware/wifi/wpa_crypto.c on BearSSL): PSK and PRF against IEEE 802.11 J.4.2 / J.3,
+# AES key unwrap against RFC 3394 4.1-4.6, the PMK in main-loop steps, and the refusals
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_crypto tests/wifi_crypto.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c
+build/host/wifi_crypto
 python3 - <<'PY'
 import array, sys, wave
 from pathlib import Path

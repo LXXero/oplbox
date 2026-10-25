@@ -384,3 +384,52 @@ written from a plain description of each step, not translated from IR.
 Linux version the MMC structures match; the bodies of `usb_submit_urb`, `sdio_recv_int_hdl`, `RTUSBDoubleWrite`
 and the WEXT functions against upstream; rt2x00's 15 field-built defaults; `hsm.a`'s authorship. None of these
 blocks stages 1-3 under the limits above.
+
+### 7d. Stage 8 host part, WPA2 key primitives — built, host-tested, not yet tried on hardware
+
+**Built.** `firmware/wifi/wpa_crypto.c`/`.h`, own code from IEEE 802.11-2020 (12.7.1.2 PRF, 12.7.1.3 PTK, J.4
+passphrase to PSK), RFC 8018 (PBKDF2) and RFC 3394 (key unwrap), on a BearSSL subset in `firmware/wifi/bearssl/`
+(MIT; SHA-1, HMAC, AES decryption; upstream commit and changes in its README.md):
+- the PMK as a job that `wpa_pmk_step(job, n)` advances n iterations at a time: PBKDF2-HMAC-SHA1(passphrase, SSID,
+  4096, 32) is 8192 iterations of two SHA-1 compressions each. The job keeps the HMAC key state, not the passphrase,
+  and is wiped when the key is taken or the job dropped. Passphrases outside 8-63 printable ASCII characters and
+  SSIDs outside 1-32 bytes are refused (J.4.1);
+- `wpa_prf_sha1` (PRF-n) and `wpa_ptk` (PRF-384 over Min/Max of the addresses and nonces, KCK/KEK/TK);
+- `wpa_hmac_sha1`, for the EAPOL-Key MIC later;
+- `wpa_aes_unwrap` (RFC 3394 2.2.2, KEK 16/24/32 bytes), which compares every byte of the integrity value and zeroes
+  its output when the check fails.
+
+`tests/wifi_crypto.c` (in `tests/run_host.sh`, 69 checks):
+- vectors: the three J.4.2 PSKs, RFC 6070's 4096-iteration case, the three J.3 PRF-512 cases, RFC 3394 4.1-4.6,
+  SHA-1 "abc" and HMAC RFC 2202 test 2;
+- the PMK in steps of 64, 1, 7, 4095, 4096, 4097, 8192 and 100000 iterations, and a PTK computed with Python's
+  hashlib from either side;
+- the refusals: every changed byte of a wrapped key, integrity values one bit off in the first or last byte, a
+  wrong KEK, a valid one-block wrap (RFC 3394 wants n >= 2) and a 15-byte KEK.
+
+The 802.11 vectors are as wpa_supplicant 2.9's `crypto_module_tests.c` gives them; each was recomputed with Python
+before it went in. The IEEE text itself was not read [unchecked]. The test also passes under ASan/UBSan. 19
+deliberate bugs were planted in `wpa_crypto.c`. The test missed two at first: an integrity check that skipped one
+byte, and a wrap of one block (n = 1) accepted. Both now have a check (vectors wrapped with Python), and the test
+catches all 19.
+
+**Size.** JieLi clang `-Os`: BearSSL subset 2,932 B, `wpa_crypto.c` 1,177 B, together 4,109 B of code and
+read-only data, no static RAM. wpa_supplicant 2.9's SHA-1/HMAC/AES for the same job is about 8,914 B
+(firmware/wifi/bearssl/README.md has the breakdown). Stack: a step uses about 0.7 KB [unchecked on the device].
+`tools/build.py` now compiles `firmware/wifi/` on every build and prints its size, without linking it, so the
+image is unchanged. Its register-access check also covers `firmware/wifi/` now; the vendored BearSSL is exempt
+from the address-literal rule only, because AES's round constant 0x02000000 looks like an XIP address.
+
+**Decided** (chosen by the colony; xero can change it):
+- BearSSL, not wpa_supplicant's `src/crypto`: it is about a third of the size. Our own PBKDF2/PRF/unwrap instead of
+  wpa_supplicant's: those run the 4096 iterations in one call and recompute the HMAC pads on each.
+- BearSSL's `aes_small` (smallest, not constant-time) for the key unwrap. It only ever decrypts the GTK under the
+  KEK, and CCMP runs in the MAC's hardware; `aes_ct` is the swap if that matters.
+- `WPA_PMK_STEP` 64 iterations per main-loop pass is a guess [unchecked]: stage 8 times a step on the FM-1 and sets it
+  so a pass stays well under a few milliseconds (the audio runs in its ISR either way). The caller passes the count,
+  so stage 9 can change it without touching this code.
+- The unwrap takes any KEK size BearSSL supports (16/24/32), so all six RFC 3394 vectors run; WPA2 uses 16.
+
+**Open.** The EAPOL-Key 4-way and group handshakes (state machine, MIC check, replay counter, key data parsing,
+keys into the MAC's tables at 0x4000-0x7000), caching the PMK per SSID in the WiFi settings sector, and the replay
+of a recorded handshake on the host are the rest of stage 8. Timing on the FM-1 is stage 8's too.

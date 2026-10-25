@@ -600,6 +600,9 @@ them.
   smaller. The whole of wpa_supplicant (79 KB in fm1-radio) is too big.
 - **Host**: IEEE 802.11 Annex J test vectors (PBKDF2, PRF), and a recorded handshake replayed to the code.
   **FM-1**: joins xero's WPA2 network.
+- Built so far (host part, TODO.md 7d): `firmware/wifi/wpa_crypto.c` with the stepped PMK, the PRF and PTK and AES key
+  unwrap, on a BearSSL subset (2,932 B, against about 8,914 B for wpa_supplicant's SHA-1/HMAC/AES; 4,109 B with
+  our code). The EAPOL-Key handshakes are still to do.
 
 ### Stage 9: OPLBOX integration (needs FM-1)
 
