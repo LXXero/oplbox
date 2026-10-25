@@ -298,3 +298,43 @@ The shared key table (16 × 32 B) ends at 0x6E00, not at the mode table's 0x7000
 and `MAC_WCID_BASE` (0x1800, needed by stage 8) are not in the header yet. The 0x30F00 and 0x0300-range addresses
 come from `wl_rf_common.a` as facts, not code; whether stages 1 and 3 may rest on that archive is task 3's to settle.
 `tools/wifi_ir.py` and the extracted tables (the rest of stage 1) are not built.
+
+### 7b. Register model and fixture format (for stages 2-5) — built, host-tested
+
+**Built.** `tests/wifi/sdio_model.c`/`.h`, own code from docs/WIFI.md and the SDIO Simplified Specification, host
+only. A fake of the internal SDIO host that stands in below `fm1_wifi_sdio_cmd`/`cmd52`/`cmd53` (the HAL built with
+`-DFM1_WIFI_SDIO_MODEL` leaves its stubs out). It keeps the card's state the way the specification does (CMD5 until
+ready, CMD3 gives the RCA, CMD7 selects, CMD52/53 only once selected, no function above the count CMD5 reports),
+keeps a register file per function, makes I/O Ready follow I/O Enable, and ignores writes to the read-only CCCR
+registers. It logs every command (function, address, data, direction, result) and answers reads from a script:
+`ocr`, `rca`, `reg` (register contents), `next` (queued answers, for a polled busy bit or a FIFO), and `fail`
+(the next matching command fails). The fixture format is plain text, one command or recorded raw 802.11 frame
+(`frame rx|tx key=value… bytes`) per line. `??` matches any byte, and a model's log is written in the same format,
+so a run can be kept as a fixture. Its grammar is in `sdio_model.h`. `wifi_fix_diff` compares a run with a fixture
+and reports each record missing, extra or different, with its line. `build/host/wifi_model diff <want> <got>` runs
+it on two files. In the HAL, `fm1_wifi_sdio_enum()` is wl30_sdio_enum's sequence, written from docs/WIFI.md and the
+specification: CMD5 until C is set (100 at most), CMD3 again while the card offers RCA 0, CMD7 with the RCA the card
+gave, then the CCCR and function-1 writes. It also adds `fm1_wifi_sdio_cmd` (a stub until stage 2), the CCCR
+addresses (cross-checked against Linux `mmc/sdio.h`, facts only) and `FM1_WIFI_EBUS`/`ETIMEOUT`.
+`tests/wifi_model.c` (in `tests/run_host.sh`) runs the enumeration against `tests/wifi/sdio_enum_card.txt` and diffs
+it against `tests/wifi/sdio_enum_expect.txt`, the 11 commands of docs/WIFI.md written by hand from the document. It
+also checks the error paths (card never ready, no function 1, RCA 0, a failed CMD52 or CMD7), the model's
+specification rules, `mac_rd`/`mac_wr` as 4-byte CMD53s, the format's round trip and 27 malformed inputs. It runs
+clean under ASan/UBSan. Of 11 deliberate bugs in the enumeration, the model and the diff, the first run caught 10;
+a check was added for the one it missed (the diff ignoring read vs write).
+
+**Decided** (chosen by the colony; xero can change it):
+- The model works at command level (CMD52/53 with function and address), not on the SDIO host's MMIO registers at
+  0x30F00: what those do is unknown until stage 2. Stage 2's real `cmd52`/`cmd53` program them, and stage 2 can
+  extend the model downward when it knows them.
+- The enumeration keeps JieLi's values where the specification leaves room: CMD5 argument `0x1F000000` (bits 25-28
+  are reserved in the specification's CMD5 argument; marked unchecked in the header) and I/O Enable `0xFF` (bit 0
+  reserved). It takes the RCA from the CMD3 response instead of JieLi's fixed `0x00010000`; on a card that offers RCA
+  1, the two send the same command.
+- No I/O Ready poll after I/O Enable, which the specification recommends: wl30_sdio_enum, as decoded, has none,
+  and the fixture follows the document. Stage 2 adds it if the hardware needs it.
+- The model's CMD53 is byte mode, incrementing address, up to 2048 bytes; it has no block mode yet, because the HAL's
+  `cmd53` has no block or fixed-address argument yet.
+
+**Open.** Whether the WiFi core answers CMD5/CMD3/CMD7 as the card script assumes (ready at once, RCA 1) is stage 2's
+to see on the FM-1. Recorded frames for the format: stage 4 dumps the first real ones.

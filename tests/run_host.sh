@@ -19,6 +19,10 @@ cc -std=c11 -Wall -Wextra -Werror -Ifirmware/hal -c -o build/host/fm1_wifi_hal.o
 cc -std=c11 -Wall -Wextra -Werror -DFM1_WIFI_HOST -Ifirmware/hal -o build/host/wifi_regs tests/wifi_regs.c firmware/hal/fm1_wifi_hal.c
 build/host/wifi_regs > build/host/wifi_regs.txt
 python3 tests/wifi_regs.py build/host/wifi_regs.txt
+# the WiFi register model (tests/wifi/sdio_model.c), its fixture format and diff: the HAL's enumeration runs
+# against a fake card and must match tests/wifi/sdio_enum_expect.txt (wl30_sdio_enum, docs/WIFI.md)
+cc -std=c11 -Wall -Wextra -Werror -DFM1_WIFI_HOST -DFM1_WIFI_SDIO_MODEL -Ifirmware/hal -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/hal/fm1_wifi_hal.c
+build/host/wifi_model tests/wifi build/host
 python3 - <<'PY'
 import array, sys, wave
 from pathlib import Path

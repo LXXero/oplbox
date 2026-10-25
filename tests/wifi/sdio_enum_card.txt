@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# The card tests/wifi_model.c enumerates (the register model's script format, tests/wifi/sdio_model.h).
+# A card as the SDIO Simplified Specification describes one with a single I/O function: ready at the first
+# CMD5, RCA 1. Not measured on an FM-1: what the WiFi core really answers is stage 2's to find.
+
+ocr 0x90ff8000          # R4: C (ready), 1 function, no memory, OCR 2.7-3.6 V
+rca 0x0001
+
+# function 1's registers 0x10-0x13 hold something before the enumeration, so the test sees them cleared
+reg f1 0x00010 5a 5a 5a 5a

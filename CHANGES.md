@@ -1,5 +1,6 @@
 # Unreleased
 
+- WiFi register model for stages 2-5: a host fake of the internal SDIO host (`tests/wifi/sdio_model.c`), a plain-text fixture format for command sequences and raw 802.11 frames, a diff helper, and the HAL's `fm1_wifi_sdio_enum()` replayed against docs/WIFI.md's `wl30_sdio_enum` sequence in `tests/run_host.sh`. Host only.
 - WiFi stage 1, register header: `firmware/hal/fm1_wifi_regs.h` (SDK and Linux `rt2800.h` addresses and masks) and accessors in `fm1_wifi_hal.c`, checked against docs/WIFI.md by `tests/run_host.sh`. Not linked yet, not run on hardware.
 - Arpeggiator: ARP outside EDIT turns it on and opens its settings (LFO opens them / turns the page). Held keys
   feed it; modes up, down, inclusive, exclusive, random, order, repeat; 1–4 octaves; 1/4 1/8 1/8T 1/16 1/32;

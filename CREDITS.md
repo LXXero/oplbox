@@ -29,4 +29,5 @@ below). It stands on the work of the people and projects named here. Licences an
 - **Thomas Detert** (Stone Age, Eclipse 1992) and **Michael Tschögl** (LINEL 1990-92): the 18 built-in songs.
 - **JieLi AC79 SDK** (Apache-2.0): the boot files read from your SDK checkout at build time.
 - **Linux rt2x00** `rt2800.h`, Ivo van Doorn and the rt2x00 authors (GPL-2.0-or-later), with the SDK's `WL82.h`/`hwi.h`: the WiFi register map in `firmware/hal/fm1_wifi_regs.h`.
+- **Linux** `include/linux/mmc/sdio.h` (v6.6): the SDIO CCCR addresses in `fm1_wifi_regs.h` were cross-checked against it (facts only; nothing copied). The SD Association's SDIO Simplified Specification for the bus itself.
 - **designburg**: the signet in `assets/logo.svg`.
