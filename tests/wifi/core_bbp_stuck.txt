@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# A WiFi core (made up, as core_model.txt) whose baseband never answers: BBP_CSR_CFG's BUSY stays set, so the
+# BBP read ends in TIMEOUT after FM1WIFI_BBP_TRIES polls instead of hanging (tests/run_host.sh, the WiFi page).
+reg 0x31000 0x35920200
+reg 0x31004 0x0000000c
+stuck 0x3101c 0x00020000

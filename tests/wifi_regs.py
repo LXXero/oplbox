@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-only
-# Check firmware/hal/fm1_wifi_regs.h against the tables in docs/WIFI.md (and the MACRegTable address list in
+# Check firmware/wifi/fm1wifi_regs.h against the tables in docs/WIFI.md (and the MACRegTable address list in
 # docs/WIFI_REVIEW.md): every address the doc gives must be the header's, and every register name the doc's
 # WiFi-core table names must exist in the header.
 #   python3 tests/wifi_regs.py <output of build/host/wifi_regs>
@@ -138,6 +138,13 @@ for key, g in win:
         continue
     for part, a in zip(("ADDR", "DATA", "STROBE"), g):
         want(f"FM1_BBP_{key}_{part}", int(a, 16), f"BBP window {key}")
+
+# stage 2: the core's window ("function 1 address A is the word at CPU address `0x30000` + A") and CLK_CON1
+m = re.search(rf"function 1 address A is the word at CPU address `({HEX})` \+ A", core)
+want("FM1_WIFI_CORE_BASE", int(m[1], 16) if m else -1, "the core's window")
+m = re.search(rf"`CLK_CON1` \(({HEX})\), bits 15-14", doc)
+want("FM1_CLK_CON1_ADDR", int(m[1], 16) if m else -1, "CLK_CON1")
+want("FM1_CLK_CON1_WIFI", 0xC000, "CLK_CON1 bits 15-14")
 
 # stage 2 reads MAC_CSR0 at 0x1000
 m = re.search(rf"`MAC_CSR0` \(({HEX}), ASIC version\)", doc)

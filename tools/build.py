@@ -155,7 +155,7 @@ def build_loader():
 # ---- app
 
 def build_app():
-    inc = [*BSP_INC, "-Ifirmware/hal", "-Ifirmware/src", "-Ifirmware/gen"]   # hal/: OPLBOX's own hardware files
+    inc = [*BSP_INC, "-Ifirmware/hal", "-Ifirmware/wifi", "-Ifirmware/src", "-Ifirmware/gen"]   # hal/: OPLBOX's own hardware files
     # the app (platform included) at -Os like Dinghy: at -O2 the USB stack babbles on the device (USB-MIDI IN,
     # dinghy tools/build.py; OPLBOX 0.4.1 dropped off USB on every SysEx). The OPL core, the budget, is its own
     # object at -O2.
@@ -165,11 +165,14 @@ def build_app():
             ("cc", "-c", BSP / "chip" / "fm1_vec.S", "-o", OUT / "fm1_vec.o"),
             ("cc", "-c", BSP / "chip" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
             ("cc", *flags, "-c", FW / "src" / "oplbox.c", "-o", OUT / "oplbox.o"),
-            ("cc", *core, "-c", FW / "src" / "dbopl2.c", "-o", OUT / "dbopl2.o")]
+            ("cc", *core, "-c", FW / "src" / "dbopl2.c", "-o", OUT / "dbopl2.o"),
+            # the WiFi library (firmware/wifi/, for the stage 2 page) and its port on felucca-bsp (hal/)
+            ("cc", *CFLAGS, "-Ifirmware/wifi", "-c", FW / "wifi" / "fm1wifi.c", "-o", OUT / "fm1wifi.o"),
+            ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-c", FW / "hal" / "fm1wifi_port_bsp.c", "-o", OUT / "fm1wifi_port_bsp.o")]
     tc_all(*cmds)
     elf = OUT / "oplbox.elf"
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o",
-       OUT / "fm1_isr.o", OUT / "oplbox.o", OUT / "dbopl2.o", "-o", elf)
+       OUT / "fm1_isr.o", OUT / "oplbox.o", OUT / "dbopl2.o", OUT / "fm1wifi.o", OUT / "fm1wifi_port_bsp.o", "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin", "ramcode.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),
@@ -204,8 +207,10 @@ def build_app():
     return bytes(img), syms, dis, rt
 
 
-# ---- the WiFi driver (firmware/wifi/, docs/WIFI.md): compiled with the app's flags so its size is known against
-# the budget there, not linked until stage 9 calls it. Object sizes without --gc-sections: an upper bound.
+# ---- the WiFi library (firmware/wifi/, docs/WIFI.md): every file compiled alone with the app's flags and only its
+# own directory on the include path, so a dependency on OPLBOX or the bsp fails here, and its size is known
+# against the budget there. fm1wifi.c is linked (the stage 2 page); the rest (WPA2) not until stage 8 calls it.
+# Object sizes without --gc-sections: an upper bound.
 
 def build_wifi():
     srcs = sorted([*(FW / "wifi").glob("*.c"), *(FW / "wifi" / "bearssl").glob("*.c")])
@@ -221,7 +226,7 @@ def build_wifi():
                 code += int(p[2], 16)
             elif len(p) > 3 and re.match(r"\.(data|bss)", p[1]):
                 data += int(p[2], 16)
-    return f"firmware/wifi/ (not linked yet): {len(objs)} objects, {code} B code+rodata, {data} B data+bss"
+    return f"firmware/wifi/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (fm1wifi.c linked, the rest not yet)"
 
 
 def check(img, syms, dis, rt):
@@ -272,7 +277,9 @@ def check(img, syms, dis, rt):
 #  - no inline asm, except the empty compiler barrier RING_PUBLISH() (emits no instruction);
 #  - no HAL register macro (a bsp/ or hal/ #define that is, or expands to, a volatile access).
 # The vendored BearSSL in wifi/bearssl/ skips the address-literal rule only: its constants (AES Rcon 0x02000000)
-# fall in the windows, and the other three rules still hold there.
+# fall in the windows, and the other three rules still hold there. So does wifi/fm1wifi_regs.h, the WiFi register
+# map: its addresses are numbers the library hands to its port (hal/fm1wifi_port_bsp.c makes the access), and
+# the other rules keep any access out of firmware/wifi/.
 # Linker symbols (_bss_start[], _rt_load[], ...) are plain C objects and pass.
 MMIO_LIT = re.compile(r"\b0x0*(1[0-3][0-9a-f]{3}|4[0-3][0-9a-f]{3}|5[01][0-9a-f]{3}|1ee[0-9a-f]{4}|"
                       r"1c7f[0-9a-f]{3}|20[0-9a-f]{5})u?l?\b", re.I)
@@ -300,7 +307,7 @@ def mmio_check():
             where = f"{f.relative_to(FW)}:{no}"
             for rx, what in ((MMIO_LIT, "register/window address"), (MMIO_CAST, "volatile pointer cast"),
                              (MMIO_ASM, "inline asm")):
-                if rx is MMIO_LIT and f.parent == FW / "wifi" / "bearssl":
+                if rx is MMIO_LIT and (f.parent == FW / "wifi" / "bearssl" or f == FW / "wifi" / "fm1wifi_regs.h"):
                     continue
                 m = rx.search(ln)
                 if m:

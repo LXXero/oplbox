@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# A WiFi core that answers nothing: every register of the window reads 0 and BBP_CSR_CFG's BUSY never sets,
+# so the page shows NO ANSWER for MAC_CSR0 (tests/run_host.sh, the WiFi page). Nothing set: the model's defaults.

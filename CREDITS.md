@@ -31,8 +31,8 @@ below). It stands on the work of the people and projects named here. Licences an
 - **Terminus** font 8x16 (SIL OFL 1.1).
 - **Thomas Detert** (Stone Age, Eclipse 1992) and **Michael Tschögl** (LINEL 1990-92): the 18 built-in songs.
 - **JieLi AC79 SDK** (Apache-2.0): the boot files read from your SDK checkout at build time.
-- **Linux rt2x00** `rt2800.h`, Ivo van Doorn and the rt2x00 authors (GPL-2.0-or-later), with the SDK's `WL82.h`/`hwi.h`: the WiFi register map in `firmware/hal/fm1_wifi_regs.h`.
-- **Linux** `include/linux/mmc/sdio.h` (v6.6): the SDIO CCCR addresses in `fm1_wifi_regs.h` were cross-checked against it (facts only; nothing copied). The SD Association's SDIO Simplified Specification for the bus itself.
+- **Linux rt2x00** `rt2800.h`, Ivo van Doorn and the rt2x00 authors (GPL-2.0-or-later), with the SDK's `WL82.h`/`hwi.h`: the WiFi register map in `firmware/wifi/fm1wifi_regs.h`.
+- **Linux** `include/linux/mmc/sdio.h` (v6.6): the SDIO CCCR addresses of the stage 1 header were cross-checked against it (facts only; nothing copied); they left with the SD command enumeration in stage 2, when it turned out the WiFi core is not enumerated (docs/WIFI.md).
 - **BearSSL**, Thomas Pornin (MIT): SHA-1, HMAC and AES decryption under the WPA2 key code (`firmware/wifi/bearssl/`).
 - **wpa_supplicant** 2.9, Jouni Malinen and contributors (BSD-3-Clause): its `crypto_module_tests.c` was where the IEEE 802.11 J.3/J.4 and RFC 3394 test vectors in `tests/wifi_crypto.c` were read from (values only; no code taken). Size compared against BearSSL in `firmware/wifi/bearssl/README.md`.
 - **designburg**: the signet in `assets/logo.svg`.

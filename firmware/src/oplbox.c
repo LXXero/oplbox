@@ -14,6 +14,7 @@
  *   SELECT         turn: pick a song (18 built in, then 9 flash slots)
  *   REC            loop one song <-> play them all in turn (the LED says which)
  *   GLO            the battery's raw ADC count in the status line, for a moment (the icon at the top right)
+ *   SAVE           the WiFi test page (docs/WIFI.md stage 2): PLAY there powers the radio up and reads it, SAVE leaves
  *   scope: the first nine white keys (F3..G4) mute / unmute channels 1..9 (key LED = muted)
  *   ARP            the arpeggiator on (its settings open) / off  LFO   the arp's settings: open, or the next page
  *   PRESETS        the instrument the keys / the arp play (one of the song's; the editor's I too)
@@ -59,6 +60,7 @@ static inline void irq_restore(uint32_t f) { (void)f; }
 #endif
 #include "macsop.h"
 #include "songs.h"
+#include "fm1wifi.h"                         /* the WiFi driver (firmware/wifi/), for the stage 2 page */
 
 static macsop_song song __attribute__((section(".pool")));    /* the song being played / edited (190 KB) */
 static macsop player;                         /* the audio ISR owns the chip and the player while playing */
@@ -1427,6 +1429,106 @@ static void draw_arp(void)
     batt_draw();
 }
 
+/* ---- the WiFi diagnostic page (docs/WIFI.md stage 2; the driver is firmware/wifi/, the fm1wifi library). SAVE
+ * outside EDIT opens it; nothing touches the radio until PLAY there. PLAY stops the sound, fills the free pool
+ * (past the last .pool buffer, up to the stacks) with a pattern, powers the WiFi core up and reads MAC_CSR0
+ * (the chip's ASIC version), MAC_SYS_CTRL and BBP register 0; the pool is checked again every half second
+ * while the page is open, for RAM the hardware writes. SAVE leaves: the core powered down (its registers
+ * back as they were), the sound back. The page runs its own loop, so the rest of the app is held meanwhile;
+ * platform_poll() keeps USB (the updater) alive. */
+#ifdef DINGHY_HOST
+#include "sdio_model.h"                       /* the host's WiFi core: tests/wifi/sdio_model.c */
+static uint32_t wifi_pool_host[4096];
+#define WIFI_FREE_LO ((uint8_t *)wifi_pool_host)
+#define WIFI_FREE_HI ((uint8_t *)wifi_pool_host + sizeof wifi_pool_host)
+#else
+extern uint32_t _pool_end[], _pool_top[];     /* app.ld: the pool's buffers end; the pool region's end */
+#define WIFI_FREE_LO ((uint8_t *)_pool_end)
+#define WIFI_FREE_HI ((uint8_t *)_pool_top)
+#endif
+
+static char *hexn(char *d, uint32_t v, uint32_t digits)
+{
+    while (digits--) { uint32_t x = (v >> (4u * digits)) & 15u; *d++ = (char)(x < 10u ? '0' + x : 'A' + x - 10u); }
+    *d = 0;
+    return d;
+}
+
+static void wifi_line(uint32_t i, const char *s, uint16_t c)   /* line i of the page */
+{
+    draw_text_box(0, 2u + 22u * i, 240, &FONT_S, s, c, 0);
+#ifdef DINGHY_HOST
+    printf("%6u ms  wifi page %u: %s\n", fm1_ms, i, s);
+#endif
+}
+
+static void wifi_ram_line(fm1wifi_ramcheck rc)
+{
+    char s[40], *p;
+    if (!rc.changed) { wifi_line(5, "RAM CHECK: 0 CHANGED", C_ACC); wifi_line(6, "", C_MUTE); return; }
+    p = cat(s, "RAM CHECK: "); p = catn(p, rc.changed, rc.changed >= 10000u ? 5u : rc.changed >= 1000u ? 4u : rc.changed >= 100u ? 3u : rc.changed >= 10u ? 2u : 1u);
+    cat(p, " CHANGED");
+    wifi_line(5, s, C_ACC);
+    p = cat(s, "FIRST AT "); hexn(p, (uint32_t)(uintptr_t)rc.first, 8);
+    wifi_line(6, s, C_ACC);
+}
+
+static void wifi_page(void)
+{
+    uint32_t was_run = chip_run, was_play = playing, started = 0, t_check = 0, rel;
+    fm1wifi_ramcheck rc = { 0, 0 };
+    fm1wifi_diag d;
+    char s[40], *p;
+#ifdef DINGHY_HOST
+    static sdio_model *core;
+    if (!core) {                              /* the core the host simulator talks to: HOST_WIFI_MODEL, or the made-up one */
+        const char *path = getenv("HOST_WIFI_MODEL");
+        core = sdio_model_new();
+        if (sdio_model_load(core, path ? path : "tests/wifi/core_model.txt", stderr)) exit(1);
+        sdio_model_use(core);
+    }
+#endif
+    lcd_fill(0, 0, 240, 240, C_BLACK);
+    wifi_line(0, "WIFI TEST (STAGE 2)", C_ACC);
+    wifi_line(1, "PLAY: POWER UP AND READ", C_TXT);
+    wifi_line(2, "SAVE: LEAVE", C_TXT);
+    wifi_line(3, "THE SOUND STOPS MEANWHILE", C_MUTE);
+    for (;;) {
+        uint32_t b;
+        platform_poll();
+        b = fm1_input_edges(&rel);
+        if (b & (1u << BTN_SAVE)) break;
+        if ((b & (1u << BTN_PLAY)) && !started) {
+            started = 1;
+            chip_off();                       /* no sound while the core comes up */
+            fm1wifi_pattern_fill(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
+            fm1wifi_diag_read(&d);
+            rc = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
+            t_check = fm1_ms;
+            lcd_fill(0, 24, 240, 216, C_BLACK);
+            p = cat(s, "RESULT: "); cat(p, fm1wifi_strerror(d.err));
+            wifi_line(1, s, d.err == FM1WIFI_OK ? C_ACC : C_TXT);
+            p = cat(s, "MAC_CSR0     "); hexn(p, d.mac_csr0, 8);
+            wifi_line(2, s, C_ACC);
+            p = cat(s, "MAC_SYS_CTRL "); hexn(p, d.mac_sys_ctrl, 8);
+            wifi_line(3, s, C_ACC);
+            p = cat(s, "BBP 0        ");
+            if (d.bbp_err == FM1WIFI_OK) hexn(p, d.bbp0, 2); else cat(p, fm1wifi_strerror(d.bbp_err));
+            wifi_line(4, s, C_ACC);
+            wifi_ram_line(rc);
+            p = cat(s, "POOL "); p = catn(p, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO) / 1024u, 3); cat(p, " KB  SAVE: LEAVE");
+            wifi_line(7, s, C_MUTE);
+        }
+        if (started && fm1_ms - t_check >= 500u) {   /* the pool again: a later write by the hardware shows too */
+            fm1wifi_ramcheck now = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
+            t_check = fm1_ms;
+            if (now.changed != rc.changed || now.first != rc.first) { rc = now; wifi_ram_line(rc); }
+        }
+    }
+    fm1wifi_power_down();                     /* nothing if it never came up */
+    chip_run = was_run; playing = was_play;
+}
+
 #ifdef DINGHY_HOST
 /* tests/host.c checks: the cell at (order position, row, column), whole; row 99 asks for the number of order positions,
  * row 98 for a checksum of the whole order list */
@@ -1455,6 +1557,8 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
         default: return chip.mute;
 #endif
         }
+    if (row == 88u)                           /* the WiFi page: col 0 the core powered up, 1 the song's rows ticking, 2 the chip sounding */
+        return col == 0u ? (uint32_t)fm1wifi_is_up() : col == 1u ? playing : chip_run;
     if (row == 89u)                           /* SYNC, since the settings last changed: col 0 steps, 1 those not on a row's first
                                                * sample, 2 those on a row the grid has no step on, 3 / 4 the shortest / longest
                                                * gap between two (native samples); 5 arp_bpm (0 SYNC), 6 the song's speed */
@@ -1666,6 +1770,7 @@ static void app_main(void)
             redraw = 1;
         }
         if ((b & (1u << BTN_SAVE)) && edit) { save_song(); redraw = 1; }
+        if ((b & (1u << BTN_SAVE)) && !edit) { wifi_page(); redraw = 1; shown_order = ~0u; }   /* the WiFi page */
         if ((b & (1u << BTN_GLO)) && !edit) {   /* the battery's smoothed ADC count, to tune BATT_LEVEL by */
             static char bm[24];
             char *p = cat(bm, "BATTERY ");

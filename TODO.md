@@ -379,7 +379,7 @@ two bars).
 - No sign of USB power: on USB the count is the charging battery's. Felucca shows a bolt when a USB host is
   configured (`usb.config && !usb.suspended`); OPLBOX could do the same.
 
-## 7. WiFi on our own driver — stage 0 done (the map)
+## 7. WiFi on our own driver — stage 2 built (the first hardware test), waiting for the FM-1
 
 xero: "i would rather keep it gpl and just build our own wifi firmware". OPLBOX stays GPL-3.0-only and does not
 link JieLi's binary WiFi archives.
@@ -394,8 +394,8 @@ RT2800 family (Linux `rt2800.h`, GPL-2.0-or-later); the radio and internal bus (
 Linux header lineage in five of thirteen members (see 7c), and the archives are LLVM bitcode, readable as LLVM IR. JieLi's stack (about 330 KB of code) would not fit beside
 OPLBOX (238 KB free) anyway.
 
-**Next.** Stage 1 (register header and extracted tables, host only), then stage 2, the first hardware test: xero
-flashes a diagnostic build and reads four register values and a RAM pattern check off the screen.
+**Next.** Stage 2 is built (7e): xero flashes it, opens the WiFi test page (SAVE, then PLAY) and reads four values
+and the RAM check off the screen (README "WiFi test page"). Stage 3 (radio power-up and calibration) waits for that.
 
 ### 7a. Stage 1, register header — built, host-tested, not yet tried on hardware
 
@@ -563,6 +563,69 @@ from the address-literal rule only, because AES's round constant 0x02000000 look
 **Open.** The EAPOL-Key 4-way and group handshakes (state machine, MIC check, replay counter, key data parsing,
 keys into the MAC's tables at 0x4000-0x7000), caching the PMK per SSID in the WiFi settings sector, and the replay
 of a recorded handshake on the host are the rest of stage 8. Timing on the FM-1 is stage 8's too.
+
+### 7e. Stage 2, first contact, as a standalone library — built, host-tested, waiting for hardware
+
+xero (2026-10-25): "i'd love if we could do wifi firmware updates and wifi song exports", and the WiFi support
+should be generic enough to share by itself: a friend's webcam / video-out firmware on the same FM-1 (GPL too)
+could stream over it instead of USB.
+
+**Built.**
+- `firmware/wifi/` is the **fm1wifi** library (its `README.md`: API, linking, licence note). `fm1wifi.c`: the
+  core's power-up (JieLi's `wf_clk_rst_init` and `wdma_init` steps as a table of facts, docs/WIFI.md "Stage 2
+  bring-up") and power-down (every register it changed written back), the MAC registers through the core's window
+  at 0x30000 (refused before power-up, and for the frame FIFOs until stages 4-5), the BBP through `BBP_CSR_CFG` with
+  each wait bounded at 1000 reads 1 us apart, a diagnostic snapshot (`MAC_CSR0`, `MAC_SYS_CTRL`, BBP 0; NO ANSWER when
+  `MAC_CSR0` reads 0 or all ones), and the RAM pattern check. The stage 1 register header moved in as
+  `fm1wifi_regs.h`; the stage 1 HAL's accessors are in `fm1wifi.c`.
+- `fm1wifi_port.h`, the port: register access to the WiFi blocks, the WiFi bits of the shared `CLK_CON1`, a delay.
+  `firmware/hal/fm1wifi_port_bsp.c` implements it on felucca-bsp with nothing of OPLBOX's in it.
+- The **WiFi test page** in `oplbox.c` (README "WiFi test page"): SAVE outside EDIT opens it, PLAY there stops the
+  sound, fills the free pool (end of the `.pool` buffers to the end of the pool region, 86,320 B; `app.ld` gains
+  `_pool_top`), powers the core up and shows RESULT, `MAC_CSR0`, `MAC_SYS_CTRL`, BBP 0 and the RAM check (rechecked
+  every 500 ms); SAVE powers it down and gives the sound back. SAVE outside EDIT did nothing before.
+- Tests (`tests/run_host.sh`): the library compiles with only its own directory on the include path, and a check
+  fails if any of its files includes something from outside it. `tests/wifi_model.c` runs it against the register
+  model (`tests/wifi/sdio_model.c`, rewritten as the library's host port: a register file of CPU addresses, a
+  baseband behind `BBP_CSR_CFG`, every access logged as `rd32`/`wr32`/`clk`/`delay` records) and diffs power-up
+  against `tests/wifi/bringup_expect.txt` and the first reads against `diag_expect.txt`, both written by hand from
+  docs/WIFI.md. It also checks: power-down restores all twelve registers and the clock bits; a stuck BUSY ends in
+  TIMEOUT after exactly 1000 polls, before and after the request; a silent core (0 or all ones) is NO ANSWER; no
+  access ever leaves the WiFi blocks; the RAM check counts changed bytes and the first address; the fixture format
+  round-trips and refuses 19 malformed inputs. `tests/script_wifi.txt` drives the page in the simulator against the
+  made-up core, a stuck baseband and a silent core; `run_host.sh` checks the page's text in each.
+  `tools/build.py` links `fm1wifi.c` and the port, compiles every file of `firmware/wifi/` alone, and its register
+  check keeps all access out of `firmware/wifi/` (the register map's addresses are exempt from the literal rule).
+- Size: image +2,996 B (354,580 of 581,564), `.data`+`.bss` +48 B; pool and RAM code unchanged.
+
+**Found.**
+- The core is not enumerated over SDIO, and the brief's "real CMD52/CMD53 on the internal SDIO host" does not exist:
+  nothing in the SDK calls `wl30_sdio_enum`, its `sdio_host_send_command` is `cpu.a`'s driver for the external
+  SD controllers `JL_SD0`/`JL_SD1` on GPIO pins, and JieLi's CMD52 (`wl30_mmc_io_rw_direct`) only asserts. A MAC
+  register at function 1 address A is the word at CPU address 0x30000 + A; only the two frame FIFOs go through the
+  WL30 block's DMA. So 7b's enumeration (`fm1_wifi_sdio_enum`), its card model and fixtures, and the header's SDIO
+  command and CCCR constants are gone; docs/WIFI.md "Internal SDIO enumeration" has the correction.
+- `CLK_CON1` (0x10010) bits 15-14 are WiFi's; the same register holds the USB (1-0) and UART (11-10) clocks, so the
+  port changes only those two bits, with interrupts off.
+
+**Decided** (chosen by the colony; xero can change it):
+- The library is `firmware/wifi/` itself, not a subdirectory: it is where docs/WIFI.md's plan already put the driver,
+  and the WPA2 primitives there have no OPLBOX dependency either, so the whole library is one directory to copy.
+- The page needs two presses (SAVE, then PLAY) so that a stray SAVE never powers the radio, and runs its own loop
+  (the app is held while it is open; `platform_poll()` keeps USB and the updater alive).
+- Power-down restores the registers' values from before power-up instead of writing zeros, so the core goes back to
+  however the boot left it.
+- The licence stays as it is (GPL-3.0-only, like the rest of OPLBOX). Which GPL the shared library ends up under is
+  xero's decision (docs/WIFI.md "Standalone library"); stage 6's GPL-2.0-or-later code basis makes it GPL in any case.
+
+**Risk on the FM-1.** Only when the page is opened and PLAY pressed: if the core's window does not answer, the first
+read could stall the bus and hang the FM-1 on the page until it is powered off. Nothing is written to flash; boot,
+the boot guard and the OCT− USB rescue are untouched (no change to `platform.c`), so it still boots and can be
+rescued.
+
+**Waiting for xero.** Flash, open the page, read RESULT, `MAC_CSR0`, `MAC_SYS_CTRL`, BBP 0 and the RAM check. Then:
+what the bits power-up sets mean, whether the window answers before `wfhw_init` (stage 3), and which RAM the hardware
+writes, if any.
 
 ## 8. Bluetooth LE MIDI on code we can ship — stage 0 done (the map)
 

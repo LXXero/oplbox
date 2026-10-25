@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Expected fixture: fm1wifi_diag_read() once powered up, against core_model.txt, by hand from docs/WIFI.md
+# (MAC_CSR0, MAC_SYS_CTRL through the core's window at 0x30000; BBP register 0 through BBP_CSR_CFG at
+# 0x3101c: wait for BUSY clear, the request 0x90000 | reg << 8, the same with BUSY 0xb0000, wait again).
+rd32 0x31000 -> 0x35920200
+rd32 0x31004 -> 0x0000000c
+rd32 0x3101c -> 0x00000000
+wr32 0x3101c 0x00090000
+wr32 0x3101c 0x000b0000
+rd32 0x3101c -> 0x00090021        # the model left BBP 0's value in bits 7-0, BUSY clear
