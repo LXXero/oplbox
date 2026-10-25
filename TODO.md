@@ -283,7 +283,8 @@ address) and `tests/wifi_regs.py`, which checks every address and field docs/WIF
 The JieLi compiler builds `fm1_wifi_hal.c` too; nothing links it yet, so the image is unchanged.
 
 **Found.** All 82 rt2800-named constants in the header equal Linux v6.6 `rt2800.h` (sha256 `eb7ac9bf…`). All 22
-`MACRegTable` addresses have an `rt2800.h` name (docs/WIFI_REVIEW.md had this UNCHECKED); the values were not compared.
+`MACRegTable` addresses have an `rt2800.h` name (docs/WIFI_REVIEW.md had this UNCHECKED); the values were not compared
+when this section was written (settled in 7c: they equal Ralink's staging driver, 22 of 22).
 The shared key table (16 × 32 B) ends at 0x6E00, not at the mode table's 0x7000.
 
 **Decided** (chosen by the colony; xero can change it):
@@ -296,7 +297,7 @@ The shared key table (16 × 32 B) ends at 0x6E00, not at the mode table's 0x7000
 
 **Open.** What the SDIO host's registers do (stage 2). The clock-block register 0x10010 that `wf_clk_rst_init` writes
 and `MAC_WCID_BASE` (0x1800, needed by stage 8) are not in the header yet. The 0x30F00 and 0x0300-range addresses
-come from `wl_rf_common.a` as facts, not code; whether stages 1 and 3 may rest on that archive is task 3's to settle.
+come from `wl_rf_common.a` as facts, not code; whether stages 1 and 3 may rest on that archive was task 3's to settle (settled in 7c: facts only).
 `tools/wifi_ir.py` and the extracted tables (the rest of stage 1) are not built.
 
 ### 7b. Register model and fixture format (for stages 2-5) — built, host-tested
