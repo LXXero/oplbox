@@ -31,7 +31,7 @@ round-trips through the editor's model byte for byte (`host/roundtrip.c`, 18 of 
 | **ALGO** | that instrument's connection and feedback, one list: FM with feedback 0–7, then additive with feedback 0–7 (`I03 FM FB 5`). On a copy only the keys / the arp play; the song keeps its own (on its channels and in SAVE). Loading a song or picking another instrument drops the copy |
 | **MASTER** | volume |
 
-**Arpeggiator.** With ARP on, held keys play an arpeggio in the keys' instrument (PRESETS / ALGO above; `I03` in the editor).
+**Arpeggiator.** With ARP on, held keys play an arpeggio in the keys' instrument (PRESETS / ALGO above; `I03` in the editor); with one key held it repeats that note, so hold a chord (or turn **LATCH** on, below) to hear it step. The settings screen's last two lines show the channel, the notes held, latch and that instrument.
 Not from the scope screen, whose keys stay the mutes; EDIT gives the keys back to the editor. While a song plays
 it takes a channel the playing pattern leaves silent, else a channel muted on the scope (heard again, for the
 arp), else the last melodic one (6 in rhythm songs, 9 otherwise; never the drums); the song's notes in that column

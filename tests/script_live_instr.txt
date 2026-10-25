@@ -86,4 +86,14 @@
 8800 enc 1 40
 8810 is 0 91 1 15
 8810 is 0 91 4 3693565465
-9100 end
+# ---- the arp screen keeps naming the keys' instrument after the status line's 2 s are over (the first line has the
+# channel, the notes held (none: loading a song let go of them) and latch; the second the instrument, with the copy), and shows latch (LFO opens the settings, again for page 2; K3 latch right)
+11000 is 0 91 4 0
+11000 is 0 91 5 1728327714
+11000 is 0 91 6 3693565465
+11050 btn 5
+11100 btn 5
+11150 enc 4 1
+11250 is 0 91 5 3657983148
+11250 is 0 91 6 3693565465
+11400 end

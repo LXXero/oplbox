@@ -522,9 +522,8 @@ static void live_note(uint32_t ch, uint32_t note, uint32_t vol)   /* (ISR) a not
     else macsop_play_note(&player, (int)ch, (int)note, (int)(ed_instr <= song.n_instr ? ed_instr : 1u), (int)vol);
 }
 
-static void live_say(void)                    /* "I03 BRASS", or with a copy "I03 FM FB 5" / "I03 ADDITIVE FB 5" */
+static char *live_text(char *m)               /* "I03 BRASS", or with a copy "I03 FM FB 5" / "I03 ADDITIVE FB 5" */
 {
-    static char m[24];
     const char *nm = song.instr[ed_instr - 1u].name;
     uint32_t i, n;
     char *p = cat(m, "I");
@@ -535,8 +534,15 @@ static void live_say(void)                    /* "I03 BRASS", or with a copy "I0
         *p = 0;
     } else {
         p = cat(p, live_alg < 8u ? "FM FB " : "ADDITIVE FB ");
-        catn(p, live_alg & 7u, 1);
+        p = catn(p, live_alg & 7u, 1);
     }
+    return p;
+}
+
+static void live_say(void)
+{
+    static char m[24];
+    live_text(m);
     say(m);
 }
 
@@ -1226,10 +1232,19 @@ static void arp_write(void)
 /* ---- the arp's settings screen: two pages of four knobs, the channel it plays on */
 static uint32_t arp_page, arp_back = V_JUKE;  /* the page shown; the view ARP off goes back to */
 static uint32_t arp_shown_ch = ARP_NONE, arp_shown_n;
+static void arp_foot(char *a, char *b)        /* the arp screen's last two lines: channel, notes, latch; the keys' instrument (PRESETS, ALGO) */
+{
+    char *p = cat(a, "CH ");
+    if (arp_ch == ARP_NONE) *p++ = '-'; else *p++ = (char)('1' + arp_ch);
+    p = cat(p, "  NOTES "); p = catn(p, arp_n, 2);
+    cat(p, arp_latch ? "  LATCH ON" : "  LATCH OFF");
+    if (song.n_instr && ed_instr >= 1u && ed_instr <= song.n_instr) live_text(b); else *b = 0;
+}
+
 static void draw_arp(void)
 {
     static const char *const LBL[2][4] = { { "K1 MODE", "K2 OCTAVES", "K3 RATE", "K4 TEMPO" }, { "K1 GATE", "K2 SWING", "K3 LATCH", "K4 LENGTH" } };
-    char s[24], *p;
+    char s[32], t[24], *p;
     uint32_t i;
     lcd_fill(0, 0, 240, TR_TOP, C_BLACK);
     p = cat(s, arp_on ? "ARP ON" : "ARP OFF"); p = cat(p, "  PAGE "); *p++ = (char)('1' + arp_page); p = cat(p, "/2");
@@ -1257,11 +1272,10 @@ static void draw_arp(void)
         }
         cv_blit(0, TR_TOP + 8u + i * 24u);
     }
-    cv_begin(240, 24, C_BLACK);
-    p = cat(s, "CHANNEL ");
-    if (arp_ch == ARP_NONE) *p++ = '-'; else *p++ = (char)('1' + arp_ch);
-    p = cat(p, "  NOTES "); p = catn(p, arp_n, 2);
-    cv_text(20, 4, &FONT_S, s, C_MUTE);
+    cv_begin(240, 40, C_BLACK);
+    arp_foot(s, t);
+    cv_text(20, 0, &FONT_S, s, C_MUTE);
+    cv_text(20, 18, &FONT_S, t, C_ACC);
     cv_blit(0, TR_TOP + 112u);
     arp_shown_ch = arp_ch; arp_shown_n = arp_n;
     batt_draw();
@@ -1298,12 +1312,19 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
     if (row == 92u) return col < 9u ? host_c0[col] : 0;   /* the keys' instrument (TODO 5): channel col's C0 */
     if (row == 90u) return (uint32_t)macsop_channel_instr_no(&player, (int)col);   /* its instrument 1.. (0: not the song's) */
     if (row == 91u) {                         /* col 0 ed_instr, 1 ALGO's step (255: no copy), 2 the song's instrument
-                                               * ed_instr as a step, 4 a hash of the status message (h * 31 + c; 0: none) */
+                                               * ed_instr as a step, 4 a hash of the status message (h * 31 + c; 0: none), 5 and 6 the same of the arp screen's
+                                               * two last lines (channel, notes, latch; the keys' instrument) */
         uint32_t h = 0; const char *q;
         switch (col) {
         case 0: return ed_instr;
         case 1: return live_alg;
         case 2: return ed_instr >= 1u && ed_instr <= song.n_instr ? live_step_of(&song.instr[ed_instr - 1u]) : 255u;
+        case 5: case 6: {                     /* the arp screen's two last lines (arp_foot), hashed like the message */
+            char a[32], b[24];
+            arp_foot(a, b);
+            for (q = col == 5u ? a : b; *q; q++) h = h * 31u + (uint8_t)*q;
+            return h;
+        }
         default:
             if (msg && (int32_t)(msg_until - fm1_ms) > 0) for (q = msg; *q; q++) h = h * 31u + (uint8_t)*q;
             return h;
@@ -1531,6 +1552,7 @@ static void app_main(void)
                 live_set((uint32_t)(v < 0 ? 0 : v > 15 ? 15 : v));
             }
             live_say(); shown_order = ~0u;
+            if (view == V_ARP) draw_arp();          /* its screen names the instrument, not only the status line for 2 s */
         }
         if (arp_on && !edit) {                    /* the keys feed it, except on the scope (the mutes); key ups always count */
             if (up && !arp_latch)
