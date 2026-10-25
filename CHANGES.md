@@ -1,5 +1,6 @@
 # Unreleased
 
+- Pull and push song slots over USB: `tools/fm1_slot.py pull|push SLOT FILE`, SysEx commands 0x60/0x61 in the updater's framing (docs/API.md). A push is checked as a .CMF (`macsop_check`) and refused for the slot in the player or a file bigger than a slot. Host-tested, not yet on hardware.
 - docs/BLUETOOTH.md: the map for BLE MIDI (stage 0): the SDK's Bluetooth archives and their licence provenance (JieLi's host is BTstack-shaped and not GPL-compatible), the controller's HCI interface and registers as far as the SDK shows them, WiFi coexistence, NimBLE measured at 41 KB of code, flash and RAM against the WiFi plan, and seven stages. Documents only.
 - WPA2 key primitives for WiFi stage 8 (`firmware/wifi/wpa_crypto.c` on a 2.9 KB BearSSL subset): the PMK from the passphrase in main-loop steps, the 802.11 PRF and PTK, AES key unwrap; `tests/run_host.sh` checks them against IEEE 802.11 J.3/J.4 and RFC 3394. `tools/build.py` compiles `firmware/wifi/` and prints its size (4.1 KB, not linked). Host only, no EAPOL yet.
 - docs/WIFI.md: `wl_rf_common.a` checked member by member (8 of 13 clean, 5 with Ralink/Linux header lineage) and what stages 1 and 3 may take from it (facts, not code); WEXT count 7, `MACRegTable` values traced to Ralink's driver, a symbol total and the GPL source wording corrected. Documents only.

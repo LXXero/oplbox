@@ -15,6 +15,8 @@
  * The app (dinghy.c) includes this file first and supplies:
  *   static void app_audio(int32_t *out, uint32_t n)   audio ISR: n stereo frames, L R L R, Q15 (+-32767), out is zero
  *   static void app_main(void)                        never returns; calls platform_poll() often (every few ms)
+ *   static void app_usb_cmd(const uint8_t *d, uint32_t n)   main loop: a SysEx frame in the updater's framing that is
+ *                                                     not the updater's (d decoded, cmd d[2], body from d + 6)
  */
 /* the panel by name: buttons (fm1_in.buttons, fm1_input_edges, fm1_led_key: bit / id), the encoders
  * (fm1_enc_take); the 27 note keys are fm1_in.notes bit 0 (F3) .. 26 (G5), LED id 14 + key */
@@ -225,6 +227,7 @@ static int32_t abuf[2u * HALF_WORDS] __attribute__((aligned(4)));
 static volatile int32_t master_q12 = 2048;
 static void app_audio(int32_t *out, uint32_t n);
 static void app_main(void);
+static void app_usb_cmd(const uint8_t *d, uint32_t n);
 
 void fm1_alnk0_irq(void)                       /* via isr_alnk0 (hal/fm1_isr.S) */
 {
@@ -260,7 +263,12 @@ static void platform_poll(void)
     int32_t a;
     fm1_wdt_feed();
     usb_retry(fm1_ms);
-    ota_service();
+    {   uint32_t d = ota_take();                /* a frame in the updater's framing: its handshake, or the app's */
+        if (d == 7u && ota_dec[2] == 0x11)
+            ota_reply_identity();
+        else if (d)
+            app_usb_cmd(ota_dec, d);
+    }
     if (usb.ota_req) {
         usb.ota_req = 0;
         if (flash_ok)

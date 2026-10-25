@@ -85,11 +85,44 @@ void macsop_song_init(macsop_song *s)
             s->pat[0].cell[r][c].u = 0;
 }
 
+/* what macsop_parse refuses, without a song to parse into (a .CMF that arrives over USB, TODO 2a): the same walk
+ * and the same codes. macsop_parse runs it first, so the two can not disagree. */
+int macsop_check(const uint8_t *blob, uint32_t size)
+{
+    uint32_t p = 5 + 198, i, n_patterns, n_instr, speed;
+    if (size < 5 + 198 + 8 || blob[0] != 'A' || blob[1] != '.' || blob[2] != 'H' || blob[3] != '.')
+        return -1;
+    n_patterns = rd16(blob + p);
+    speed = (uint8_t)rd16(blob + p + 2);
+    n_instr = rd16(blob + p + 6);
+    p += 8;
+    if (speed < 1 || speed > 3 || n_patterns > MACSOP_MAX_PATTERNS || n_instr > MACSOP_MAX_INSTR)
+        return -2;
+    if (p + n_instr * 69u > size)
+        return -3;
+    p += n_instr * 69u;
+    for (i = 0; i < n_patterns; i++) {
+        while (p < size && blob[p] != 0xFF) {
+            const uint8_t *e = blob + p;
+            if (p + 6 > size)
+                return -4;
+            if (e[0] > MACSOP_ROWS || e[1] >= MACSOP_CHANNELS || e[2] == 0)
+                return -5;
+            p += 6;
+        }
+        if (p >= size)
+            return -4;
+        p++;
+    }
+    return 0;
+}
+
 int macsop_parse(macsop_song *s, const uint8_t *blob, uint32_t size)
 {
     uint32_t p = 5, i, r, c;
-    if (size < 5 + 198 + 8 || blob[0] != 'A' || blob[1] != '.' || blob[2] != 'H' || blob[3] != '.')
-        return -1;
+    int rc = macsop_check(blob, size);
+    if (rc < 0)
+        return rc;
     s->n_orders = MACSOP_MAX_ORDERS;
     for (i = 0; i < MACSOP_MAX_ORDERS; i++, p += 2) {
         s->order[i] = rd16(blob + p);

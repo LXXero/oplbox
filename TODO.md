@@ -63,30 +63,48 @@ has the two questions for xero. The questions below are from before it.
 CHANGES.md line 34 (0.4): "Not yet: pulling/pushing .CMF files over USB (0.5), live recording while playing,
 undo."
 
-### 2a. Pull and push `.CMF` slot files over USB
+### 2a. Pull and push `.CMF` slot files over USB — built, host-tested, not yet tried on hardware
 
-**Today.** The slots are plain `.CMF` files behind a 16-byte header (magic "OPLS", length, CRC):
-`slot_len()` :244, `slot_save()` :254, `slot_program()` :219, `slot_ptr()` :218. The host build writes
-`build/host/slotN.cmf` (:207); the device has no way out. USB is MIDI only (`usb.c`; CDC and UAC are off).
-`usb.c:sysex_byte()` recognises only two SysEx messages, the UBOOT key (F0 22 24 35 7D F7) and the M-UPGRADE
-key (F0 22 24 35 7F F7). The updater's frames go to `sx_frame[640]` for `ota.c`. `midi_get()` gives the app
-channel and realtime messages only, and `app_main()` throws them away (:724).
+**Built.** `tools/fm1_slot.py pull SLOT FILE` / `push SLOT FILE` (SLOT 1-9 as the jukebox shows them; it finds the
+FM-1 with `fm1_install.py`'s handshake and uses its framing). On the FM-1, `firmware/src/slot_sysex.c`: two
+commands in the updater's framing (`F0 pack7(00 59 cmd len24 body ~sum) F7`), `0x60` pull and `0x61` push, with the
+tables and status codes in docs/API.md "Song slots over SysEx". `platform.c` hands every frame in that framing that
+is not the updater's handshake to the app's `app_usb_cmd()` (before, `ota_service()` dropped it).
+- Pull: the computer asks for 512 bytes at an offset; the FM-1 answers from `slot_ptr()`/`slot_len()`.
+- Push: the computer announces the length and CRC-32; the FM-1 reads the file with the updater's own read requests
+  (`ota_read`, cmd `0x30`, as fm1-base's `plat_host_read` does), into `slot_buf`, checks the CRC and the file with
+  `macsop_check()`, writes the slot header and calls `slot_program()` with the sound stopped as SAVE does. It
+  refuses a slot number out of range, a file bigger than 32 KiB − 16, one `macsop_check()` refuses, and the slot
+  whose song is in the player. The screen says "USB: SLOT n SAVED / IS PLAYING / NOT SAVED".
+- `macsop_check()` (new, in `macsop.c`) is `macsop_parse()`'s walk without a song to write into: a second 190 KB
+  `macsop_song` does not fit beside the one in the player. `macsop_parse()` runs it first, so both refuse the same
+  files; the host test also compares them on every built-in song, cuts and 2000 random one-byte changes.
+- Tests in `tests/run_host.sh`: `tests/slot_sysex_test.c` feeds the SysEx byte stream through a usb.c-like
+  assembler into `ota.c` and `slot_sysex.c` against a fake computer (round trips of all 18 songs through the nine
+  slots, every refusal leaving the slot as it was, a computer that stops answering, a byte changed on the way, every
+  message the FM-1 sends is SysEx in the framing and at most 605 bytes); `tests/slot_sysex_tool.py` runs
+  `fm1_slot.py` against the same C code over a pipe. Three planted bugs (the in-player check off, the size limit one
+  slot header too big, `macsop_check()` taking note 0) each fail it.
+- Size: image 343,836 B (+1,044 B), RAM +32 B; the replies are built in `slot_buf`, so no new buffer.
 
-**Where.** A new SysEx command in `usb.c:sysex_byte()` (or a third key next to the two above), 7-bit packed
-the way `ota.c` frames are. A handler in `oplbox.c` that reads a slot with `slot_ptr()`/`slot_len()` and
-writes one with `macsop_parse()` (to check it) and `slot_program()`. A host command in `tools/`, next to
-`fm1_install.py`, which already uses mido for SysEx.
+**Decided** (chosen by the colony; xero can change it):
+- The updater's framing, and command bytes `0x60`/`0x61`: none of the stock updater's (`0x11`, `0x30`) or
+  fm1-base's (`0x41`-`0x43` backup, `0x50`-`0x54` mirror); Felucca's editor uses its own header (`F0 7D 46 4C`).
+  felucca-bsp's `ota_service()` hands such frames to the app the same way (`chip/ota.c:159-166`).
+- A push goes straight to flash (the erase stalls the sound, like SAVE), not into RAM as the current song.
+- "The slot that is playing" is the slot whose song is in the player, playing or paused: its edits live in RAM.
+- The FM-1 pulls a pushed file with read requests, so the computer only answers and never floods the 640-byte
+  frame buffer; a push holds the main loop (the screen) until it is done or 30 s pass (plus up to 3 × 5 s for the
+  request in flight).
 
-**Open questions.**
-- New command bytes or the M-UPGRADE framing? The command bytes must not collide with stock or Felucca
-  SysEx.
-- Push goes straight to flash (an erase stalls the sound, like SAVE, :700) or into RAM as the current song?
-- Reject files that are bigger than a slot (32 KiB − 16) or that `macsop_parse()` refuses (more than 64
-  patterns or instruments, `macsop.h`).
-- Can the FM-1 Firmware Hub (web MIDI) do it too, or only the Python tool?
-- Push into the slot that is playing: reload it (`load_song()`, :285) or refuse?
-- USB-MIDI SysEx throughput for a 32 KiB slot. 0.4.2 fixed the FM-1 dropping off USB on SysEx, so this needs
-  a test on hardware.
+**Still open.**
+- USB-MIDI throughput on hardware: a 32 KiB push is 64 request/answer round trips and a pull 64 more. Test on the
+  FM-1: push and pull a 28 KB song (TRADERS INTRO) and a small one, time them, and check the sound while a push
+  reads (it should only stop for the write).
+- The FM-1 Firmware Hub (web MIDI) could do the same with the same messages; only the Python tool exists.
+- Merging with the felucca-bsp branch (`xyphia/fanout/c8e7be1c55c37b5b/0`): both change the `ota_service()` line in
+  `platform.c`. Keep this branch's dispatch, or with the bsp's `ota_service()` (it returns the frame's length)
+  write `d = ota_service(); if (d) app_usb_cmd(ota_dec, d);` (`slot_sysex()` ignores the handshake's `0x11`).
 
 ### 2b. Live recording while playing — built, host-tested, not yet tried on hardware
 

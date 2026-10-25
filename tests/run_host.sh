@@ -13,6 +13,11 @@ build/host/oplbox build/host/undo tests/script_undo.txt
 build/host/oplbox build/host/rec tests/script_rec.txt
 # the arpeggiator: steps, tempo, gate, latch and the channel it takes, checked against its state and the chip
 build/host/oplbox build/host/arp tests/script_arp.txt
+# the song slots over SysEx (firmware/src/slot_sysex.c, TODO 2a): pull, push and every refusal through ota.c's framing
+# against a fake computer, macsop_check against macsop_parse; then tools/fm1_slot.py against the same code on a pipe
+cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function -Ifirmware/src -o build/host/slot_sysex_test tests/slot_sysex_test.c
+build/host/slot_sysex_test
+python3 tests/slot_sysex_tool.py build/host/slot_sysex_test build/host
 # the WiFi register header (firmware/hal/fm1_wifi_regs.h): it and the HAL compile warning-free (the device's MMIO
 # path too), the accessors hit their addresses, and every address matches docs/WIFI.md
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/hal -c -o build/host/fm1_wifi_hal.o firmware/hal/fm1_wifi_hal.c

@@ -1126,6 +1126,22 @@ static void save_song(void)
     chip_run = 1;
 }
 
+/* ---- the slots' .CMF files over USB SysEx (slot_sysex.c, docs/API.md): pull any slot, push any slot but the
+ * song in the player */
+static int slot_in_player(uint32_t i) { return cur == N_SONGS + i; }
+static int slot_store(uint32_t i, uint32_t n)
+{
+    int rc;
+    chip_off();                               /* the erase stalls the sound, as SAVE does */
+    rc = slot_program(i, slot_buf, n + SLOT_HDR);
+    chip_run = 1;
+    return rc;
+}
+#ifndef DINGHY_HOST                           /* tests/slot_sysex.c runs it on a computer */
+#include "slot_sysex.c"
+static void app_usb_cmd(const uint8_t *d, uint32_t n) { slot_sysex(d, n); }
+#endif
+
 static void app_main(void)
 {
     /* the first two as before the arp: the sector an older OPLBOX wrote still loads (its two bytes) */

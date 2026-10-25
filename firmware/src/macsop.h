@@ -54,6 +54,7 @@ typedef struct {
 
 /* ---- the song */
 int      macsop_parse(macsop_song *s, const uint8_t *blob, uint32_t size);   /* 0, or < 0: not a CMF / too big */
+int      macsop_check(const uint8_t *blob, uint32_t size);                   /* macsop_parse's answer, no song needed */
 uint32_t macsop_write(const macsop_song *s, uint8_t *out, uint32_t cap);     /* bytes written, 0 if cap is too small */
 uint32_t macsop_size(const macsop_song *s);                                  /* bytes macsop_write needs */
 void     macsop_song_init(macsop_song *s);                                   /* an empty song: one pattern, one order */
