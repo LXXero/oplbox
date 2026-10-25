@@ -1,0 +1,67 @@
+# t(ms) what ...   : SYNC into the tracker: ARP in EDIT writes what the synced arp played (exits 1 when a check fails).
+# Rows 89 / 96 / 95 / 94 of host_cell as in tests/script_arp.txt, script_arp_sync.txt and script_arp_write.txt.
+# Song 0 (STARDUST FALLING) plays from the start, speed 2 (109.9 ms, 5463.3 native samples a row); pattern 0
+# (order 1) leaves column 6 empty, where the arp plays (channel 6) and where ARP writes.
+# C4 (72), instrument 1, volume 127, pitch 32 is 545194312; 69975 is C4 keyed on channel 6, 70064 E4, 70146 G4.
+100 btn 10
+200 enc 4 -2
+300 enc 5 -100
+400 keys 0x4880
+# ---- live: 1/8, up, gate 50 %, with the song: a step every 2 rows (10926.5 samples), on the pattern's even rows
+1900 within 0 89 0 6 8
+1900 is 0 89 1 0
+1900 is 0 89 2 0
+1900 within 0 89 3 10926 10927
+1900 within 0 89 4 10926 10927
+2000 keys 0
+# ---- paused, EDIT, the cursor at order 1, row 0, column 6; ARP writes a pattern of rows: a step every 2 rows,
+# C4 E4 G4 up, and the gate (50 % of 2 rows) a key off on the row after each
+2100 btn 12
+2200 btn 6
+2300 btn 8
+2400 enc 2 5
+2500 btn 10
+2600 is 0 0 5 545194312
+2600 note 0 1 5 4
+2600 note 0 2 5 76
+2600 note 0 3 5 4
+2600 note 0 4 5 79
+2600 note 0 5 5 4
+2600 note 0 6 5 72
+2600 note 0 60 5 72
+2600 note 0 62 5 76
+2600 note 0 63 5 4
+2600 is 0 99 0 14
+# ---- PLAY from the cursor: the player keys what the live arp keyed, 10926 / 10927 samples apart as it was,
+# and lets go a row into each step
+2700 btn 12
+3020 is 0 95 5 70064
+3020 within 0 94 5 10926 10927
+3130 is 0 95 5 4528
+3240 is 0 95 5 70146
+3240 within 0 94 5 10926 10927
+3460 is 0 95 5 69975
+# ---- 1/8T (4/3 rows): steps on the rows they start in, 0 1 2, 4 5 6, 8. The gate (2/3 of a row) ends inside the
+# note's own row for the first two of each three (no key off); the third's, from row 2 2/3, ends in row 3.
+# ENV first: one step takes the 1/8 back
+3500 btn 12
+3600 btn 4
+3700 btn 6
+3800 btn 5
+3900 enc 4 1
+4000 btn 6
+4100 btn 8
+4200 enc 2 5
+4300 btn 10
+4400 note 0 0 5 72
+4400 note 0 1 5 76
+4400 note 0 2 5 79
+4400 note 0 3 5 4
+4400 note 0 4 5 72
+4400 note 0 5 5 76
+4400 note 0 6 5 79
+4400 note 0 7 5 4
+4400 note 0 8 5 72
+4400 note 0 62 5 79
+4400 note 0 63 5 4
+4500 end

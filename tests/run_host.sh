@@ -15,6 +15,27 @@ build/host/oplbox build/host/rec tests/script_rec.txt
 build/host/oplbox build/host/arp tests/script_arp.txt
 # the arp written into the tracker (TODO 4): the cells, their playback against the live arp's key-ons, undo
 build/host/oplbox build/host/arp_write tests/script_arp_write.txt
+# SYNC: the arp on the song's row clock at every speed (steps on the rows' first samples, 64 rows and more, no drift;
+# 1/8T and 1/32 lengths; free-running with the song stopped; swing), written into the tracker as it played; then the
+# settings sector it saved loads as SYNC in a second run, holds 0 BPM (an older OPLBOX reads that as out of range:
+# 120), and a 10- and a 12-byte sector an older OPLBOX wrote still load
+rm -f build/host/arp_sync.set
+HOST_SETTINGS=build/host/arp_sync.set build/host/oplbox build/host/arp_sync tests/script_arp_sync.txt
+build/host/oplbox build/host/arp_sync_write tests/script_arp_sync_write.txt
+HOST_SETTINGS=build/host/arp_sync.set build/host/oplbox build/host/arp_sync_load tests/script_arp_sync_load.txt
+python3 - <<'PY'
+import sys
+from pathlib import Path
+st = Path("build/host/arp_sync.set").read_bytes()
+want = bytes([1, 12, 0, 0])
+if st[:4] != want or st[12:14] != b"\0\0": sys.exit(f"FAIL: SYNC sector {st[:16].hex()}: want header {want.hex()}, arp_bpm 0")
+for n in (10, 12):                      # song, loop, mode, octaves, rate 1/16, gate 50, swing 50, latch, 140 BPM (, kb_oct, pad)
+    body = bytes([0, 0, 0, 1, 3, 50, 50, 0, 140, 0, 0, 0])[:n]
+    Path(f"build/host/arp_old{n}.set").write_bytes(bytes([1, n, 0, 0]) + body + bytes(256 - n))
+print("SYNC sector: arp_bpm 0; older 10- and 12-byte sectors written")
+PY
+HOST_SETTINGS=build/host/arp_old10.set build/host/oplbox build/host/arp_old10 tests/script_arp_sync_old.txt
+HOST_SETTINGS=build/host/arp_old12.set build/host/oplbox build/host/arp_old12 tests/script_arp_sync_old.txt
 # the keys' instrument outside EDIT (TODO 5): PRESETS, ALGO's copy against the chip's C0, the song's own left alone
 build/host/oplbox build/host/live_instr tests/script_live_instr.txt
 # OCT- / OCT+: the keys' octave outside EDIT, not the song; a playing arp follows it, a released key takes its note
