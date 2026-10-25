@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only
- * FM-1 WiFi register map (docs/WIFI.md stage 1, header part). Addresses and bit masks only: no register
- * values, no code. Nothing here has been tried on an FM-1.
+ * FM-1 WiFi register map (docs/WIFI.md stages 1 and 2), part of the fm1wifi library (README.md here).
+ * Addresses and bit masks only: no code, and no access: the library reaches these addresses through the
+ * board's port (fm1wifi_port.h), so this header holds numbers, never a volatile pointer.
  *
  * Provenance, per block:
  *  - CPU side, JL_ANA / JL_WL and IRQ 52: the JieLi AC79 SDK's C headers (Apache-2.0),
@@ -20,9 +21,10 @@
  *    Ralink's staging driver.
  *  - WiFi core, JieLi's own registers (0x0300 range, the frame data addresses) and the BBP windows: the
  *    addresses docs/WIFI.md read from wl_rf_common.a. rt2800.h has no name for them.
- *  - The internal SDIO bus's command indexes, R4 fields and CCCR addresses: the SD Association's SDIO
- *    Simplified Specification; the CCCR addresses cross-checked against Linux include/linux/mmc/sdio.h v6.6
- *    (facts only). The values wl30_sdio_enum writes: docs/WIFI.md.
+ *  - The core's memory window at 0x30000 and the WL30 host block's bits (stage 2): addresses and values read
+ *    from wl_rf_common.a's wl_sdio.c.o (wl30_mmc_io_rw_extended, wf_clk_rst_init, wdma_init), facts only,
+ *    as docs/WIFI.md "What stages 1 and 3 may take" allows for that member. CLK_CON1 is WL82.h's
+ *    JL_CLOCK->CLK_CON1 (0x10010).
  * See LICENSING.md / CREDITS.md. tests/wifi_regs.py checks every address here against docs/WIFI.md.
  */
 #pragma once
@@ -58,9 +60,24 @@
 #define FM1_WL_ANL_CON_N 4u
 #define FM1_WF_CON_N 10u
 
+/* CLK_CON1 (JL_CLOCK, WL82.h): wf_clk_rst_init clears bits 15-14 before it takes the WiFi core out of reset.
+ * The register is shared (bits 1-0 USB, 11-10 UART): only the port touches it, and only these two bits. */
+#define FM1_CLK_CON1_ADDR (FM1_LSFR_BASE + 0x10u)   /* 0x10010 */
+#define FM1_CLK_CON1_WIFI 0x0000C000u
+
+/* The WiFi core as the CPU sees it (stage 2, docs/WIFI.md "WiFi core registers"): its function 1 register at
+ * address A is the 32-bit word at 0x30000 + A, read and written directly (wl30_mmc_io_rw_extended does a
+ * plain load or store for every address except the two frame FIFOs). The WL30 host block below sits inside
+ * the window at 0x0F00. */
+#define FM1_WIFI_CORE_BASE 0x30000u
+#define FM1_WIFI_CORE_LAST 0x3FFFCu
+#define FM1_WIFI_CORE(a) (FM1_WIFI_CORE_BASE + (a))
+
 /* The internal SDIO host between the CPU and the WiFi core ("WL30" in JieLi's names) [no standard term for
- * its registers]. wl30_mmc_io_rw_extended uses 0x04 and 0x10-0x1C, wdma_init 0x00 and 0x04,
- * sdio_recv_int_hdl 0x04. What each bit does is stage 2's to find. */
+ * its registers]: the DMA engine for the frame FIFOs. wl30_mmc_io_rw_extended uses 0x04 and 0x10-0x1C,
+ * wdma_init 0x00 and 0x04, sdio_recv_int_hdl 0x04. What wdma_init sets is in fm1wifi.c (power-up); 0x10
+ * and 0x14 are the TX DMA address and (increment << 31 | length), 0x18 and 0x1C the RX DMA address and
+ * length; 0x04 bit 20 is TX done, bit 21 RX done, bits 10 and 11 their clears (stages 4-5). */
 #define FM1_WL30_HOST_BASE 0x30F00u
 #define FM1_WL30_HOST_LAST 0x30F1Cu
 #define FM1_WL30_HOST(off) (FM1_WL30_HOST_BASE + (off))
@@ -75,7 +92,7 @@
  * constraints"). */
 #define FM1_IRQ_WF 52u
 
-/* ---- WiFi core, SDIO function 1 addresses (not CPU addresses: reach them with fm1_wifi_mac_rd/wr) ---- */
+/* ---- WiFi core, SDIO function 1 addresses (not CPU addresses: reach them with fm1wifi_mac_rd/wr) ---- */
 
 #define FM1_WIFI_SDIO_FN 1u
 
@@ -204,77 +221,3 @@
 #define FM1_BBP_RXFE_STROBE 0xD4u     /* rx_frontend_wr */
 #define FM1_BBP_RXFE_ADDR 0xD5u
 #define FM1_BBP_RXFE_DATA 0xD6u
-
-/* ---- the internal SDIO bus, as the SDIO Simplified Specification defines it (docs/WIFI.md "Internal SDIO
- * enumeration"). Command indexes, the R4 response's fields and the CCCR addresses are the specification's;
- * the CCCR addresses were cross-checked against Linux include/linux/mmc/sdio.h v6.6 (facts only, no code). ---- */
-
-#define FM1_SDIO_CMD3 3u   /* SEND_RELATIVE_ADDR, R6: RCA in bits 31-16 */
-#define FM1_SDIO_CMD5 5u   /* IO_SEND_OP_COND, R4 */
-#define FM1_SDIO_CMD7 7u   /* SELECT/DESELECT_CARD, argument RCA << 16 */
-#define FM1_SDIO_CMD52 52u /* IO_RW_DIRECT */
-#define FM1_SDIO_CMD53 53u /* IO_RW_EXTENDED */
-#define FM1_SDIO_ADDR_MAX 0x1FFFFu  /* register address: 17 bits */
-#define FM1_SDIO_FN_MAX 7u
-
-#define FM1_SDIO_R4_READY 0x80000000u   /* C: initialisation done */
-#define FM1_SDIO_R4_NFN(r4) (((r4) >> 28) & 7u) /* number of I/O functions */
-#define FM1_SDIO_R4_MEM 0x08000000u     /* memory present */
-#define FM1_SDIO_R4_OCR 0x00FFFFFFu
-
-/* The CCCR: function 0's registers */
-#define FM1_SDIO_CCCR_REV 0x00u       /* CCCR/SDIO revision, read-only */
-#define FM1_SDIO_CCCR_SD_REV 0x01u    /* read-only */
-#define FM1_SDIO_CCCR_IO_ENABLE 0x02u /* bit n enables function n */
-#define FM1_SDIO_CCCR_IO_READY 0x03u  /* read-only: bit n, function n is ready */
-#define FM1_SDIO_CCCR_INT_ENABLE 0x04u /* bit 0 master, bit n function n */
-#define FM1_SDIO_CCCR_INT_PENDING 0x05u /* read-only */
-#define FM1_SDIO_CCCR_ABORT 0x06u
-#define FM1_SDIO_CCCR_BUS_IF 0x07u    /* Bus Interface Control: bits 1-0 bus width */
-#define FM1_SDIO_BUS_WIDTH_4 0x02u
-#define FM1_SDIO_CCCR_CAPS 0x08u      /* Card Capability, read-only */
-#define FM1_SDIO_CCCR_CIS 0x09u       /* common CIS pointer, 3 bytes, read-only */
-#define FM1_SDIO_CCCR_EXEC 0x0Eu      /* read-only */
-#define FM1_SDIO_CCCR_READY 0x0Fu     /* read-only */
-
-/* What wl30_sdio_enum sends (docs/WIFI.md), the values our enumeration uses */
-#define FM1_WIFI_CMD5_ARG 0x1F000000u /* as decoded from the IR. The specification defines bits 23-0 (OCR) and
-                                       * 24 (S18R) only; bits 25-28 are unexplained [unchecked] */
-#define FM1_WIFI_IO_ENABLE 0xFFu      /* JieLi's value; bit 0 is reserved in the specification */
-#define FM1_WIFI_INT_ENABLE 0x03u     /* master and function 1 */
-#define FM1_WIFI_FN1_INIT_FIRST 0x10u /* function 1 registers 0x10-0x13 are written 0: WiFi-core specific */
-#define FM1_WIFI_FN1_INIT_N 4u
-#define FM1_WIFI_CMD5_TRIES 100u      /* CMD5 until C is set, at most this often */
-#define FM1_WIFI_IO_READY_TRIES 100u /* I/O Ready reads after I/O Enable until function 1's bit is set, at most this often */
-#define FM1_WIFI_CMD3_TRIES 4u        /* again while the card offers RCA 0, which the specification reserves */
-
-/* ---- accessors (fm1_wifi_hal.c) ---- */
-
-/* ENOTYET: not built yet. ERANGE: an argument out of range, nothing sent. EBUS: the card answered with an
- * error or not at all. ETIMEOUT: a bounded wait ran out. */
-enum { FM1_WIFI_OK = 0, FM1_WIFI_ENOTYET = -1, FM1_WIFI_ERANGE = -2, FM1_WIFI_EBUS = -3, FM1_WIFI_ETIMEOUT = -4 };
-
-/* CPU-side registers by index; an index past the block returns 0 / does nothing. */
-uint32_t fm1_wla_rd(unsigned n);
-void fm1_wla_wr(unsigned n, uint32_t v);   /* refuses the read-only WLA_CON31..39 */
-uint32_t fm1_wl_rd(unsigned n);
-void fm1_wl_wr(unsigned n, uint32_t v);
-uint32_t fm1_wl_anl_rd(unsigned n);
-void fm1_wl_anl_wr(unsigned n, uint32_t v);
-uint32_t fm1_wf_rd(unsigned n);
-void fm1_wf_wr(unsigned n, uint32_t v);
-uint32_t fm1_wl30_host_rd(uint32_t off);   /* off 0x00..0x1C */
-void fm1_wl30_host_wr(uint32_t off, uint32_t v);
-
-/* WiFi core over the internal SDIO bus. fm1_wifi_sdio_cmd sends a command without data (CMD3, CMD5, CMD7)
- * and returns its 32-bit response. Stage 2 writes these three; until then they return FM1_WIFI_ENOTYET and
- * touch nothing. Built with -DFM1_WIFI_SDIO_MODEL the HAL leaves them out and the host's register model
- * (tests/wifi/sdio_model.c) supplies them. */
-int fm1_wifi_sdio_cmd(unsigned idx, uint32_t arg, uint32_t *resp);
-int fm1_wifi_cmd52(unsigned fn, uint32_t addr, int write, uint8_t *data);
-int fm1_wifi_cmd53(unsigned fn, uint32_t addr, int write, void *buf, unsigned len);
-int fm1_wifi_mac_rd(uint32_t addr, uint32_t *v);
-int fm1_wifi_mac_wr(uint32_t addr, uint32_t v);
-/* Enumerate the WiFi core on the internal SDIO bus, as wl30_sdio_enum does (docs/WIFI.md): CMD5 until ready,
- * CMD3, CMD7, then the CCCR and function 1 writes. FM1_WIFI_OK or the first error. */
-int fm1_wifi_sdio_enum(void);

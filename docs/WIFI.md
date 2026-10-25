@@ -179,15 +179,16 @@ Two kinds of thing can be read out of the archive:
 
 - **Facts about the hardware**, from any member: register addresses, the values written, the bits polled and how
   long, the order of the writes, the contents of constant tables, delays. They describe the chip, and stages 1-3 need
-  them. `firmware/hal/fm1_wifi_regs.h` already holds the addresses.
+  them. `firmware/wifi/fm1wifi_regs.h` already holds the addresses.
 - **Code**: the functions' structure and logic. None is translated from IR into C, not even from the eight clean
   members (chosen by the colony; xero can change it). Their Apache-2.0 label is not contradicted but not proven
   either, and writing from a description costs little more. Stage 3's code is written from a plain description of
   each step (which register, which value, what is read, when a loop ends), kept in this file or a stage-3 document,
   and from what the FM-1 shows. A closer port of the eight clean members would be a change to this rule, not to
   the evidence.
-- From the five members with Ralink or Linux lineage, addresses and values only. The internal SDIO bus (stage 2)
-  is written from the SDIO Simplified Specification, as `fm1_wifi_sdio_enum()` was. The RX/TX descriptors (stages
+- From the five members with Ralink or Linux lineage, addresses and values only. Stage 2's bring-up and the core's
+  window are such facts from `wl_sdio` (`wf_clk_rst_init`, `wdma_init`, `wl30_mmc_io_rw_extended`: registers, bits,
+  order, delays; "Stage 2 bring-up"), and `fm1wifi.c` is written from that list. The RX/TX descriptors (stages
   4-5) come from Linux rt2x00's `rt2800.h`/`rt2800lib.c` (GPL-2.0-or-later), not from JieLi's structures.
 
 What stage 1's `tools/wifi_ir.py` may extract:
@@ -202,7 +203,7 @@ What stage 1's `tools/wifi_ir.py` may extract:
   depends on a reading is written as a named placeholder, not as the expression that computes it.
 - Its output is arrays of numbers with a comment naming the archive's SHA-256, the member, the function and the
   IR line range. It emits no control flow, no IR comments and no identifiers other than register names from
-  `WL82.h`, `rt2800.h` or `fm1_wifi_regs.h`.
+  `WL82.h`, `rt2800.h` or `fm1wifi_regs.h`.
 - It reads none of `wl_hw_init`, `wl_usb_to_sdio`, `wl_sdio` and `wl_sdio_host`, and never `wl_wifi*.a` or the
   Bluetooth archives.
 - The generated tables are committed. LICENSING.md lists them as register values read from `wl_rf_common.a`
@@ -309,8 +310,9 @@ The radio has three layers, and the IR shows which code drives each.
 
 1. **Analog radio and PLL**: JieLi's own registers, written directly by `wl_rf_common.a`.
 2. **An internal SDIO bus** between the CPU and the WiFi core ("WL30" in JieLi's names: `wl30_mmc_io_rw_direct`,
-   `wl30_mmc_io_rw_extended`, `wl30_sdio_enum`). It is enumerated with standard SDIO commands, so the SD
-   Association's SDIO Simplified Specification applies.
+   `wl30_mmc_io_rw_extended`, `wl30_sdio_enum`). Despite the names, the CPU reaches the core's registers directly,
+   in a memory window, and only the frame FIFOs go through a DMA engine; the core is never enumerated with SDIO
+   commands (stage 2; "Internal SDIO enumeration", correction).
 3. **The WiFi core's MAC and baseband**, reached as SDIO function 1 registers. Its MAC registers are the
    Ralink RT2800 family's: same addresses and bit fields as Linux's `rt2800.h`. `rt2800.h` has no default values;
    JieLi's 22 MAC defaults equal those of Ralink's own driver (below).
@@ -342,10 +344,28 @@ The interrupt is `IRQ_WF_IDX` = 52 (`hwi.h`), requested at priority 2 by `wfhw_i
    0x04 Int Enable = 0x03 (master and function 1).
 4. CMD52 writes of 0 to function 1 registers 0x10, 0x11, 0x12, 0x13 (WiFi-core specific).
 
+**Correction (stage 2, 2026-10-25): the WiFi core is not enumerated, and these commands never reach it.** Nothing in
+the SDK calls `wl30_sdio_enum`: no member of any archive in `cpu/wl82/liba/` references it (`nm -A *.a | grep
+wl30_sdio_enum` finds only its definition), and `wf_rf_common_init` in `wl_usb_to_sdio` brings the core up with
+`wf_clk_rst_init`, `wdma_init` and `wfhw_init` alone. The `sdio_host_send_command` it calls is in `cpu.a`'s `sd.c.o`,
+JieLi's driver for the external SD/SDIO controllers `JL_SD0` (0x11400) and `JL_SD1` (0x11500) on GPIO pins (the
+SDK's `demo_wifi_ext` uses it for an external WiFi module; `sdio_host_init.h` lists their pin groups); it writes the
+command into a RAM buffer whose address goes to `CPTR` and polls bit 7 of `CON0`. It does not touch the WiFi core's
+blocks. And `wl30_mmc_io_rw_direct`, JieLi's CMD52, only asserts. The internal core's registers are reached directly
+instead ("WiFi core registers", below), and stage 2 follows `wf_clk_rst_init` and `wdma_init` ("Stage 2 bring-up").
+`sd.c.o` was read for these facts only; its debug information names only the SDK's own headers (`WL82.h`, `cpu.h`,
+`sdmmc.h`, `port_waked_up.h`). The SD command enumeration built for stage 2 before this was found
+(`fm1_wifi_sdio_enum`, TODO.md 7b) is gone.
+
 ### WiFi core registers (SDIO function 1)
 
 `sdio_mac_wreg(addr, val)` = CMD53-style `wl30_mmc_io_rw_extended(write=1, fn=1, addr, 4 bytes)`;
-`sdio_mac_rreg` the same with write=0. The addresses, checked against Linux's `rt2800.h`:
+`sdio_mac_rreg` the same with write=0. On the CPU side there is no bus transfer behind that (stage 2,
+`wl30_mmc_io_rw_extended`'s IR): function 1 address A is the word at CPU address `0x30000` + A, read or written with
+one plain 32-bit load or store; the function argument is ignored. Only the two frame FIFOs differ: a write to
+address 0 is a DMA through the WL30 host block (0x30F10 = buffer + 4, 0x30F14 = increment << 31 | length, then wait
+for bit 20 of 0x30F04 and set bit 10 to clear it), a read from 12 likewise (0x30F18, 0x30F1C, bit 21, bit 11).
+The addresses, checked against Linux's `rt2800.h`:
 
 | Address | rt2800.h name | Where JieLi uses it |
 | --- | --- | --- |
@@ -379,6 +399,31 @@ calls `wifi_set_channel` in `wl_rf_common.a` instead).
 
 No MCU firmware is loaded: `rt28xx_init` never calls a firmware loader (`RTUSBFirmwareWrite` is defined but
 unused), and the archives hold no firmware image. `AsicSendCommandToMcu` does nothing and returns 1.
+
+### Stage 2 bring-up
+
+What `firmware/wifi/fm1wifi.c` does to power the core up, as a list of facts read from `wl_sdio.c.o`'s
+`wf_clk_rst_init` and `wdma_init` (register, bits, order, delays; no code). `tests/wifi/bringup_expect.txt` is
+this list written out by hand as a fixture, and `tests/wifi_model.c` diffs the library's run against it. Each step
+is one read-modify-write, one change at a time, as the SDK makes them. What each bit means is not known.
+
+| Step | Register | Change |
+| --- | --- | --- |
+| 1 | `CLK_CON1` (0x10010), bits 15-14 | cleared (the register is shared with USB and UART: the port changes these two bits only) |
+| 2 | `WF_CON0`-`WF_CON4` (0x14040-0x14050) | each written 0 |
+| 3 | `WF_CON0` | bit 8, bit 6, bit 0 set; 1 us; bit 2; 1 us; bit 3; 1 us; bit 1; 50 us |
+| 4 | `WF_CON7` (0x1405C) | bits 7-0 = 5; bits 15-8 cleared; bits 23-16 cleared; bits 26-24 set; bit 30 set; bit 31 cleared |
+| 5 | `WF_CON3` | bit 24 set |
+| 6 | WL30 host 0x04 (0x30F04) | bits 11, 10, 9, 5, 4 set; bit 3 cleared; bits 2, 1, 0 set |
+| 7 | WL30 host 0x00 (0x30F00) | bit 10 set; bits 9, 8 cleared; bits 7-5 = 3; bit 4 cleared; bits 3, 2, 1, 0 set |
+
+`wdma_init` then enables the external PA only when `WIFI_PA_ENABLE` is set; fm1-base sets it to 0, so stage 2 skips
+it. Before step 1 the library reads and keeps every register it changes; power-down writes them back in the order
+WL30 0x00, 0x04, `WF_CON7`, `WF_CON4`-`WF_CON1`, `WF_CON0`, then restores `CLK_CON1`'s two bits, so the core goes back
+to how the boot left it (held in reset, if it was). Not done in stage 2: `wfhw_init` (the MAC and PHY reset and
+tables, stage 3). Stage 2 then reads `MAC_CSR0` and `MAC_SYS_CTRL` through the window, and BBP register 0 through
+`BBP_CSR_CFG`: wait for BUSY clear, write `0x90000` | reg << 8, then the same | BUSY, wait for BUSY clear, the value
+in bits 7-0. Each wait reads at most 1000 times, 1 us apart. JieLi's `bbp_rd` waits without a bound.
 
 ### Power-up and calibration sequence
 
@@ -514,14 +559,50 @@ From `docs/BASE.md` and a build of this tree (f36fe5d, `./build.sh` on this mach
 - **No RTOS**: OPLBOX is a main loop (Felucca's platform). The driver is a polled state machine.
 - **Bluetooth**: OPLBOX has none. If it ever gets BLE, `wl_rf_common` is shared, and WiFi/BT coexistence
   (`wlc_main`, PTA) becomes a question.
+- **Stage 2's cost** (`./build.sh`, against main ddd5b5c): the image grows by 2,996 B to 354,580 of 581,564 B
+  (`fm1wifi.c`, its port and the page), `.data`+`.bss` by 48 B to 39,152 of 98,304 B; the pool (257,744 B) and the
+  RAM code (6,840 B) are unchanged. Against the driver's budget (under 120 KB of code, under 48 KB of RAM): about 3 KB
+  and 48 B so far.
+
+## Standalone library
+
+xero wants the WiFi support shareable on its own (2026-10-25): his friend's webcam / video-out firmware runs on the
+same FM-1 and could stream over WiFi (RTSP or similar) instead of USB. So the driver is a library, `fm1wifi`, in
+`firmware/wifi/` (its `README.md` has the API and how to link it), not OPLBOX code:
+
+- **One directory.** `firmware/wifi/` holds the driver (`fm1wifi.c`, `fm1wifi.h`, the register map
+  `fm1wifi_regs.h`), the port header (`fm1wifi_port.h`), and the WPA2 primitives (`wpa_crypto.c` on its BearSSL
+  subset), which already had no OPLBOX dependency. Nothing in it includes a file from outside it, uses an OPLBOX
+  global, or touches a register itself.
+- **The port.** Everything the library needs from the board goes through `fm1wifi_port.h`, which the firmware that
+  links it implements: 32-bit register access to the WiFi blocks, the WiFi bits of the shared `CLK_CON1`, and a
+  microsecond delay. Interrupt hookup (IRQ 52) joins it at stage 4, when the library first needs it. OPLBOX's
+  implementation on felucca-bsp is `firmware/hal/fm1wifi_port_bsp.c`, a file of its own with nothing of OPLBOX's in
+  it, so another FM-1 firmware on felucca-bsp can compile it as is. The host tests have a second one,
+  `tests/wifi/sdio_model.c`.
+- **Checked.** `tests/run_host.sh` compiles the library with only its own directory on the include path (and the
+  model's for the tests) and fails if any of its files includes something from elsewhere; `tools/build.py`
+  compiles each of its files alone with the JieLi toolchain, and its register check keeps every access out of
+  `firmware/wifi/` (the register map's addresses are numbers handed to the port).
+- **The layering for the later stages**, each keeping the same no-OPLBOX rule: the driver (stages 2-3: power,
+  registers, calibration) → raw frame TX/RX (stages 4-5: the FIFOs, RX/TX descriptors, channel) → the station MAC
+  (stage 6: scan, authenticate, associate; stage 8: WPA2 keys) → a netif-style packet interface: Ethernet frames in
+  and out, the MAC address, link up/down. An IP stack such as lwIP plugs into that interface (stage 7 is OPLBOX's
+  glue to lwIP), so a third party can run their own TCP, UDP or RTSP on it. OPLBOX's own uses (song transfer,
+  updates, stage 9) sit on top like any other caller.
+- **Licence: an open decision for xero.** Today every file in the library is GPL-3.0-only, like the rest of OPLBOX.
+  Stage 6 takes its code basis from GPL-2.0-or-later sources (Ralink's staging driver, Linux rt2x00; "What this
+  means" above), so the shared library as a whole will be GPL-licensed. Which GPL version (GPL-3.0-only as now, or
+  GPL-2.0-or-later so a GPL-2.0 firmware could use it) is xero's to choose; nothing here picks or changes one. xero
+  said on 2026-10-25 that his friend's firmware is GPL as well.
 
 ## Plan
 
 Each stage is one task, on its own branch, merged before the next begins unless marked parallel. "Host" is what
-a host test can prove; "FM-1" is what needs xero to flash a build and report. New code goes under
-`firmware/wifi/` (driver) and `host/` (tests). The build allows register access only in `firmware/hal/`, so the
-register header and the MMIO accessors go there (`fm1_wifi_regs.h`, `fm1_wifi_hal.c`) and `firmware/wifi/` calls
-them.
+a host test can prove; "FM-1" is what needs xero to flash a build and report. The driver goes under
+`firmware/wifi/` (the fm1wifi library, "Standalone library") and its host tests under `tests/`. The build allows
+register access only in `firmware/bsp/` and `firmware/hal/`, so the library hands every access to its port, and
+OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
 
 ### Stage 1: register map and extracted tables (host only)
 
@@ -537,15 +618,26 @@ them.
 - `wifi_conf.c`'s constants and `wl_rfd_ram_lut`, as fm1-radio's `tools_rfconst.py` does (Apache-2.0).
 - **Host**: tables compile, extraction is reproducible. **FM-1**: nothing.
 
-### Stage 2: internal SDIO bus and first contact (needs FM-1)
+### Stage 2: internal bus and first contact (needs FM-1)
 
-- CMD52/CMD53 on the internal SDIO host (registers 0x30F00-0x30F1C), the enumeration above, `WF_CON*` clock and
-  reset, a bounded `bbp_rd`/`bbp_set`.
-- A diagnostic page (GLO menu or a key combination) that prints the reads of `MAC_CSR0` (0x1000, ASIC version),
-  `MAC_SYS_CTRL` and BBP register 0. It also fills the free pool with a pattern before WiFi starts and reports
-  any byte that changes, to find the RAM the hardware writes (the fm1-radio layout warning).
-- **Host**: a register model (a fake SDIO host that logs CMD52/53) checks the command sequence. **FM-1**: xero
-  flashes, opens the page, reads out four numbers and the pattern check.
+- The core's power-up and power-down ("Stage 2 bring-up": the `WF_CON*` clock and resets and the WL30 host
+  block's DMA set-up), its MAC registers through the window at 0x30000, a bounded `bbp_rd`/`bbp_set`. Not the SD
+  command enumeration first planned here: the core is not enumerated ("Internal SDIO enumeration", correction).
+- A diagnostic page that prints the reads of `MAC_CSR0` (0x1000, ASIC version), `MAC_SYS_CTRL` and BBP register 0.
+  It also fills the free pool with a pattern before WiFi starts and reports any byte that changes, to find the RAM
+  the hardware writes (the fm1-radio layout warning).
+- **Host**: a register model (the library's port on the host, logging every register access) checks the sequence.
+  **FM-1**: xero flashes, opens the page, reads out four numbers and the pattern check.
+- **Built** (TODO.md 7e): the fm1wifi library ("Standalone library") and the page. Outside EDIT, **SAVE** opens it;
+  nothing touches the radio until **PLAY** there, which stops the sound, fills the free pool (from the end of the
+  last `.pool` buffer to the end of the pool region, about 84 KB), powers the core up and shows `RESULT`,
+  `MAC_CSR0`, `MAC_SYS_CTRL`, `BBP 0` and `RAM CHECK` (bytes changed, and the first one's address), checking the
+  pool again every half second. **SAVE** leaves: the core is powered down, the sound comes back. Host-tested;
+  not run on an FM-1.
+- What could go wrong on the FM-1: the page's first read of the core's window after power-up. If the core's clock
+  or bus is not running, that load might never complete and the FM-1 would hang on the page until it is powered
+  off; nothing is written to flash, and the boot, the boot guard and the OCT− USB rescue are untouched (the page
+  only runs when opened), so the FM-1 still boots and can be rescued.
 
 ### Stage 3: radio power-up and calibration (needs FM-1)
 
@@ -618,6 +710,9 @@ Stage 9 can start its UI on the host while 7 and 8 are being built. In parallel 
 register model and fixture format that stages 2 to 5 test against can be built.
 
 ### Open questions
+
+- What the bits power-up sets mean (`WF_CON0`, `WF_CON7`, the WL30 host block, `CLK_CON1` bits 15-14), and whether
+  the core's window reads anything before `wfhw_init` (stage 2's page answers the second).
 
 - Which RAM address the hardware writes (stage 2's pattern check).
 - What the JieLi registers 0x0300-0x032C in the WiFi core do beyond interrupts (stage 2-4).

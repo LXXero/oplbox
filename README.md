@@ -26,6 +26,7 @@ round-trips through the editor's model byte for byte (`host/roundtrip.c`, 18 of 
 | **SEQ** | jukebox screen ↔ **tracker screen**: the pattern scrolling by, one column per channel, the playing row in the middle. Notes as `C4` / `c4` (lowercase = sharp), `==` key off, `EN` end of pattern. Rhythm songs show 11 columns (6 + BD SD TM TC HH), melodic songs 9. |
 | **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel, labelled `06 produc` (instrument number, then name; `--` = the driver's default patch). In a rhythm song boxes 7-9 are the drums: `BD`, `SD`, `HH TM CY`. The first nine white keys (F3–G4) mute / unmute channels 1–9: red label, dim trace, key LED lit. Mutes survive a restart, clear on a song change. |
 | **GLO** | the battery's raw ADC count in the status line for two seconds, e.g. `BATTERY 0571 (2/3)` (count, bars), to tune the battery icon by |
+| **SAVE** | the **WiFi test page** (below). Nothing touches the radio until you press PLAY there |
 | **ARP** | the arpeggiator on (its settings screen opens) / off; the LED shows it. Not in EDIT, where ARP keeps its editor meaning |
 | **LFO** | the arpeggiator's settings screen: open it, or turn its page |
 | **PRESETS** | which of the song's instruments the keys (the arp) play: the status line says `I03 t.detert`. It is the editor's instrument too (`I03` in EDIT) |
@@ -49,6 +50,23 @@ and a new chord's first step waits for the next step of that grid. Swing and gat
 song is stopped the arp keeps the same step length from the song's speed; a new speed (song screen, K2) or a new
 song changes it at once. To play along and keep it: ARP on, K4 to SYNC, play the song and the chord until it sounds
 right; then EDIT, cursor to the row it should start on, and **ARP** writes what you heard (below).
+
+**WiFi test page** (stage 2 of docs/WIFI.md; for xero to read back off a real FM-1). Outside EDIT press **SAVE**:
+the page opens and says `PLAY: POWER UP AND READ`. Nothing touches the radio yet. Press **PLAY**: the sound stops,
+the WiFi core is powered up and read, and the page shows
+
+```
+RESULT: OK                    OK, or what went wrong: NO ANSWER, TIMEOUT
+MAC_CSR0     xxxxxxxx         the chip's ASIC version (8 hex digits)
+MAC_SYS_CTRL xxxxxxxx         8 hex digits
+BBP 0        xx               baseband register 0 (2 hex digits), or TIMEOUT
+RAM CHECK: n CHANGED          bytes of free RAM the hardware wrote (0 is the good answer)
+FIRST AT xxxxxxxx             the first changed byte's address (only when n is not 0)
+```
+
+Read back those four values and the RAM check (the RAM line updates every half second while the page is open, so
+wait a few seconds before reading it). **SAVE** leaves: the core is powered down and the sound comes back. If the
+FM-1 hangs on the page, power it off and on: nothing was written to flash, and it boots as before.
 
 **Battery.** Every screen shows a battery at the top right: 3 bars, red outline when empty. It reads ADC ch3
 (the battery divider) once a second, smoothed over a few seconds. The bars switch at raw counts 531 / 561 / 591,

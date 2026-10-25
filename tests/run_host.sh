@@ -6,7 +6,8 @@ set -e
 cd "$(dirname "$0")/.."
 mkdir -p build/host
 rm -f build/host/oplbox-*.ppm build/host/oplbox-*.png build/host/oplbox.wav
-cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -DDBOPL2_SCOPE_N=512 -Ifirmware/src -Ifirmware/gen -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c
+cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -DDBOPL2_SCOPE_N=512 -Ifirmware/src -Ifirmware/gen \
+   -Ifirmware/wifi -Itests/wifi -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c firmware/wifi/fm1wifi.c tests/wifi/sdio_model.c
 build/host/oplbox build/host/oplbox
 # the editor's undo and live recording, checked against the song in memory: each script exits 1 when a check fails
 build/host/oplbox build/host/undo tests/script_undo.txt
@@ -45,16 +46,40 @@ build/host/oplbox build/host/octave tests/script_octave.txt
 cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function -Ifirmware/src -Ifirmware/bsp/chip -o build/host/slot_sysex_test tests/slot_sysex_test.c
 build/host/slot_sysex_test
 python3 tests/slot_sysex_tool.py build/host/slot_sysex_test build/host
-# the WiFi register header (firmware/hal/fm1_wifi_regs.h): it and the HAL compile warning-free (the device's MMIO
-# path too), the accessors hit their addresses, and every address matches docs/WIFI.md
-cc -std=c11 -Wall -Wextra -Werror -Ifirmware/hal -c -o build/host/fm1_wifi_hal.o firmware/hal/fm1_wifi_hal.c
-cc -std=c11 -Wall -Wextra -Werror -DFM1_WIFI_HOST -Ifirmware/hal -o build/host/wifi_regs tests/wifi_regs.c firmware/hal/fm1_wifi_hal.c
+# the fm1wifi library (firmware/wifi/, docs/WIFI.md "Standalone library") stands alone: compiled with only its own
+# directory and a port (no firmware/src, hal or bsp on the include path), warning-free, and none of its files
+# includes anything from outside it
+for f in firmware/wifi/*.c firmware/wifi/*.h; do
+  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v '"\(fm1wifi[a-z_]*\|wpa_crypto\|bearssl/[a-z_]*\)\.h"'; then
+    echo "FAIL: $f includes a file from outside firmware/wifi/" >&2; exit 1; fi
+done
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -c -o build/host/fm1wifi.o firmware/wifi/fm1wifi.c
+# the register header: the accessors hit their addresses, and every address matches docs/WIFI.md
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_regs tests/wifi_regs.c firmware/wifi/fm1wifi.c
 build/host/wifi_regs > build/host/wifi_regs.txt
 python3 tests/wifi_regs.py build/host/wifi_regs.txt
-# the WiFi register model (tests/wifi/sdio_model.c), its fixture format and diff: the HAL's enumeration runs
-# against a fake card and must match tests/wifi/sdio_enum_expect.txt (wl30_sdio_enum, docs/WIFI.md)
-cc -std=c11 -Wall -Wextra -Werror -DFM1_WIFI_HOST -DFM1_WIFI_SDIO_MODEL -Ifirmware/hal -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/hal/fm1_wifi_hal.c
+# fm1wifi against the register model (tests/wifi/sdio_model.c, the library's port on the host): the power-up and
+# the first reads must match tests/wifi/bringup_expect.txt and diag_expect.txt (written by hand from
+# docs/WIFI.md), the BBP waits are bounded, power-down puts every register back; the fixture format and diff
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/wifi/fm1wifi.c
 build/host/wifi_model tests/wifi build/host
+# the WiFi page in the simulator (tests/script_wifi.txt): its text against the made-up core, then against a
+# core whose baseband never answers and one that answers nothing: an error on the page, no hang
+build/host/oplbox build/host/wifi tests/script_wifi.txt > build/host/wifi_page.txt
+HOST_WIFI_MODEL=tests/wifi/core_bbp_stuck.txt build/host/oplbox build/host/wifi_stuck tests/script_wifi.txt > build/host/wifi_page_stuck.txt
+HOST_WIFI_MODEL=tests/wifi/core_silent.txt build/host/oplbox build/host/wifi_silent tests/script_wifi.txt > build/host/wifi_page_silent.txt
+for want in "wifi page 0: WIFI TEST (STAGE 2)" "wifi page 1: PLAY: POWER UP AND READ" "wifi page 2: SAVE: LEAVE" \
+            "wifi page 1: RESULT: OK" "wifi page 2: MAC_CSR0     35920200" "wifi page 3: MAC_SYS_CTRL 0000000C" \
+            "wifi page 4: BBP 0        21" "wifi page 5: RAM CHECK: 0 CHANGED" "wifi page 7: POOL 016 KB  SAVE: LEAVE"; do
+  grep -qF "$want" build/host/wifi_page.txt || { echo "FAIL: WiFi page: no line '$want'" >&2; exit 1; }
+done
+for want in "wifi page 1: RESULT: TIMEOUT" "wifi page 2: MAC_CSR0     35920200" "wifi page 4: BBP 0        TIMEOUT"; do
+  grep -qF "$want" build/host/wifi_page_stuck.txt || { echo "FAIL: WiFi page, BBP stuck: no line '$want'" >&2; exit 1; }
+done
+for want in "wifi page 1: RESULT: NO ANSWER" "wifi page 2: MAC_CSR0     00000000"; do
+  grep -qF "$want" build/host/wifi_page_silent.txt || { echo "FAIL: WiFi page, silent core: no line '$want'" >&2; exit 1; }
+done
+echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) as expected"
 # the WPA2 key primitives (firmware/wifi/wpa_crypto.c on BearSSL): PSK and PRF against IEEE 802.11 J.4.2 / J.3,
 # AES key unwrap against RFC 3394 4.1-4.6, the PMK in main-loop steps, and the refusals
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_crypto tests/wifi_crypto.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c

@@ -1,5 +1,16 @@
 # Unreleased
 
+- WiFi stage 2, as a library: `firmware/wifi/` is now **fm1wifi**, a WiFi driver any FM-1 firmware can link (its
+  `README.md`): no OPLBOX code, headers or globals, everything board-specific through `fm1wifi_port.h`, implemented
+  for felucca-bsp in `firmware/hal/fm1wifi_port_bsp.c` (usable as is by another firmware) and for the host tests by
+  the register model. It powers the WiFi core up and down (JieLi's `wf_clk_rst_init` and `wdma_init` steps, as
+  facts), reads its MAC registers through the core's memory window at 0x30000 and its baseband through
+  `BBP_CSR_CFG` with bounded waits. Found on the way: the core is not enumerated over SDIO; the SD command
+  enumeration and the stage 1 header's SDIO command constants are gone (docs/WIFI.md). The **WiFi test page**: SAVE
+  outside EDIT, then PLAY, shows `MAC_CSR0`, `MAC_SYS_CTRL`, BBP register 0, the result and a RAM check of the free
+  pool (README "WiFi test page"). The image grows by 2,996 B. Host-tested (`tests/wifi_model.c` against
+  `tests/wifi/bringup_expect.txt` written by hand, `tests/script_wifi.txt`), not run on an FM-1.
+
 - Arpeggiator SYNC: turning K4 (tempo) left past 30 BPM gives `SYNC`, the song's own tempo: one row is a 1/16, the
   steps are started by the row clock on the row's first sample while the song plays (no drift; 1/4 on the pattern's
   rows 0, 4, 8 …), a new chord waits for the grid's next step, swing and gate as before, and with the song stopped it

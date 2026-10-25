@@ -1,15 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-only
- * Host test of firmware/hal/fm1_wifi_regs.h and fm1_wifi_hal.c (built with -DFM1_WIFI_HOST).
- *   wifi_regs           checks the accessors against a fake bus, then prints "NAME 0xVALUE" for every
+ * Host test of firmware/wifi/fm1wifi_regs.h and the CPU-side accessors in fm1wifi.c, on a port of its own (a
+ * fake bus that records the address of each access).
+ *   wifi_regs           checks the accessors against the fake bus, then prints "NAME 0xVALUE" for every
  *                       register and mask, which tests/wifi_regs.py compares with docs/WIFI.md.
  * Exits 1 when an accessor check fails.
  */
 #include <stdio.h>
-#include "fm1_wifi_regs.h"
+#include "fm1wifi.h"
+#include "fm1wifi_port.h"
 
 static uint32_t last_addr, last_val, n_wr, n_rd;
-uint32_t fm1_wifi_host_rd(uint32_t addr) { last_addr = addr; n_rd++; return addr ^ 0x5A5A5A5Au; }
-void fm1_wifi_host_wr(uint32_t addr, uint32_t v) { last_addr = addr; last_val = v; n_wr++; }
+uint32_t fm1wifi_port_rd32(uint32_t addr) { last_addr = addr; n_rd++; return addr ^ 0x5A5A5A5Au; }
+void fm1wifi_port_wr32(uint32_t addr, uint32_t v) { last_addr = addr; last_val = v; n_wr++; }
+uint32_t fm1wifi_port_clk(uint32_t bits) { (void)bits; return 0; }
+void fm1wifi_port_delay_us(uint32_t us) { (void)us; }
 
 static int bad;
 static void check(int ok, const char *what) { if (!ok) { fprintf(stderr, "FAIL: %s\n", what); bad = 1; } }
@@ -30,50 +34,54 @@ static void wr_refused(void (*wr)(unsigned, uint32_t), unsigned n, const char *w
 
 static void accessors(void)
 {
-    wr_hits(fm1_wla_wr, 0, 0x11900u, "WLA_CON0 at 0x11900");
-    wr_hits(fm1_wla_wr, 12, 0x11930u, "WLA_CON12 (crystal caps) at 0x11930");
-    wr_hits(fm1_wla_wr, 30, 0x11978u, "WLA_CON30 at 0x11978");
-    wr_refused(fm1_wla_wr, 31, "WLA_CON31 is read-only");
-    wr_refused(fm1_wla_wr, 40, "WLA_CON40 does not exist");
-    check(fm1_wla_rd(39) == (0x1199Cu ^ 0x5A5A5A5Au) && last_addr == 0x1199Cu, "WLA_CON39 read at 0x1199C");
-    { uint32_t before = n_rd; check(fm1_wla_rd(40) == 0 && n_rd == before, "WLA_CON40 read touches nothing"); }
+    wr_hits(fm1wifi_wla_wr, 0, 0x11900u, "WLA_CON0 at 0x11900");
+    wr_hits(fm1wifi_wla_wr, 12, 0x11930u, "WLA_CON12 (crystal caps) at 0x11930");
+    wr_hits(fm1wifi_wla_wr, 30, 0x11978u, "WLA_CON30 at 0x11978");
+    wr_refused(fm1wifi_wla_wr, 31, "WLA_CON31 is read-only");
+    wr_refused(fm1wifi_wla_wr, 40, "WLA_CON40 does not exist");
+    check(fm1wifi_wla_rd(39) == (0x1199Cu ^ 0x5A5A5A5Au) && last_addr == 0x1199Cu, "WLA_CON39 read at 0x1199C");
+    { uint32_t before = n_rd; check(fm1wifi_wla_rd(40) == 0 && n_rd == before, "WLA_CON40 read touches nothing"); }
 
-    wr_hits(fm1_wl_wr, 0, 0x14000u, "WL_CON0 at 0x14000");
-    wr_hits(fm1_wl_wr, 3, 0x1400Cu, "WL_CON3 at 0x1400C");
-    wr_refused(fm1_wl_wr, 8, "WL_CON8 does not exist (LOFC_CON is there)");
-    wr_hits(fm1_wl_anl_wr, 0, 0x14028u, "WL_ANL_CON0 at 0x14028");
-    wr_hits(fm1_wl_anl_wr, 3, 0x14034u, "WL_ANL_CON3 at 0x14034");
-    wr_refused(fm1_wl_anl_wr, 4, "WL_ANL_CON4 does not exist");
-    wr_hits(fm1_wf_wr, 0, 0x14040u, "WF_CON0 at 0x14040");
-    wr_hits(fm1_wf_wr, 9, 0x14064u, "WF_CON9 at 0x14064");
-    wr_refused(fm1_wf_wr, 10, "WF_CON10 does not exist");
-    check(fm1_wf_rd(4) == (0x14050u ^ 0x5A5A5A5Au), "WF_CON4 (interrupt) read at 0x14050");
+    wr_hits(fm1wifi_wl_wr, 0, 0x14000u, "WL_CON0 at 0x14000");
+    wr_hits(fm1wifi_wl_wr, 3, 0x1400Cu, "WL_CON3 at 0x1400C");
+    wr_refused(fm1wifi_wl_wr, 8, "WL_CON8 does not exist (LOFC_CON is there)");
+    wr_hits(fm1wifi_wl_anl_wr, 0, 0x14028u, "WL_ANL_CON0 at 0x14028");
+    wr_hits(fm1wifi_wl_anl_wr, 3, 0x14034u, "WL_ANL_CON3 at 0x14034");
+    wr_refused(fm1wifi_wl_anl_wr, 4, "WL_ANL_CON4 does not exist");
+    wr_hits(fm1wifi_wf_wr, 0, 0x14040u, "WF_CON0 at 0x14040");
+    wr_hits(fm1wifi_wf_wr, 9, 0x14064u, "WF_CON9 at 0x14064");
+    wr_refused(fm1wifi_wf_wr, 10, "WF_CON10 does not exist");
+    check(fm1wifi_wf_rd(4) == (0x14050u ^ 0x5A5A5A5Au), "WF_CON4 (interrupt) read at 0x14050");
 
     {
       static const uint32_t allowed[] = {0x00u, 0x04u, 0x10u, 0x14u, 0x18u, 0x1Cu};
       static const uint32_t refused[] = {0x02u, 0x08u, 0x0Cu, 0x20u};
       for (unsigned i = 0; i < sizeof allowed / sizeof allowed[0]; i++) {
         uint32_t off = allowed[i], before_wr = n_wr, before_rd = n_rd;
-        fm1_wl30_host_wr(off, 7);
+        fm1wifi_wl30_wr(off, 7);
         check(n_wr == before_wr + 1 && last_addr == FM1_WL30_HOST(off) && last_val == 7,
               "documented SDIO host offset is writable");
-        check(fm1_wl30_host_rd(off) == (FM1_WL30_HOST(off) ^ 0x5A5A5A5Au) &&
+        check(fm1wifi_wl30_rd(off) == (FM1_WL30_HOST(off) ^ 0x5A5A5A5Au) &&
               n_rd == before_rd + 1 && last_addr == FM1_WL30_HOST(off),
               "documented SDIO host offset is readable");
       }
       for (unsigned i = 0; i < sizeof refused / sizeof refused[0]; i++) {
         uint32_t off = refused[i], before_wr = n_wr, before_rd = n_rd;
-        fm1_wl30_host_wr(off, 7);
+        fm1wifi_wl30_wr(off, 7);
         check(n_wr == before_wr, "undocumented SDIO host offset write touches nothing");
-        check(fm1_wl30_host_rd(off) == 0 && n_rd == before_rd,
+        check(fm1wifi_wl30_rd(off) == 0 && n_rd == before_rd,
               "undocumented SDIO host offset read touches nothing");
       }
     }
 
     { uint32_t v = 0xDEADBEEFu, before = n_wr + n_rd;
-      check(fm1_wifi_mac_rd(MAC_CSR0, &v) == FM1_WIFI_ENOTYET && v == 0xDEADBEEFu, "mac_rd not built yet");
-      check(fm1_wifi_mac_wr(MAC_SYS_CTRL, 3) == FM1_WIFI_ENOTYET, "mac_wr not built yet");
-      check(n_wr + n_rd == before, "the SDIO stubs touch no register"); }
+      check(fm1wifi_mac_rd(MAC_CSR0, &v) == FM1WIFI_ESTATE && v == 0xDEADBEEFu, "mac_rd before power-up: OFF");
+      check(fm1wifi_mac_wr(MAC_SYS_CTRL, 3) == FM1WIFI_ESTATE, "mac_wr before power-up: OFF");
+      check(n_wr + n_rd == before, "... and they touch no register");
+      check(fm1wifi_power_up() == FM1WIFI_OK && fm1wifi_mac_rd(MAC_CSR0, &v) == FM1WIFI_OK && last_addr == 0x31000u,
+            "MAC_CSR0 read at 0x31000 (0x30000 + 0x1000)");
+      check(fm1wifi_mac_wr(MAC_SYS_CTRL, 3) == FM1WIFI_OK && last_addr == 0x31004u && last_val == 3, "MAC_SYS_CTRL written at 0x31004");
+      fm1wifi_power_down(); }
 
     check(PAIRWISE_KEY_ENTRY(255) + 32u == MAC_IVEIV_TABLE_BASE, "pairwise key table: 256 x 32 bytes");
     check(MAC_IVEIV_ENTRY(256) == MAC_WCID_ATTRIBUTE_BASE, "IV/EIV table: 256 x 8 bytes");
@@ -85,7 +93,7 @@ static void accessors(void)
 
 #define R(x) { #x, (uint32_t)(x) },
 static const struct { const char *name; uint32_t v; } regs[] = {
-    R(FM1_JL_ANA_BASE) R(FM1_JL_WL_BASE) R(FM1_WL30_HOST_BASE) R(FM1_WL30_HOST_LAST) R(FM1_IRQ_WF)
+    R(FM1_JL_ANA_BASE) R(FM1_JL_WL_BASE) R(FM1_CLK_CON1_ADDR) R(FM1_CLK_CON1_WIFI) R(FM1_WIFI_CORE_BASE) R(FM1_WL30_HOST_BASE) R(FM1_WL30_HOST_LAST) R(FM1_IRQ_WF)
     R(FM1_WL30_HOST_00) R(FM1_WL30_HOST_04) R(FM1_WL30_HOST_10) R(FM1_WL30_HOST_14) R(FM1_WL30_HOST_18)
     R(FM1_WL30_HOST_1C)
     R(FM1_WLA_CON(0)) R(FM1_WLA_CON(30)) R(FM1_WF_CON(9)) R(FM1_WL_ANL_CON(3))
