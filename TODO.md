@@ -268,3 +268,33 @@ OPLBOX (238 KB free) anyway.
 
 **Next.** Stage 1 (register header and extracted tables, host only), then stage 2, the first hardware test: xero
 flashes a diagnostic build and reads four register values and a RAM pattern check off the screen.
+
+### 7a. Stage 1, register header — built, host-tested, not yet tried on hardware
+
+**Built.** `firmware/hal/fm1_wifi_regs.h`: the CPU-side blocks (`JL_ANA` `WLA_CON0`-`39`, `JL_WL` with `WL_CON*`,
+`WL_ANL_CON*`, `WF_CON*`, the internal SDIO host at 0x30F00-0x30F1C, IRQ 52) from the SDK's `WL82.h`/`hwi.h`; the
+WiFi core's MAC registers in use with their `rt2800.h` names, addresses and masks (Linux v6.6); JieLi's own
+0x0300-range registers and the frame data addresses; the four BBP indirect windows; the key tables at 0x4000,
+0x6000, 0x6800, 0x6C00, 0x7000 with their entry sizes. Addresses and masks only, no register values.
+`firmware/hal/fm1_wifi_hal.c`: CPU-side accessors (bounded index, read-only `WLA_CON31`-`39` refused) and
+`fm1_wifi_cmd52`/`cmd53`/`mac_rd`/`mac_wr`, which return `FM1_WIFI_ENOTYET` until stage 2. `tests/run_host.sh`
+compiles both warning-free (`-Werror`), runs `tests/wifi_regs.c` against a fake bus (each accessor hits its
+address) and `tests/wifi_regs.py`, which checks every address and field docs/WIFI.md gives (79) against the header.
+The JieLi compiler builds `fm1_wifi_hal.c` too; nothing links it yet, so the image is unchanged.
+
+**Found.** All 82 rt2800-named constants in the header equal Linux v6.6 `rt2800.h` (sha256 `eb7ac9bf…`). All 22
+`MACRegTable` addresses have an `rt2800.h` name (docs/WIFI_REVIEW.md had this UNCHECKED); the values were not compared.
+The shared key table (16 × 32 B) ends at 0x6E00, not at the mode table's 0x7000.
+
+**Decided** (chosen by the colony; xero can change it):
+- WiFi-core addresses keep `rt2800.h`'s names unprefixed (`MAC_SYS_CTRL`), so stage 5-8 code reads like rt2x00;
+  CPU-side ones carry `FM1_`. The SDIO host's registers and JieLi's own are named by address (`FM1_WL30_HOST_04`,
+  `FM1_WF_REG_0308`): no source names them.
+- No `MACRegTable` values in the header: stage 5 takes them from rt2800lib.c or Ralink's staging driver.
+- `fm1_wifi_mac_rd/wr` assume little-endian on the SDIO bus until stage 2 reads `MAC_CSR0`.
+- The HAL is not linked into the firmware until stage 2 calls it.
+
+**Open.** What the SDIO host's registers do (stage 2). The clock-block register 0x10010 that `wf_clk_rst_init` writes
+and `MAC_WCID_BASE` (0x1800, needed by stage 8) are not in the header yet. The 0x30F00 and 0x0300-range addresses
+come from `wl_rf_common.a` as facts, not code; whether stages 1 and 3 may rest on that archive is task 3's to settle.
+`tools/wifi_ir.py` and the extracted tables (the rest of stage 1) are not built.

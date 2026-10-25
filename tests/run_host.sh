@@ -13,6 +13,12 @@ build/host/oplbox build/host/undo tests/script_undo.txt
 build/host/oplbox build/host/rec tests/script_rec.txt
 # the arpeggiator: steps, tempo, gate, latch and the channel it takes, checked against its state and the chip
 build/host/oplbox build/host/arp tests/script_arp.txt
+# the WiFi register header (firmware/hal/fm1_wifi_regs.h): it and the HAL compile warning-free (the device's MMIO
+# path too), the accessors hit their addresses, and every address matches docs/WIFI.md
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/hal -c -o build/host/fm1_wifi_hal.o firmware/hal/fm1_wifi_hal.c
+cc -std=c11 -Wall -Wextra -Werror -DFM1_WIFI_HOST -Ifirmware/hal -o build/host/wifi_regs tests/wifi_regs.c firmware/hal/fm1_wifi_hal.c
+build/host/wifi_regs > build/host/wifi_regs.txt
+python3 tests/wifi_regs.py build/host/wifi_regs.txt
 python3 - <<'PY'
 import array, sys, wave
 from pathlib import Path
