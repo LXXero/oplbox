@@ -245,6 +245,7 @@
 #define FM1_WIFI_FN1_INIT_FIRST 0x10u /* function 1 registers 0x10-0x13 are written 0: WiFi-core specific */
 #define FM1_WIFI_FN1_INIT_N 4u
 #define FM1_WIFI_CMD5_TRIES 100u      /* CMD5 until C is set, at most this often */
+#define FM1_WIFI_IO_READY_TRIES 100u /* I/O Ready reads after I/O Enable until function 1's bit is set, at most this often */
 #define FM1_WIFI_CMD3_TRIES 4u        /* again while the card offers RCA 0, which the specification reserves */
 
 /* ---- accessors (fm1_wifi_hal.c) ---- */

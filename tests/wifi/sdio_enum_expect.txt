@@ -13,6 +13,7 @@ cmd7 0x00010000 -> ?            # R1b; the card status bits are not checked
 
 # 3. CMD52 writes to function 0 (CCCR)
 cmd52 w f0 0x00002 ff           # I/O Enable
+cmd52 r f0 0x00003 02           # I/O Ready: function 1 (read before function 1 is used; not in wl30_sdio_enum as decoded)
 cmd52 w f0 0x00007 02           # Bus Interface Control: 4-bit bus
 cmd52 w f0 0x00004 03           # Int Enable: master and function 1
 

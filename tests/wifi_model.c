@@ -70,7 +70,7 @@ static void test_enum(const char *dir, const char *outdir)
     int nd = wifi_fix_diff(stderr, &want, &run);
     check(nd == 0, "enumeration matches tests/wifi/sdio_enum_expect.txt");
     check(wifi_fix_diff(quiet, sdio_model_log(m), &run) == 0, "log written and read back is the same");
-    check(want.n == 11, "fixture has the 11 commands of docs/WIFI.md");
+    check(want.n == 12, "fixture has the 11 commands of docs/WIFI.md and the I/O Ready read");
 
     /* what the card holds afterwards */
     check(sdio_model_peek(m, 0, FM1_SDIO_CCCR_IO_ENABLE) == 0xFF, "I/O Enable 0xFF");
@@ -120,12 +120,12 @@ static void test_enum(const char *dir, const char *outdir)
         char *rep = malloc((size_t)n + 1);
         rep[fread(rep, 1, (size_t)n, t)] = 0;
         fclose(t);
-        check(strstr(rep, "different:") && strstr(rep, "want line 6: cmd52 w f0 0x00007 01") &&
-                  strstr(rep, "got  line 6: cmd52 w f0 0x00007 02"), "diff report names the line and both records");
+        check(strstr(rep, "different:") && strstr(rep, "want line 7: cmd52 w f0 0x00007 01") &&
+                  strstr(rep, "got  line 7: cmd52 w f0 0x00007 02"), "diff report names the line and both records");
         free(rep);
     }
     check(diff_text("cmd5 1f000000 -> ?\ncmd5 1f000000 -> 90ff8000\ncmd3 0 -> 00010000\ncmd7 00010000 -> 0\n"
-                    "cmd52 w f0 00002 ??\ncmd52 w f0 00007 02\ncmd52 w f0 00004 03\n"
+                    "cmd52 w f0 00002 ??\ncmd52 r f0 00003 02\ncmd52 w f0 00007 02\ncmd52 w f0 00004 03\n"
                     "cmd52 w f1 00010 00\ncmd52 w f1 00011 00\ncmd52 w f1 00012 00\ncmd52 w f1 00013 00\n", &run, quiet) == 0,
           "\"??\" and \"-> ?\" match anything");
     free(mut);
@@ -154,6 +154,31 @@ static void test_enum_errors(void)
     check(count_kind(sdio_model_log(m), WIFI_REC_CMD, 3) == 2, "CMD3 sent again after RCA 0");
     check(diff_text("cmd5 1f000000 -> ?\ncmd5 1f000000 -> ?\ncmd3 0 -> 0\ncmd3 0 -> 00020000\ncmd7 00020000 -> ?\n",
                     &(wifi_fix){ sdio_model_log(m)->r, 5, 5 }, quiet) == 0, "CMD7 selects the RCA the card offered");
+    sdio_model_free(m);
+
+    m = card("next f0 0x00003 00 00 00 02\n");   /* function 1 ready on the 4th read */
+    check(fm1_wifi_sdio_enum() == FM1_WIFI_OK, "I/O Ready delayed by 3 reads: enumeration succeeds");
+    {
+        const wifi_fix *lf = sdio_model_log(m);
+        int reads = 0, first_f1 = -1, last_rd = -1;
+        for (int i = 0; i < lf->n; i++) {
+            const wifi_rec *q = &lf->r[i];
+            if (q->kind == WIFI_REC_CMD52 && q->fn == 0 && q->addr == FM1_SDIO_CCCR_IO_READY && !q->write) { reads++; last_rd = i; }
+            if (q->kind == WIFI_REC_CMD52 && q->fn == 1 && first_f1 < 0) first_f1 = i;
+        }
+        check(reads == 4, "I/O Ready read until function 1's bit is set");
+        check(first_f1 > last_rd, "function 1 is not touched before it is ready");
+    }
+    sdio_model_free(m);
+
+    char never[16 + 3 * FM1_WIFI_IO_READY_TRIES + 8] = "next f0 0x00003";   /* all zeros, then a late 02 */
+    for (unsigned i = 0; i <= FM1_WIFI_IO_READY_TRIES; i++) strcat(never, i == FM1_WIFI_IO_READY_TRIES ? " 02\n" : " 00");
+    m = card(never);
+    check(fm1_wifi_sdio_enum() == FM1_WIFI_ETIMEOUT, "I/O Ready never set within the bound: ETIMEOUT");
+    check(count_kind(sdio_model_log(m), WIFI_REC_CMD52, 0) == 1 + (int)FM1_WIFI_IO_READY_TRIES, "I/O Ready poll bounded");
+    int f1 = 0;
+    for (int i = 0; i < sdio_model_log(m)->n; i++) f1 += sdio_model_log(m)->r[i].kind == WIFI_REC_CMD52 && sdio_model_log(m)->r[i].fn == 1;
+    check(f1 == 0, "no function 1 access when it never becomes ready");
     sdio_model_free(m);
 
     m = card("fail cmd52 f1 0x00011 ebus\n");

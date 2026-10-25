@@ -83,8 +83,9 @@ static int cmd52_wr(unsigned fn, uint32_t addr, uint8_t v) { return fm1_wifi_cmd
  * for the card's conditions, the next ones repeat until it reports ready (wl30_sdio_enum sends two, so a card
  * ready at once gets the same two). CMD3 gets the card's RCA, which CMD7 selects it with (JieLi's fixed
  * 0x00010000 is RCA 1). Then the CCCR writes and function 1's four, in wl30_sdio_enum's order. Not run on an
- * FM-1. The specification also has the host read I/O Ready before using a function; wl30_sdio_enum, as
- * decoded, does not, so neither does this until stage 2 sees the hardware. */
+ * FM-1. The specification has the host read I/O Ready before using a function; wl30_sdio_enum, as decoded,
+ * does not, but this does: after I/O Enable it reads I/O Ready (at most FM1_WIFI_IO_READY_TRIES times) and
+ * touches function 1 only once its bit is set, else FM1_WIFI_ETIMEOUT. */
 int fm1_wifi_sdio_enum(void)
 {
     uint32_t r4 = 0, r6 = 0, rca = 0;
@@ -103,6 +104,12 @@ int fm1_wifi_sdio_enum(void)
     }
     if ((r = fm1_wifi_sdio_cmd(FM1_SDIO_CMD7, rca << 16, &r6)) != FM1_WIFI_OK) return r;
     if ((r = cmd52_wr(0, FM1_SDIO_CCCR_IO_ENABLE, FM1_WIFI_IO_ENABLE)) != FM1_WIFI_OK) return r;
+    for (unsigned i = 0;; i++) {
+        uint8_t rdy = 0;
+        if (i == FM1_WIFI_IO_READY_TRIES) return FM1_WIFI_ETIMEOUT;
+        if ((r = fm1_wifi_cmd52(0, FM1_SDIO_CCCR_IO_READY, 0, &rdy)) != FM1_WIFI_OK) return r;
+        if (rdy & (1u << FM1_WIFI_SDIO_FN)) break;
+    }
     if ((r = cmd52_wr(0, FM1_SDIO_CCCR_BUS_IF, FM1_SDIO_BUS_WIDTH_4)) != FM1_WIFI_OK) return r;
     if ((r = cmd52_wr(0, FM1_SDIO_CCCR_INT_ENABLE, FM1_WIFI_INT_ENABLE)) != FM1_WIFI_OK) return r;
     for (unsigned i = 0; i < FM1_WIFI_FN1_INIT_N; i++)
