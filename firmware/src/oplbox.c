@@ -10,7 +10,8 @@
  *   EDIT           edit mode on / off (in the tracker screen; SEQ then cycles tracker / song / instrument)
  *   MASTER         volume (platform.c)
  * Jukebox / tracker / scope:
- *   OCT- OCT+      previous / next song         SELECT   turn: pick a song (18 built in, then 9 flash slots)
+ *   OCT- OCT+      the keys' octave, OCT0..OCT6 (the arp's too, as it plays; the status line shows it a moment)
+ *   SELECT         turn: pick a song (18 built in, then 9 flash slots)
  *   REC            loop one song <-> play them all in turn (the LED says which)
  *   GLO            the battery's raw ADC count in the status line, for a moment (the icon at the top right)
  *   scope: the first nine white keys (F3..G4) mute / unmute channels 1..9 (key LED = muted)
@@ -20,7 +21,7 @@
  * Arpeggiator (ARP on, outside EDIT): held keys play an arpeggio instead of nothing, on a channel the song leaves
  * free (see "the arpeggiator"); not from the scope screen, whose keys stay the mutes; EDIT gives the keys back
  * to the editor. Its settings screen (LFO turns the page; SEQ / FX leave it, the arp plays on; its last line names
- * the keys' instrument, so PRESETS / ALGO say nothing there, and the status line shows the song's title):
+ * the keys' instrument and octave, so PRESETS / ALGO / OCT say nothing there, and the status line shows the song's title):
  *   page 1:        K1 mode (up, down, inclusive, exclusive, random, order, repeat)  K2 octaves 1-4
  *                  K3 rate (1/4 1/8 1/8T 1/16 1/32)  K4 tempo 30-300 BPM
  *   page 2:        K1 gate 20-100 %  K2 swing 50-75 %  K3 latch (right: on, left: off)
@@ -36,7 +37,7 @@
  *   song screen:   SELECT position, K1 pattern number, GLO insert, SCL delete, ARP new pattern, K2 speed, K3 rhythm
  *   instrument:    PRESETS instrument, SELECT parameter, K1 value (name: K1 position, K2 character), ARP new, keys audition
  *
- * The song that was playing, the loop mode and the arp's settings survive a power-off (settings sector).
+ * The song that was playing, the loop mode, the arp's settings and the keys' octave survive a power-off (settings sector).
  * Built on Dinghy (zvenson) / Felucca (Leo Kuroshita, Hügelton Instruments) / SLOOP (isod89), GPL-3.0.
  * OPL cores: DOSBox's dbopl (GPL-2+, the default) or Nuked-OPL3 (LGPL-2.1, -DOPL_CORE=OPL_NUKED).
  * Player after AdPlug's cmfmcsop.cpp (Sebastian Kienzl), LGPL-2.1. */
@@ -542,6 +543,13 @@ static char *live_text(char *m)               /* "I03 BRASS", or with a copy "I0
     return p;
 }
 
+static char *oct_text(char *m)                /* "OCT3": the octave of the lowest key (F3 with kb_oct 0), as EDIT shows it */
+{
+    char *p = cat(m, "OCT");
+    *p++ = (char)('3' + kb_oct); *p = 0;
+    return p;
+}
+
 static void live_say(void)
 {
     static char m[24];
@@ -558,7 +566,7 @@ static uint16_t status_text(char *s, int loop_all)   /* the status area's second
     uint32_t n;
     if (msg && (int32_t)(msg_until - fm1_ms) > 0) t = msg;
     else if (edit) {
-        p = cat(s, "OCT"); *p++ = (char)('3' + kb_oct); *p++ = ' '; p = cat(p, "STEP"); p = catn(p, ed_step, 1);
+        p = oct_text(s); *p++ = ' '; p = cat(p, "STEP"); p = catn(p, ed_step, 1);
         *p++ = ' '; p = cat(p, "I"); p = catn(p, ed_instr, 2);
         if (rec_arm) p = cat(p, " REC");
         return C_MUTE;
@@ -1140,6 +1148,17 @@ static void arp_lift(uint32_t k)              /* key k up (not latched): its not
     irq_restore(f);
 }
 
+static void arp_octave(void)                 /* kb_oct changed: the held (or latched) keys' notes again, from the next step */
+{
+    uint32_t i, f;
+    if (!arp_n) return;
+    f = irq_save();
+    for (i = 0; i < arp_n; i++) arp_ord[i] = (uint8_t)key_note(arp_key[i]);   /* from the key: clamping never drifts */
+    arp_sorted();
+    irq_restore(f);
+    arpw_n = arp_n; memcpy(arpw_ord, arp_ord, arp_n); memcpy(arpw_sort, arp_sort, arp_n);
+}
+
 static void arp_clear(void)
 {
     uint32_t f = irq_save();
@@ -1246,19 +1265,21 @@ static void arp_write(void)
 /* ---- the arp's settings screen: two pages of four knobs, the channel it plays on */
 static uint32_t arp_page, arp_back = V_JUKE;  /* the page shown; the view ARP off goes back to */
 static uint32_t arp_shown_ch = ARP_NONE, arp_shown_n;
-static void arp_foot(char *a, char *b)        /* the arp screen's last two lines: channel, notes, latch; the keys' instrument (PRESETS, ALGO) */
+static void arp_foot(char *a, char *b)        /* the arp screen's last two lines: channel, notes, latch; the keys' instrument (PRESETS, ALGO) and octave */
 {
     char *p = cat(a, "CH ");
     if (arp_ch == ARP_NONE) *p++ = '-'; else *p++ = (char)('1' + arp_ch);
     p = cat(p, "  NOTES "); p = catn(p, arp_n, 2);
     cat(p, arp_latch ? "  LATCH ON" : "  LATCH OFF");
-    if (song.n_instr && ed_instr >= 1u && ed_instr <= song.n_instr) live_text(b); else *b = 0;
+    p = b;
+    if (song.n_instr && ed_instr >= 1u && ed_instr <= song.n_instr) { p = live_text(b); p = cat(p, "  "); }
+    oct_text(p);
 }
 
 static void draw_arp(void)
 {
     static const char *const LBL[2][4] = { { "K1 MODE", "K2 OCTAVES", "K3 RATE", "K4 TEMPO" }, { "K1 GATE", "K2 SWING", "K3 LATCH", "K4 LENGTH" } };
-    char s[32], t[24], *p;
+    char s[32], t[32], *p;
     uint32_t i;
     lcd_fill(0, 0, 240, TR_TOP, C_BLACK);
     p = cat(s, arp_on ? "ARP ON" : "ARP OFF"); p = cat(p, "  PAGE "); *p++ = (char)('1' + arp_page); p = cat(p, "/2");
@@ -1326,16 +1347,18 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
     if (row == 92u) return col < 9u ? host_c0[col] : 0;   /* the keys' instrument (TODO 5): channel col's C0 */
     if (row == 90u) return (uint32_t)macsop_channel_instr_no(&player, (int)col);   /* its instrument 1.. (0: not the song's) */
     if (row == 91u) {                         /* col 0 ed_instr, 1 ALGO's step (255: no copy), 2 the song's instrument
-                                               * ed_instr as a step, 4 a hash of the status message (h * 31 + c; 0: none), 5 and 6 the same of the arp screen's
+                                               * ed_instr as a step, 3 the song (cur), 8 kb_oct + 3 (0..6), 4 a hash of the status message (h * 31 + c; 0: none), 5 and 6 the same of the arp screen's
                                                * two last lines (channel, notes, latch; the keys' instrument), 7 the same of the
                                                * status area's second line as drawn (a message, the mode, on the arp screen the song's title) */
         uint32_t h = 0; const char *q;
         switch (col) {
         case 0: return ed_instr;
         case 1: return live_alg;
+        case 3: return cur;
+        case 8: return (uint32_t)(kb_oct + 3);
         case 2: return ed_instr >= 1u && ed_instr <= song.n_instr ? live_step_of(&song.instr[ed_instr - 1u]) : 255u;
         case 5: case 6: {                     /* the arp screen's two last lines (arp_foot), hashed like the message */
-            char a[32], b[24];
+            char a[32], b[32];
             arp_foot(a, b);
             for (q = col == 5u ? a : b; *q; q++) h = h * 31u + (uint8_t)*q;
             return h;
@@ -1392,13 +1415,14 @@ static void app_usb_cmd(const uint8_t *d, uint32_t n) { slot_sysex(d, n); }
 
 static void app_main(void)
 {
-    /* the first two as before the arp: the sector an older OPLBOX wrote still loads (its two bytes) */
-    struct { uint8_t song, loop_all, arp_mode, arp_oct, arp_rate, arp_gate, arp_swing, arp_latch; uint16_t arp_bpm; }
-        set = {0, 0, ARP_UP, 1, 3, 50, 50, 0, 120};
+    /* the first two as before the arp, the first ten as before kb_oct: a sector an older OPLBOX wrote still loads (its two
+     * or ten bytes; the rest at the defaults) */
+    struct { uint8_t song, loop_all, arp_mode, arp_oct, arp_rate, arp_gate, arp_swing, arp_latch; uint16_t arp_bpm; int8_t kb_oct, pad; }
+        set = {0, 0, ARP_UP, 1, 3, 50, 50, 0, 120, 0, 0};
     uint32_t shown_order = ~0u, shown_row = ~0u, t_status = 0, t_change = 0, dirty = 0, play = 0, next = 0;
     uint32_t t_scope = 0, keys_prev = 0, redraw = 0, head_dirty = 0, held_ch = 0, t_batt = 0;
     int32_t spin, k1, k2, k3, k4, alg, pre;
-    if (settings_load(&set, sizeof set)) settings_load(&set, 2);
+    if (settings_load(&set, sizeof set) && settings_load(&set, 10)) settings_load(&set, 2);
     if (set.song >= N_ALL) set.song = 0;
     set.loop_all &= 1u;
     arp_mode = set.arp_mode < ARP_MODES ? set.arp_mode : ARP_UP;
@@ -1409,6 +1433,7 @@ static void app_main(void)
     arp_latch = set.arp_latch & 1u;
     arp_bpm = set.arp_bpm >= 30u && set.arp_bpm <= 300u ? set.arp_bpm : 120u;
     arp_retime();
+    kb_oct = set.kb_oct >= -3 && set.kb_oct <= 3 ? set.kb_oct : 0;
 
     load_song(set.song);
     batt_poll();
@@ -1456,17 +1481,19 @@ static void app_main(void)
         }
         if ((b & (1u << BTN_FX)) && !edit) { view = view == V_SCOPE ? V_JUKE : V_SCOPE; redraw = 1; }
 
-        /* ---- song choice (not while editing: the knobs are the cursor there) */
-        if (!edit) {
-            if (b & (1u << BTN_OCT_UP)) spin++;
-            if (b & (1u << BTN_OCT_DOWN)) spin--;
-        }
-        if (edit && (b & ((1u << BTN_OCT_UP) | (1u << BTN_OCT_DOWN)))) {
-            kb_oct += (b & (1u << BTN_OCT_UP)) ? 1 : -1;
+        /* ---- the keys' octave, everywhere: the editor's notes, the keys outside EDIT, the arp as it plays */
+        if (b & ((1u << BTN_OCT_UP) | (1u << BTN_OCT_DOWN))) {
+            static char om[8];
+            kb_oct += (int32_t)((b >> BTN_OCT_UP) & 1u) - (int32_t)((b >> BTN_OCT_DOWN) & 1u);
             if (kb_oct > 3) kb_oct = 3;
             if (kb_oct < -3) kb_oct = -3;
+            arp_octave();
+            set.kb_oct = (int8_t)kb_oct; dirty = 1; t_change = fm1_ms;
+            if (view == V_ARP && !edit) draw_arp();   /* its footer shows it */
+            else if (!edit) { oct_text(om); say(om); }   /* EDIT's status line shows it anyway */
             shown_order = ~0u;
         }
+        /* ---- song choice: SELECT (not while editing: the knobs are the editor's there) */
         if ((spin && !edit) || next) {
             uint32_t i = next ? (cur + 1u) % N_ALL : (uint32_t)wrap((int32_t)cur + spin, (int32_t)N_ALL);
             next = 0;

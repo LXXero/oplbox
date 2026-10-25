@@ -20,7 +20,8 @@ round-trips through the editor's model byte for byte (`host/roundtrip.c`, 18 of 
 | --- | --- |
 | **PLAY** | play / pause |
 | **HOME** | back to the start of the song |
-| **OCT−  OCT+** or the **SELECT** knob | previous / next song: the 18 built in, then slots 1–9 |
+| **SELECT** knob | previous / next song: the 18 built in, then slots 1–9 |
+| **OCT−  OCT+** | the keys' octave, `OCT0`–`OCT6` (`OCT3` = F3 is the lowest key, as in EDIT); the status line shows it for two seconds. A playing arp follows it from its next step |
 | **REC** | loop one song ↔ play them all in turn (the LED shows which) |
 | **SEQ** | jukebox screen ↔ **tracker screen**: the pattern scrolling by, one column per channel, the playing row in the middle. Notes as `C4` / `c4` (lowercase = sharp), `==` key off, `EN` end of pattern. Rhythm songs show 11 columns (6 + BD SD TM TC HH), melodic songs 9. |
 | **FX** | jukebox screen ↔ **scope screen**: nine oscilloscopes, one per channel, labelled `06 produc` (instrument number, then name; `--` = the driver's default patch). In a rhythm song boxes 7-9 are the drums: `BD`, `SD`, `HH TM CY`. The first nine white keys (F3–G4) mute / unmute channels 1–9: red label, dim trace, key LED lit. Mutes survive a restart, clear on a song change. |
@@ -31,15 +32,15 @@ round-trips through the editor's model byte for byte (`host/roundtrip.c`, 18 of 
 | **ALGO** | that instrument's connection and feedback, one list: FM with feedback 0–7, then additive with feedback 0–7 (`I03 FM FB 5`). On a copy only the keys / the arp play; the song keeps its own (on its channels and in SAVE). Loading a song or picking another instrument drops the copy |
 | **MASTER** | volume |
 
-**Arpeggiator.** With ARP on, held keys play an arpeggio in the keys' instrument (PRESETS / ALGO above; `I03` in the editor); with one key held it repeats that note, so hold a chord (or turn **LATCH** on, below) to hear it step. The settings screen's last two lines show the channel, the notes held, latch and that instrument; there PRESETS and ALGO change it without the 2 s status message, and the status line below shows the song's title (the new one as soon as you change songs) instead of LOOP SONG / ALL IN TURN.
+**Arpeggiator.** With ARP on, held keys play an arpeggio in the keys' instrument (PRESETS / ALGO above; `I03` in the editor); with one key held it repeats that note, so hold a chord (or turn **LATCH** on, below) to hear it step. The settings screen's last two lines show the channel, the notes held, latch, that instrument and the keys' octave; there PRESETS, ALGO and OCT−/+ change them without the 2 s status message, and the status line below shows the song's title (the new one as soon as you change songs) instead of LOOP SONG / ALL IN TURN.
 Not from the scope screen, whose keys stay the mutes; EDIT gives the keys back to the editor. While a song plays
 it takes a channel the playing pattern leaves silent, else a channel muted on the scope (heard again, for the
 arp), else the last melodic one (6 in rhythm songs, 9 otherwise; never the drums); the song's notes in that column
 are left out while it plays there. The settings screen shows the channel. Page 1: **K1** mode (up, down,
 inclusive, exclusive, random, order, repeat), **K2** octaves 1–4, **K3** rate (1/4 1/8 1/8T 1/16 1/32), **K4**
-tempo 30–300 BPM. Page 2 (LFO): **K1** gate 20–100 %, **K2** swing 50–75 %, **K3** latch (right on, left off),
-**K4** how much ARP writes into the tracker, 1–8 patterns (below). The settings survive a restart, except K4, which
-starts at 1; the arp itself starts off.
+tempo 30–300 BPM. **OCT−/+** move the notes it plays (held or latched) an octave from the next step, as the stock firmware does; letting go of a key still takes its own note out. Page 2 (LFO): **K1** gate 20–100 %, **K2** swing 50–75 %, **K3** latch (right on, left off),
+**K4** how much ARP writes into the tracker, 1–8 patterns (below). The settings and the keys' octave survive a restart, except K4,
+which starts at 1; the arp itself starts off.
 
 **Battery.** Every screen shows a battery at the top right: 3 bars, red outline when empty. It reads ADC ch3
 (the battery divider) once a second, smoothed over a few seconds. The bars switch at raw counts 531 / 561 / 591,

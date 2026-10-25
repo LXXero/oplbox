@@ -1,0 +1,76 @@
+# t(ms) what ...   : OCT- / OCT+ outside EDIT: the keys' octave (kb_oct), not the song, and the arp follows it as it
+# plays (exits 1 when a check fails). Rows of host_cell (oplbox.c): 91 col 3 the song (cur), 8 kb_oct + 3, 4 a hash of
+# the status line's message (h * 31 + c, decimal; 0: none showing), 6 the same of the arp screen's last line (the keys'
+# instrument and octave); 97 col 3 the arp's last note, 96 col N the note N steps back.
+# Song 0 (STARDUST FALLING); instrument 1 is "stoneage". Buttons: 0 OCT-, 1 OCT+, 5 LFO, 10 ARP, 12 PLAY.
+100 btn 12
+# ---- OCT+ on the jukebox: octave +1, the same song, and the status line says OCT4 (OCT3: F3 the lowest key)
+300 btn 1
+310 is 0 91 8 4
+310 is 0 91 3 0
+310 is 0 91 4 2420532
+# ---- SELECT still picks the song (and leaves the octave alone); back to song 0
+400 enc 0 1
+410 is 0 91 3 1
+410 is 0 91 8 4
+450 enc 0 -1
+460 is 0 91 3 0
+# ---- OCT- back to 0, then it stops at +3 and -3
+500 btn 0
+510 is 0 91 8 3
+510 is 0 91 4 2420531
+600 btn 1
+610 btn 1
+620 btn 1
+630 btn 1
+640 is 0 91 8 6
+700 btn 0
+710 btn 0
+720 btn 0
+730 btn 0
+740 btn 0
+750 btn 0
+760 btn 0
+770 is 0 91 8 0
+800 btn 1
+810 btn 1
+820 btn 1
+830 is 0 91 8 3
+830 is 0 91 3 0
+# ---- the arp, latched (ARP on, LFO to page 2, K3 right), C4 (key 7, note 72) tapped: 72 every step (1/16, 125 ms)
+900 btn 10
+950 btn 5
+1000 enc 4 1
+1100 keys 0x80
+1150 keys 0
+1400 is 0 97 3 72
+1400 is 0 91 6 3790664963
+# ---- OCT+ while it plays: 84 from the next step; the arp screen's footer says OCT4, and the status line no new
+# message (the jukebox's OCT3 from 820 ms is still up there)
+1490 save 0 91 4
+1500 btn 1
+1510 is 0 91 8 4
+1510 same 0 91 4
+1510 is 0 91 6 3790664964
+1700 is 0 97 3 84
+1780 is 0 96 1 84
+# ---- OCT- brings it back to 72
+1800 btn 0
+1810 is 0 91 8 3
+2000 is 0 97 3 72
+2000 is 0 96 1 72
+# ---- latch off (K3 left; no key is down: the arp stops), then C4 + G4 held (72, 79), OCT+ (84, 91), G4 let go:
+# only 84 is left, so the key that went up took its own note with it
+2100 enc 4 -1
+2300 keys 0x4080
+2600 within 0 97 3 72 79
+2650 btn 1
+2900 within 0 97 3 84 91
+2900 within 0 96 1 84 91
+2900 save 0 97 3
+2900 differs 0 96 1
+3000 keys 0x80
+3400 is 0 97 3 84
+3400 is 0 96 1 84
+3400 is 0 96 2 84
+3500 end
