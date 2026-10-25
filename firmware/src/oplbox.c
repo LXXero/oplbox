@@ -19,7 +19,8 @@
  *   ALGO           its connection and feedback, FM 0-7 then additive 0-7, on a copy the song never hears (see below)
  * Arpeggiator (ARP on, outside EDIT): held keys play an arpeggio instead of nothing, on a channel the song leaves
  * free (see "the arpeggiator"); not from the scope screen, whose keys stay the mutes; EDIT gives the keys back
- * to the editor. Its settings screen (LFO turns the page; SEQ / FX leave it, the arp plays on):
+ * to the editor. Its settings screen (LFO turns the page; SEQ / FX leave it, the arp plays on; its last line names
+ * the keys' instrument, so PRESETS / ALGO say nothing there, and the status line shows the song's title):
  *   page 1:        K1 mode (up, down, inclusive, exclusive, random, order, repeat)  K2 octaves 1-4
  *                  K3 rate (1/4 1/8 1/8T 1/16 1/32)  K4 tempo 30-300 BPM
  *   page 2:        K1 gate 20-100 %  K2 swing 50-75 %  K3 latch (right: on, left: off)
@@ -488,6 +489,8 @@ static int32_t kb_oct;                        /* keyboard octave shift, -3..3 */
 static uint32_t ins_sel;                      /* the instrument editor's instrument, 0.. */
 static uint32_t ins_param, ins_namepos;       /* its cursor: parameter row; character in the name */
 static uint32_t song_pos;                     /* the song editor's cursor: order position */
+enum { V_JUKE, V_TRACK, V_SCOPE, V_SONG, V_INS, V_ARP };
+static uint32_t view;
 static const char *msg; static uint32_t msg_until;   /* a line in the status area, for a moment */
 
 static void say(const char *m) { msg = m; msg_until = fm1_ms + 2000u; }
@@ -546,6 +549,25 @@ static void live_say(void)
     say(m);
 }
 
+static int status_loop_all;                   /* the loop mode draw_status last showed (tests/host.c reads the line) */
+#define STATUS_COLS 18u                       /* the second line's text: 8 px characters from x 4, left of the CPU readout at 160 */
+static uint16_t status_text(char *s, int loop_all)   /* the status area's second line into s (STATUS_COLS + 1); its colour */
+{
+    const char *t;
+    char *p;
+    uint32_t n;
+    if (msg && (int32_t)(msg_until - fm1_ms) > 0) t = msg;
+    else if (edit) {
+        p = cat(s, "OCT"); *p++ = (char)('3' + kb_oct); *p++ = ' '; p = cat(p, "STEP"); p = catn(p, ed_step, 1);
+        *p++ = ' '; p = cat(p, "I"); p = catn(p, ed_instr, 2);
+        if (rec_arm) p = cat(p, " REC");
+        return C_MUTE;
+    } else t = view == V_ARP ? song_title(cur) : loop_all ? "ALL IN TURN" : "LOOP SONG";
+    for (n = 0; t[n] && n < STATUS_COLS; n++) s[n] = t[n];
+    s[n] = 0;
+    return t == msg ? C_ACC : C_MUTE;
+}
+
 static void draw_status(int play, int loop_all)
 {
     char s[40], *p;
@@ -556,16 +578,10 @@ static void draw_status(int play, int loop_all)
     cv_text(70, 0, &FONT_S, s, C_TXT);
     cv_text(150, 0, &FONT_S, song.speed == 1 ? "18/S" : song.speed == 2 ? "9/S" : "4.5/S", C_MUTE);
     cv_text(200, 0, &FONT_S, song.rhythm ? "RHY" : "MEL", C_MUTE);
-    /* second line: a message, the mode, the audio load */
-    if (msg && (int32_t)(msg_until - fm1_ms) > 0)
-        cv_text(4, 20, &FONT_S, msg, C_ACC);
-    else if (edit) {
-        p = cat(s, "OCT"); *p++ = (char)('3' + kb_oct); *p++ = ' '; p = cat(p, "STEP"); p = catn(p, ed_step, 1);
-        *p++ = ' '; p = cat(p, "I"); p = catn(p, ed_instr, 2);
-        if (rec_arm) p = cat(p, " REC");
-        cv_text(4, 20, &FONT_S, s, C_MUTE);
-    } else
-        cv_text(4, 20, &FONT_S, loop_all ? "ALL IN TURN" : "LOOP SONG", C_MUTE);
+    /* second line: a message, the mode (on the arp screen the song's title), the audio load */
+    {   uint16_t c = status_text(s, status_loop_all = loop_all);
+        cv_text(4, 20, &FONT_S, s, c);
+    }
     {   uint32_t pct = (audio_us * 100u) / 5805u;         /* of the 5.8 ms an interrupt has */
         if (pct > 999u) pct = 999u;
         p = cat(s, "CPU ");
@@ -828,8 +844,6 @@ static void draw_ins(void)
 }
 
 /* ---- views */
-enum { V_JUKE, V_TRACK, V_SCOPE, V_SONG, V_INS, V_ARP };
-static uint32_t view;
 static void draw_arp(void);                   /* the arp's settings (after the arpeggiator) */
 
 static void draw_view_frame(void)
@@ -1313,7 +1327,8 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
     if (row == 90u) return (uint32_t)macsop_channel_instr_no(&player, (int)col);   /* its instrument 1.. (0: not the song's) */
     if (row == 91u) {                         /* col 0 ed_instr, 1 ALGO's step (255: no copy), 2 the song's instrument
                                                * ed_instr as a step, 4 a hash of the status message (h * 31 + c; 0: none), 5 and 6 the same of the arp screen's
-                                               * two last lines (channel, notes, latch; the keys' instrument) */
+                                               * two last lines (channel, notes, latch; the keys' instrument), 7 the same of the
+                                               * status area's second line as drawn (a message, the mode, on the arp screen the song's title) */
         uint32_t h = 0; const char *q;
         switch (col) {
         case 0: return ed_instr;
@@ -1323,6 +1338,12 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
             char a[32], b[24];
             arp_foot(a, b);
             for (q = col == 5u ? a : b; *q; q++) h = h * 31u + (uint8_t)*q;
+            return h;
+        }
+        case 7: {
+            char a[40];
+            status_text(a, status_loop_all);
+            for (q = a; *q; q++) h = h * 31u + (uint8_t)*q;
             return h;
         }
         default:
@@ -1551,8 +1572,9 @@ static void app_main(void)
                 v = (int32_t)(live_alg == LIVE_OWN ? live_step_of(&song.instr[ed_instr - 1u]) : live_alg) + alg;
                 live_set((uint32_t)(v < 0 ? 0 : v > 15 ? 15 : v));
             }
-            live_say(); shown_order = ~0u;
-            if (view == V_ARP) draw_arp();          /* its screen names the instrument, not only the status line for 2 s */
+            if (view == V_ARP) draw_arp();          /* its footer names the instrument; the status line keeps the song's title */
+            else live_say();
+            shown_order = ~0u;
         }
         if (arp_on && !edit) {                    /* the keys feed it, except on the scope (the mutes); key ups always count */
             if (up && !arp_latch)
