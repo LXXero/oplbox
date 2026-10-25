@@ -433,3 +433,44 @@ from the address-literal rule only, because AES's round constant 0x02000000 look
 **Open.** The EAPOL-Key 4-way and group handshakes (state machine, MIC check, replay counter, key data parsing,
 keys into the MAC's tables at 0x4000-0x7000), caching the PMK per SSID in the WiFi settings sector, and the replay
 of a recorded handshake on the host are the rest of stage 8. Timing on the FM-1 is stage 8's too.
+
+## 8. Bluetooth LE MIDI on code we can ship — stage 0 done (the map)
+
+xero (2026-10-25): "ideally bluetooth as well". The goal is BLE MIDI beside USB and TRS, on GPL-3.0-compatible code.
+
+**Done.** `docs/BLUETOOTH.md`: licence provenance of the SDK's Bluetooth archives, the controller's HCI interface, what
+the SDK's C sources show of its registers and RF path, what is shared with WiFi, coexistence, candidate host stacks
+with licences, flash and RAM against the 238 KB, fm1-radio's notes 01-06 as prior art, and a plan in seven stages.
+Documents only; nothing was flashed.
+
+**Found.**
+- `btstack.a` (JieLi's host) exports BlueKitchen BTstack's public API names and file names, and the controller's
+  `hci_transport.h` declares BTstack's `hci_transport_t`. BTstack's licence adds a no-commercial-use clause, so it is
+  not GPL-compatible. No BlueKitchen notice is in the SDK; the lineage comes from names only.
+- `btctrler.a` (the controller, 107 members) names only micro-ecc (BSD-2-Clause); its Apache-2.0 label is not
+  contradicted and not proven, as for `wl_rf_common.a`. It speaks standard HCI through a function-call transport.
+- `crypto_toolbox_Osize.a` ships with GPL-2.0-or-later headers from CycloneCrypto Open (Oryx Embedded) in the SDK;
+  fm1-radio links it for both radios. WIFI.md did not mention it.
+- The SDK C sources define no Bluetooth baseband registers (`bsfr_base` 0x20000 has no block); only field names
+  survive in the archive's debug information. The BLE controller needs `wf_rf_common_init`, which starts the WiFi
+  core's clocks and the SDIO host's DMA, so the registers in `fm1_wifi_regs.h` matter to Bluetooth too.
+- `wlc_main` and the coexistence modes are in `cpu.a` (`wlc.c`): a priority arbiter programmed from nine mode tables;
+  the SDK header says modes 3 and 4 (WiFi first) do not take from BLE.
+- NimBLE's host, peripheral-only and without pairing, compiles with JieLi's clang to 41 KB of code and 6 KB of static
+  RAM (unlinked). fm1-radio measured JieLi's whole BLE stack at +124 KB code; with the 120 KB WiFi target that is
+  above the 238 KB free.
+
+**Decided** (chosen by the colony; xero can change it):
+- Host: Apache NimBLE, peripheral-only, no pairing first. Our own minimal ATT/GATT host is the fallback if the port or
+  the size is a problem. Not JieLi's `btstack.a`, not BTstack.
+- Controller: JieLi's `btctrler.a` for diagnostic builds only, never shipped, until the licence gate is answered.
+- Bluetooth and WiFi run one at a time at first; simultaneous use is stage 6.
+- The BLE-MIDI profile is our own code, written after reading the specification.
+
+**Next.** Stages 1 and 2 (HCI packet layer with a fake controller, and the BLE-MIDI profile) are host only and run in
+parallel; stage 3 ports NimBLE against the fake. Stage 4, the first FM-1 test: xero flashes a diagnostic build and
+reads the controller's start-up numbers off the screen.
+
+**Open.** Whether OPLBOX may ship the controller binary (xero's decision). Whether both radios fit in one image. Whether
+the controller takes plain `send_packet` calls without JieLi's OS. The BLE-MIDI specification's exact UUIDs and packet
+format (not fetched). Coexistence index 8. Whether an iPhone connects without bonding.
