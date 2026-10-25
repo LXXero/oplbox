@@ -62,18 +62,24 @@ static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint1
 #define CV_MAX (240u * 64u)
 #include "gfx.c"
 
+/* the settings sector: [1][length, 16 bits][0] then the bytes; a load of another length fails, as platform.c's does.
+ * With HOST_SETTINGS=FILE it starts as that file (when there is one) and every save writes it, so a second run
+ * loads what the first saved, or a sector an older firmware wrote (tests/run_host.sh makes them) */
 static uint8_t host_store[256 + 4];
+static const char *host_store_file;
 static int settings_load(void *p, uint32_t n)
 {
-    if (host_store[0] != 1 || n > 256u) return -1;
+    if (host_store[0] != 1 || n > 256u || (host_store[1] | (uint32_t)host_store[2] << 8) != n) return -1;
     memcpy(p, host_store + 4, n);
     return 0;
 }
 static int settings_save(const void *p, uint32_t n)
 {
-    host_store[0] = 1;
+    FILE *f;
+    host_store[0] = 1; host_store[1] = (uint8_t)n; host_store[2] = (uint8_t)(n >> 8);
     memcpy(host_store + 4, p, n);
     printf("%6u ms  settings saved (%u B)\n", fm1_ms, n);
+    if (host_store_file && (f = fopen(host_store_file, "wb"))) { fwrite(host_store, 1, sizeof host_store, f); fclose(f); }
     return 0;
 }
 
@@ -245,6 +251,10 @@ int main(int argc, char **argv)
     if (argc > 1) host_out = argv[1];
     if (argc > 2) read_script(argv[2]);
     if (argc > 3) frame_fps = (uint32_t)atoi(argv[3]);
+    if ((host_store_file = getenv("HOST_SETTINGS"))) {
+        FILE *f = fopen(host_store_file, "rb");
+        if (f) { if (fread(host_store, 1, sizeof host_store, f) != sizeof host_store) host_store[0] = 0; fclose(f); }
+    }
     app_main();
     return 0;
 }

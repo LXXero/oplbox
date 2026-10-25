@@ -1,0 +1,4 @@
+# a settings sector an older OPLBOX wrote, 10 or 12 bytes, 140 BPM (tests/run_host.sh makes them): it still loads
+100 is 0 89 5 140
+100 is 0 89 6 2
+200 end

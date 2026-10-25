@@ -1,5 +1,13 @@
 # Unreleased
 
+- Arpeggiator SYNC: turning K4 (tempo) left past 30 BPM gives `SYNC`, the song's own tempo: one row is a 1/16, the
+  steps are started by the row clock on the row's first sample while the song plays (no drift; 1/4 on the pattern's
+  rows 0, 4, 8 …), a new chord waits for the grid's next step, swing and gate as before, and with the song stopped it
+  free-runs at the song's speed; a speed change or a new song retimes it at once. ARP in EDIT then writes what the
+  synced arp played, on its own rows (1/32 a row a step). Kept in the settings sector as 0 BPM: an older OPLBOX
+  reads that as out of range and takes 120; older sectors still load. Host-tested (`tests/script_arp_sync.txt`,
+  `tests/script_arp_sync_write.txt`), not yet on hardware.
+
 - Platform: the chip and board layer is now felucca-bsp d6b8f77 (`firmware/bsp/`, MPL-2.0, vendored), in place of
   the Felucca copies in `firmware/hal/`, `firmware/loader/`, `usb.c`, `ota.c` and `libc.c`. The update can install
   M-VAVE's V16, the update loader no longer erases a song slot that looks like an update record, and it shows a

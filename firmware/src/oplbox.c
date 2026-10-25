@@ -23,7 +23,8 @@
  * to the editor. Its settings screen (LFO turns the page; SEQ / FX leave it, the arp plays on; its last line names
  * the keys' instrument and octave, so PRESETS / ALGO / OCT say nothing there, and the status line shows the song's title):
  *   page 1:        K1 mode (up, down, inclusive, exclusive, random, order, repeat)  K2 octaves 1-4
- *                  K3 rate (1/4 1/8 1/8T 1/16 1/32)  K4 tempo 30-300 BPM
+ *                  K3 rate (1/4 1/8 1/8T 1/16 1/32)  K4 tempo 30-300 BPM, or SYNC (left of 30): the song's rows,
+ *                  one a 1/16, the steps on its row clock, playing or stopped (see "the arpeggiator")
  *   page 2:        K1 gate 20-100 %  K2 swing 50-75 %  K3 latch (right: on, left: off)
  *                  K4 length ARP writes into the tracker, 1-8 patterns (not kept)
  * Editing (EDIT, LED lit; the tracker screen follows the cursor, not the playback):
@@ -33,7 +34,8 @@
  *   FX             key off (==)                 SCL      clear the cell        GLO   end of pattern here
  *   PLAY           play from the cursor / pause SAVE     save the song to its flash slot (or the first free one)
  *   ENV            undo one edit (32 steps, no redo)    REC   arm recording: keys during playback land on the playing row
- *   ARP            write the arp's last chord into the column, as notes, from the cursor down (see "the arp into the tracker")
+ *   ARP            write the arp's last chord into the column, as notes, from the cursor down (see "the arp into the tracker";
+ *                  with SYNC, on the rows the synced arp plays it)
  *   song screen:   SELECT position, K1 pattern number, GLO insert, SCL delete, ARP new pattern, K2 speed, K3 rhythm
  *   instrument:    PRESETS instrument, SELECT parameter, K1 value (name: K1 position, K2 character), ARP new, keys audition
  *
@@ -81,10 +83,14 @@ static uint32_t arp_acc;                      /* the arpeggiator's clock: native
 static void tick_arp(void);                   /* (the arpeggiator, below) */
 static void arp_follow(void);
 static void arp_drop(void);
+static void arp_lock(void);
+static uint32_t arp_sync, arp_lmask;          /* SYNC (main's, the ISR held off): the arp on the row clock; its lock rows' mask */
+static uint32_t arp_free, arp_gr;             /* the ISR's: rows counted (no song playing); rows since the arp's last lock */
 #define LIVE_OWN 0xFFu
 static volatile uint32_t live_alg = LIVE_OWN; /* ALGO's copy (the keys' instrument, below): its step 0-15, or none */
 #ifdef DINGHY_HOST
 static uint32_t host_nat;                     /* native samples generated, for tests/host.c's arp checks */
+static uint32_t host_row_at, host_row_g;      /* the last row tick: its native sample, its grid row */
 #endif
 
 /* register writes queue here (the player's from the ISR, the editor's from main) and land on the chip between
@@ -126,12 +132,19 @@ static void opl_write(void *ctx, uint16_t reg, uint8_t val)
 
 static void tick_row(void)                    /* the row clock: before a native sample, when it is due */
 {
+    uint32_t g = arp_free++;                  /* the arp's grid row (SYNC): the pattern's row while a song plays, else a count */
     if (playing && !song_over) {
         arp_follow();                         /* a new pattern: the arp may need another channel, before the row plays */
+        g = player.row;
         if (!macsop_tick(&player))
             song_over = 1;
         pos_order = player.order_idx; pos_row = player.row; rows_done++;
     }
+    arp_gr = g & arp_lmask;
+#ifdef DINGHY_HOST
+    host_row_at = host_nat; host_row_g = g;
+#endif
+    if (arp_sync && !arp_gr) arp_lock();      /* a row the grid starts a step on: the arp's step, now */
     row_acc += SPR_Q16[song.speed];
 }
 
@@ -1000,6 +1013,19 @@ static const uint8_t ARP_RATE_SPB[5] = { 1, 2, 3, 4, 8 };   /* steps a beat */
 static volatile uint32_t arp_on;
 static uint32_t arp_mode, arp_oct = 1, arp_rate = 3, arp_bpm = 120, arp_gate = 50, arp_swing = 50, arp_latch;
 static uint32_t arp_step_q8;                  /* native samples a step at the tempo and rate, Q8 */
+/* SYNC (arp_bpm 0, K4 left of 30 BPM): the steps come from the song's row clock, one row a 1/16, so 1/4 is 4 rows,
+ * 1/8 2, 1/8T 4/3, 1/32 half a row. Every lock row (a row the grid starts a step on: every NUM rows, the pattern's
+ * rows 0, NUM, 2 NUM.. while a song plays; twice that with swing, so a swing pair stays whole) the row clock starts
+ * the step itself (arp_lock, tick_row), on the row's first sample; the steps between are timed from it, and the
+ * last of them waits for the next lock (ARP_WAIT) instead of timing it, so nothing drifts. A new chord's first step
+ * waits for the grid's next step (arp_grid_wait). The row clock runs while the song is stopped too, so SYNC then
+ * free-runs at the song's speed. Per row the ISR adds a mask and a compare; a division only when a chord starts. */
+#define ARP_SYNC 0u
+#define ARP_WAIT 0xF0000000u                  /* (arp_acc) the next step is the row clock's: far beyond any lock */
+static const uint8_t ARP_SYNC_NUM[5] = { 4, 2, 4, 1, 1 }, ARP_SYNC_DEN[5] = { 1, 1, 3, 1, 2 };   /* rows a step: NUM / DEN */
+static uint32_t arp_ls = 1, arp_gk, arp_fresh;   /* steps a lock period (main's, the ISR held off); the ISR's: the step's
+                                               * index in the period; a new chord (or new settings) looks for the grid */
+static uint32_t arp_spd;                      /* main's: the song speed arp_retime last timed SYNC for */
 static uint32_t arp_n;                        /* notes held (or latched); main changes the lists with the ISR held off */
 static uint8_t arp_key[ARP_MAXN], arp_ord[ARP_MAXN], arp_sort[ARP_MAXN];   /* keys and notes in press order; notes sorted */
 static volatile uint32_t arp_ch = ARP_NONE, arp_unmute;   /* the ISR's (main reads them): the channel held; a muted one let back in */
@@ -1009,6 +1035,9 @@ static uint32_t arpw_n;                       /* main's: the chord as the last k
 static uint8_t arpw_ord[ARP_MAXN], arpw_sort[ARP_MAXN];
 #ifdef DINGHY_HOST
 static uint32_t host_arp_steps, host_arp_at, host_arp_gap, host_arp_last[8];   /* note | channel << 8 */
+/* since the settings last changed (arp_retime): steps, those not on a row's first sample, those on a row the grid
+ * has no step on (its row not a multiple of NUM), the shortest and longest gap between two */
+static uint32_t host_sy_steps, host_sy_off, host_sy_offgrid, host_sy_gmin = ~0u, host_sy_gmax;
 #endif
 
 static uint32_t arp_pick(void)                /* (ISR) the channel, as above */
@@ -1056,7 +1085,7 @@ static void arp_follow(void)                  /* (ISR, the row clock) a row of a
 
 static void arp_drop(void)                    /* (main, the ISR off the chip) the chip was reset: no channel held */
 {
-    arp_ch = ARP_NONE; arp_off_due = 0; arp_unmute = 0; arp_pat = 0xFFFF; arp_acc = 0;
+    arp_ch = ARP_NONE; arp_off_due = 0; arp_unmute = 0; arp_pat = 0xFFFF; arp_acc = 0; arp_fresh = 1;
     player.skip = 0;
 }
 
@@ -1079,6 +1108,28 @@ static uint32_t arp_note_of(uint32_t pos, uint32_t n, const uint8_t *ord, const 
 }
 static uint32_t arp_note(uint32_t pos) { return arp_note_of(pos, arp_n, arp_ord, arp_sort, &arp_rng); }   /* (ISR) */
 
+static void arp_lock(void)                    /* (ISR, SYNC, a lock row's tick) the step starts on this row's first sample */
+{
+    if (!arp_on || !arp_n) return;
+    arp_acc = row_acc >> 8;                   /* due now, at the row's own fraction of a sample (the steps after keep it) */
+    arp_off_due = 0; arp_fresh = 0; arp_gk = 0;   /* a gate still open: the step's key-on retriggers the channel */
+}
+
+static uint32_t arp_grid_wait(void)           /* (ISR, SYNC) Q8 samples to the grid's next step (arp_gk its index), or
+                                               * ARP_WAIT when that is the next lock's */
+{
+    uint32_t spr = SPR_Q16[song.speed], in = row_acc < spr ? spr - row_acc : 0u;   /* Q16 into the row */
+    uint32_t e = arp_gr * (spr >> 8) + (in >> 8), l0 = arp_step_q8, l1 = arp_step_q8, pr, k, r;
+    if (arp_swing > 50u) { l0 = arp_step_q8 / 50u * arp_swing; l1 = arp_step_q8 / 50u * (100u - arp_swing); }
+    pr = l0 + l1; k = e / pr * 2u; r = e % pr;
+    if (r < 256u) r = 0;                      /* on a step, to the sample: now */
+    else if (r <= l0) { k++; r = l0 - r; }
+    else { k += 2u; r = pr - r; }
+    if (k >= arp_ls) return ARP_WAIT;
+    arp_gk = k;
+    return r;
+}
+
 static void tick_arp(void)                    /* (ISR) the arp's next event is due: a step, or its gate's end */
 {
     uint32_t len, on, s, note;
@@ -1089,6 +1140,10 @@ static void tick_arp(void)                    /* (ISR) the arp's next event is d
         arp_acc += arp_rest;
         return;
     }
+    if (arp_sync && arp_fresh) {              /* a new chord, or new settings: the grid's next step, not now */
+        arp_fresh = 0;
+        if ((len = arp_grid_wait()) >= 256u) { arp_acc += len; return; }
+    }
     if (arp_ch == ARP_NONE) arp_move();
     s = arp_pos++;
     note = arp_note(s);
@@ -1096,21 +1151,46 @@ static void tick_arp(void)                    /* (ISR) the arp's next event is d
 #ifdef DINGHY_HOST
     host_arp_gap = host_nat - host_arp_at; host_arp_at = host_nat;
     host_arp_last[host_arp_steps++ & 7u] = note | arp_ch << 8;
+    host_sy_steps++;
+    if (host_nat != host_row_at) host_sy_off++;
+    else if (host_row_g % ARP_SYNC_NUM[arp_rate]) host_sy_offgrid++;
+    if (host_sy_steps > 1u) {
+        if (host_arp_gap < host_sy_gmin) host_sy_gmin = host_arp_gap;
+        if (host_arp_gap > host_sy_gmax) host_sy_gmax = host_arp_gap;
+    }
 #endif
-    len = arp_step_q8;                        /* swing: a long step, then a short one */
-    if (arp_swing > 50u) len = len / 50u * (s & 1u ? 100u - arp_swing : arp_swing);
+    len = arp_step_q8;                        /* swing: a long step, then a short one (SYNC: by the step's place in the grid) */
+    if (arp_swing > 50u) len = len / 50u * ((arp_sync ? arp_gk : s) & 1u ? 100u - arp_swing : arp_swing);
     on = arp_gate >= 100u ? len : len / 100u * arp_gate;
     if (on < 256u) on = 256u;                 /* an event at least a sample apart (refill relies on it) */
     if (len < on + 256u) on = len;            /* no room for a key off: legato */
-    arp_acc += on;
     arp_rest = len - on; arp_off_due = arp_rest != 0;
+    if (arp_sync && ++arp_gk >= arp_ls) {     /* the period's last step: the next is the lock row's (arp_lock) */
+        if (arp_off_due) arp_rest = ARP_WAIT; else on = ARP_WAIT;
+    }
+    arp_acc += on;
 }
 
 /* main's side: the notes the keys hold, the settings */
-static void arp_retime(void)                  /* the step length from the tempo and the rate */
+static void arp_retime(void)                  /* the step length from the tempo (SYNC: the song's rows) and the rate */
 {
-    uint32_t d = arp_bpm * ARP_RATE_SPB[arp_rate], q = 2982960u / d, r = 2982960u % d;   /* 49716 x 60 samples a minute */
-    arp_step_q8 = (q << 8) + (r << 8) / d;
+    uint32_t q8, lp = ARP_SYNC_NUM[arp_rate], ls = ARP_SYNC_DEN[arp_rate], f, was = arp_sync;
+    if (arp_bpm == ARP_SYNC) {                /* rows a step x samples a row (Q16), in Q8 */
+        q8 = (uint32_t)((uint64_t)SPR_Q16[song.speed] * lp / (ls * 256u));
+        if (arp_swing > 50u && (ls & 1u)) { lp *= 2u; ls *= 2u; }   /* a lock on an even step: swing's pairs stay whole */
+        arp_spd = song.speed;
+    } else {
+        uint32_t d = arp_bpm * ARP_RATE_SPB[arp_rate], q = 2982960u / d, r = 2982960u % d;   /* 49716 x 60 samples a minute */
+        q8 = (q << 8) + (r << 8) / d;
+    }
+    f = irq_save();
+    arp_step_q8 = q8;
+    arp_sync = arp_bpm == ARP_SYNC; arp_lmask = lp - 1u; arp_ls = ls;
+    if (arp_sync || was) { arp_fresh = 1; if (arp_n) arp_acc = 0; }   /* onto the grid (or off it, out of ARP_WAIT) now */
+#ifdef DINGHY_HOST
+    host_sy_steps = host_sy_off = host_sy_offgrid = host_sy_gmax = 0; host_sy_gmin = ~0u;
+#endif
+    irq_restore(f);
 }
 
 static void arp_sorted(void)                  /* arp_sort: arp_ord ascending (27 at most: insertion) */
@@ -1130,7 +1210,7 @@ static void arp_press(uint32_t k)             /* key k down: its note joins; the
     if (arp_n >= ARP_MAXN) return;
     f = irq_save();
     arp_key[arp_n] = (uint8_t)k; arp_ord[arp_n] = (uint8_t)key_note(k);
-    if (!arp_n++) { arp_acc = 0; arp_pos = 0; }
+    if (!arp_n++) { arp_acc = 0; arp_pos = 0; arp_fresh = 1; }
     arp_sorted();
     irq_restore(f);
     arpw_n = arp_n; memcpy(arpw_ord, arp_ord, arp_n); memcpy(arpw_sort, arp_sort, arp_n);
@@ -1173,7 +1253,8 @@ static void arp_clear(void)
  * row 63, or at the cursor's pattern's end of pattern, it goes on in new empty patterns put into the order list right
  * after the cursor's position. A step is a whole number of rows, the nearest to the arp's rate at the song's speed;
  * the status line says when that is not the arp's tempo. Swing (a long step, then a short one) and the gate round
- * to rows too; a step of one row cannot swing. One undo step takes all of it back (undo_list keeps the column). */
+ * to rows too; a step of one row cannot swing. With SYNC the steps are the synced arp's own rows (arp_write_sync).
+ * One undo step takes all of it back (undo_list keeps the column). */
 #define ARP_LEN_MAX 8u
 static uint32_t arp_len = 1;                  /* patterns of rows ARP writes (the settings' page 2, K4); not kept */
 static uint32_t arpw_rng = 0x2545F491u;       /* RANDOM's state for writing, apart from the ISR's */
@@ -1195,10 +1276,39 @@ static macsop_cell *arpw_cell(uint32_t r, uint32_t first)   /* row r of the rang
     return &song.pat[pat].cell[r][cur_col];
 }
 
+static void arpw_put(uint32_t r, uint32_t first, uint32_t note, uint32_t instr)   /* row r of the range: a note, or a key off (4) */
+{
+    macsop_cell t;
+    t.u = 0; t.f.note = (uint8_t)note;
+    if (note != 4u) { t.f.instr = (uint8_t)instr; t.f.vol = (uint8_t)ed_vol; t.f.pitch = 32; }
+    arpw_cell(r, first)->u = t.u;             /* each cell one aligned store: the player sees it whole */
+}
+
+/* SYNC: what the synced arp plays, from the cursor: step s on the row it starts in, s x NUM / DEN rows on (swing
+ * as the arp times it), its key off on the row its gate ends in when that is a later row than the note's and before
+ * the next step's; a gate that ends inside the note's own row cannot be a row, so the note runs on. 1/8T lands on
+ * rows 0 1 2, 4 5 6 (4/3 apart); 1/32, two steps a row, cannot be cells: a row each (as 1/16), and the status says so. */
+static void arp_write_sync(uint32_t total, uint32_t first, uint32_t instr)
+{
+    uint32_t n = ARP_SYNC_NUM[arp_rate], dn = ARP_SYNC_DEN[arp_rate], u, pr, l0, a0, a1, at, b, s;
+    if (dn == 2u) dn = 1u;                    /* 1/32 */
+    u = 50u * dn;                             /* positions in 1/(50 DEN) rows: a step 50 NUM, swing's long one NUM x swing */
+    pr = 100u * n; l0 = arp_swing > 50u ? n * arp_swing : 50u * n;
+    for (s = 0;; s++) {
+        a0 = s / 2u * pr + (s & 1u ? l0 : 0u);
+        a1 = (s + 1u) / 2u * pr + ((s + 1u) & 1u ? l0 : 0u);
+        if ((at = a0 / u) >= total) break;
+        arpw_put(at, first, arp_note_of(s, arpw_n, arpw_ord, arpw_sort, &arpw_rng), instr);
+        b = (a0 + (a1 - a0) * arp_gate / 100u) / u;
+        if (arp_gate < 100u && b > at && b < a1 / u && b < total) arpw_put(b, first, 4u, instr);
+    }
+    say(ARP_SYNC_DEN[arp_rate] == 2u ? "ROUNDED: 1/32 AS 1/16" : ARP_SYNC_DEN[arp_rate] == 3u ? "ARP: SYNC, 1/8T ON ROWS" : "ARP: SYNC");
+}
+
 static void arp_write(void)
 {
     static char m[24];
-    uint32_t spb = ARP_RATE_SPB[arp_rate], d = arp_bpm * spb, rpm = ROWS_PER_MIN[song.speed];
+    uint32_t spb = ARP_RATE_SPB[arp_rate], d = (arp_bpm == ARP_SYNC ? 1u : arp_bpm) * spb, rpm = ROWS_PER_MIN[song.speed];
     uint32_t total = arp_len * MACSOP_ROWS, first, add, len, lng, sht, step, on, at, s, i, r, f;
     uint32_t instr = ed_instr <= song.n_instr ? ed_instr : 1u;
     uint16_t pat = macsop_order_pattern(&player, (uint16_t)cur_order);
@@ -1238,6 +1348,7 @@ static void arp_write(void)
     if (lng < len) lng = len;
     sht = 2u * len - lng;
     for (r = 0; r < total; r++) arpw_cell(r, first)->u = 0;   /* each cell one aligned store: the player sees it whole */
+    if (arp_bpm == ARP_SYNC) { arp_write_sync(total, first, instr); return; }
     for (s = 0, at = 0; at < total; s++, at += step) {
         step = s & 1u ? sht : lng;
         t.u = 0; t.f.note = (uint8_t)arp_note_of(s, arpw_n, arpw_ord, arpw_sort, &arpw_rng);
@@ -1294,7 +1405,7 @@ static void draw_arp(void)
                 case 0: p = cat(s, ARP_MODE_NAME[arp_mode]); break;
                 case 1: v = arp_oct; break;
                 case 2: p = cat(s, ARP_RATE_NAME[arp_rate]); break;
-                default: v = arp_bpm;
+                default: if (arp_bpm == ARP_SYNC) p = cat(s, "SYNC"); else v = arp_bpm;
             } else switch (i) {
                 case 0: v = arp_gate; break;
                 case 1: v = arp_swing; break;
@@ -1343,6 +1454,18 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
         case 6: return arp_ch;
         default: return chip.mute;
 #endif
+        }
+    if (row == 89u)                           /* SYNC, since the settings last changed: col 0 steps, 1 those not on a row's first
+                                               * sample, 2 those on a row the grid has no step on, 3 / 4 the shortest / longest
+                                               * gap between two (native samples); 5 arp_bpm (0 SYNC), 6 the song's speed */
+        switch (col) {
+        case 0: return host_sy_steps;
+        case 1: return host_sy_off;
+        case 2: return host_sy_offgrid;
+        case 3: return host_sy_gmin;
+        case 4: return host_sy_gmax;
+        case 5: return arp_bpm;
+        default: return song.speed;
         }
     if (row == 92u) return col < 9u ? host_c0[col] : 0;   /* the keys' instrument (TODO 5): channel col's C0 */
     if (row == 90u) return (uint32_t)macsop_channel_instr_no(&player, (int)col);   /* its instrument 1.. (0: not the song's) */
@@ -1416,7 +1539,8 @@ static void app_usb_cmd(const uint8_t *d, uint32_t n) { slot_sysex(d, n); }
 static void app_main(void)
 {
     /* the first two as before the arp, the first ten as before kb_oct: a sector an older OPLBOX wrote still loads (its two
-     * or ten bytes; the rest at the defaults) */
+     * or ten bytes; the rest at the defaults). arp_bpm 0 is SYNC: no older sector holds a 0 (they kept 30-300, the
+     * defaults say 120), and an older OPLBOX reading this one takes 0 for out of range, so 120 BPM */
     struct { uint8_t song, loop_all, arp_mode, arp_oct, arp_rate, arp_gate, arp_swing, arp_latch; uint16_t arp_bpm; int8_t kb_oct, pad; }
         set = {0, 0, ARP_UP, 1, 3, 50, 50, 0, 120, 0, 0};
     uint32_t shown_order = ~0u, shown_row = ~0u, t_status = 0, t_change = 0, dirty = 0, play = 0, next = 0;
@@ -1431,7 +1555,7 @@ static void app_main(void)
     arp_gate = set.arp_gate >= 20u && set.arp_gate <= 100u ? set.arp_gate : 50u;
     arp_swing = set.arp_swing >= 50u && set.arp_swing <= 75u ? set.arp_swing : 50u;
     arp_latch = set.arp_latch & 1u;
-    arp_bpm = set.arp_bpm >= 30u && set.arp_bpm <= 300u ? set.arp_bpm : 120u;
+    arp_bpm = set.arp_bpm == ARP_SYNC || (set.arp_bpm >= 30u && set.arp_bpm <= 300u) ? set.arp_bpm : 120u;   /* 0: SYNC */
     arp_retime();
     kb_oct = set.kb_oct >= -3 && set.kb_oct <= 3 ? set.kb_oct : 0;
 
@@ -1572,7 +1696,8 @@ static void app_main(void)
                 if (k1) arp_mode = (uint32_t)wrap((int32_t)arp_mode + k1, ARP_MODES);
                 if (k2) { v = (int32_t)arp_oct + k2; arp_oct = (uint32_t)(v < 1 ? 1 : v > 4 ? 4 : v); }
                 if (k3) { v = (int32_t)arp_rate + k3; arp_rate = (uint32_t)(v < 0 ? 0 : v > 4 ? 4 : v); }
-                if (k4) { v = (int32_t)arp_bpm + k4; arp_bpm = (uint32_t)(v < 30 ? 30 : v > 300 ? 300 : v); }
+                if (k4) { v = arp_bpm == ARP_SYNC ? (k4 > 0 ? 29 + k4 : 0) : (int32_t)arp_bpm + k4;   /* left of 30: SYNC */
+                          arp_bpm = (uint32_t)(v < 30 ? (int32_t)ARP_SYNC : v > 300 ? 300 : v); }
             } else {
                 if (k1) { v = (int32_t)arp_gate + 5 * k1; arp_gate = (uint32_t)(v < 20 ? 20 : v > 100 ? 100 : v); }
                 if (k2) { v = (int32_t)arp_swing + k2; arp_swing = (uint32_t)(v < 50 ? 50 : v > 75 ? 75 : v); }
@@ -1757,6 +1882,7 @@ static void app_main(void)
         fm1_led_key(BTN_ARP, (int)arp_on);
         for (k = 0; k < 9u; k++) fm1_led_key(14u + WHITE_KEY[k], view == V_SCOPE && (int)((mute_mask >> k) & 1u));
         if (redraw) { draw_view_frame(); redraw = 0; shown_order = ~0u; }
+        if (arp_bpm == ARP_SYNC && song.speed != arp_spd) arp_retime();   /* SYNC: a new speed (K2, ENV, a new song) at once */
         if (fm1_ms - t_batt >= 1000u) { t_batt = fm1_ms; batt_poll(); }   /* the battery: once a second */
         if (view == V_SCOPE && fm1_ms - t_scope > 50u) {          /* the scope: 20 frames a second */
             t_scope = fm1_ms;

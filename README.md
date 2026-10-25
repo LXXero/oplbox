@@ -38,9 +38,17 @@ it takes a channel the playing pattern leaves silent, else a channel muted on th
 arp), else the last melodic one (6 in rhythm songs, 9 otherwise; never the drums); the song's notes in that column
 are left out while it plays there. The settings screen shows the channel. Page 1: **K1** mode (up, down,
 inclusive, exclusive, random, order, repeat), **K2** octaves 1–4, **K3** rate (1/4 1/8 1/8T 1/16 1/32), **K4**
-tempo 30–300 BPM. **OCT−/+** move the notes it plays (held or latched) an octave from the next step, as the stock firmware does; letting go of a key still takes its own note out. Page 2 (LFO): **K1** gate 20–100 %, **K2** swing 50–75 %, **K3** latch (right on, left off),
+tempo 30–300 BPM, or **SYNC** (turn K4 left past 30; right leaves it at 30). **OCT−/+** move the notes it plays (held or latched) an octave from the next step, as the stock firmware does; letting go of a key still takes its own note out. Page 2 (LFO): **K1** gate 20–100 %, **K2** swing 50–75 %, **K3** latch (right on, left off),
 **K4** how much ARP writes into the tracker, 1–8 patterns (below). The settings and the keys' octave survive a restart, except K4,
 which starts at 1; the arp itself starts off.
+
+**SYNC: the arp in the song's tempo.** With SYNC the arp has no BPM of its own: it steps with the song's rows, and
+**one row is a 1/16**, so 1/4 is 4 rows, 1/8 2, 1/8T 4/3 (three steps every 4 rows), 1/16 one row, 1/32 half a row.
+While the song plays, a step that falls on a row starts on that row, exactly (the pattern's rows 0, 4, 8 … for 1/4),
+and a new chord's first step waits for the next step of that grid. Swing and gate work as with a BPM. When the
+song is stopped the arp keeps the same step length from the song's speed; a new speed (song screen, K2) or a new
+song changes it at once. To play along and keep it: ARP on, K4 to SYNC, play the song and the chord until it sounds
+right; then EDIT, cursor to the row it should start on, and **ARP** writes what you heard (below).
 
 **Battery.** Every screen shows a battery at the top right: 3 bars, red outline when empty. It reads ADC ch3
 (the battery divider) once a second, smoothed over a few seconds. The bars switch at raw counts 531 / 561 / 591,
@@ -81,7 +89,10 @@ instrument and volume (`I03`, ALGO), a key off where the gate ends, and empty ro
 is replaced. Past row 64, or at an end of pattern, it goes on in new empty patterns put into the song right after
 this position. A step must be a whole number of rows, so the song's speed sets what tempos fit: at 9.1 rows a second,
 1/8 at 91 BPM is exactly 3 rows. Otherwise the nearest number of rows is used and the status line says so, with the
-tempo you get (`ROUNDED: 136.5 BPM`); swing rounds to rows too (`ROUNDED: SWING`). One **ENV** takes all of it
+tempo you get (`ROUNDED: 136.5 BPM`); swing rounds to rows too (`ROUNDED: SWING`). With SYNC there is nothing to
+round: each step goes on the row the synced arp starts it on (1/8T: rows 0 1 2, 4 5 6 …), the gate's key off on the
+row it ends in when that is a later row than the note's and before the next step (`ARP: SYNC`); only 1/32, two
+steps a row, does not fit cells and is written a row a step (`ROUNDED: 1/32 AS 1/16`). One **ENV** takes all of it
 back. Not in a drum column; the song is still a plain .CMF.
 
 | song screen (SEQ once) | |

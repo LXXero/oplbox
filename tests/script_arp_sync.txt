@@ -1,0 +1,101 @@
+# t(ms) what ...   : the arp's SYNC tempo (K4 left of 30 BPM): its steps on the song's row clock, one row a 1/16,
+# checked against the rows the ISR ticks (exits 1 when a check fails). Row 89 of host_cell (oplbox.c), counted since
+# the arp's settings last changed (a knob, or a new song speed): col 0 steps, 1 steps not on a row's first native
+# sample, 2 steps on a row the grid has no step on (the pattern's row, or rows counted with the song stopped, not a
+# multiple of the step's rows), 3 / 4 the shortest / longest gap between two steps in native samples; 5 arp_bpm (0 is
+# SYNC), 6 the song's speed.
+# Song 0 (STARDUST FALLING) plays from the start, speed 2: 5463.3 native samples (109.9 ms) a row, so a row is 5463
+# or 5464 samples. Its 896 rows last past the end of this script at every speed below, so it never reloads.
+100 btn 10
+200 enc 5 -100
+300 is 0 89 5 0
+300 is 0 89 6 2
+300 keys 0x4880
+# ---- speed 2, 1/16: every step on a row's first sample, a row apart, 64 rows and more
+7400 within 0 89 0 64 67
+7400 is 0 89 1 0
+7400 is 0 89 2 0
+7400 within 0 89 3 5463 5464
+7400 within 0 89 4 5463 5464
+# K3: 1/4, 4 rows (21853.1): on the pattern's rows 0 4 8 .., 64 rows
+7500 enc 4 -3
+14700 within 0 89 0 16 17
+14700 is 0 89 1 0
+14700 is 0 89 2 0
+14700 within 0 89 3 21852 21854
+14700 within 0 89 4 21852 21854
+# 1/8T: 4/3 rows (7284.4, 146.5 ms), three steps every 4 rows, the first on the row
+14800 enc 4 2
+16800 within 0 89 0 13 15
+16800 is 0 89 2 0
+16800 within 0 89 3 7283 7286
+16800 within 0 89 4 7283 7286
+# 1/32: half a row (2731.6), two steps a row
+16900 enc 4 2
+18900 within 0 89 0 34 37
+18900 is 0 89 2 0
+18900 within 0 89 3 2730 2733
+18900 within 0 89 4 2730 2733
+# 1/16 with the song paused: the row clock runs on, the arp free-runs at the song's speed, still on its rows
+19000 enc 4 -1
+19050 btn 12
+21000 within 0 89 0 17 19
+21000 is 0 89 1 0
+21000 within 0 89 3 5463 5464
+21000 within 0 89 4 5463 5464
+21100 btn 12
+# ---- speed 1 (K2 on the song screen, in EDIT; the keys up first, EDIT has them): 2731.6 samples a row, the arp
+# retimed at once. 1/16, 64 rows
+21200 keys 0
+21300 btn 6
+21400 btn 11
+21500 enc 3 -1
+21600 btn 6
+21700 btn 5
+21750 is 0 89 6 1
+21800 keys 0x4880
+25500 within 0 89 0 64 67
+25500 is 0 89 1 0
+25500 is 0 89 2 0
+25500 within 0 89 3 2731 2732
+25500 within 0 89 4 2731 2732
+# 1/4 at speed 1: 10926.5
+25600 enc 4 -3
+29200 within 0 89 0 16 17
+29200 is 0 89 1 0
+29200 is 0 89 2 0
+29200 within 0 89 3 10926 10927
+29200 within 0 89 4 10926 10927
+# ---- speed 3: 10926.6 samples a row. 1/4 (43706.3), 64 rows
+29300 keys 0
+29400 btn 6
+29500 btn 11
+29600 enc 3 2
+29700 btn 6
+29800 btn 5
+29850 is 0 89 6 3
+29900 keys 0x4880
+44100 within 0 89 0 16 17
+44100 is 0 89 1 0
+44100 is 0 89 2 0
+44100 within 0 89 3 43705 43707
+44100 within 0 89 4 43705 43707
+# 1/16 at speed 3, 64 rows
+44200 enc 4 3
+58400 within 0 89 0 64 67
+58400 is 0 89 1 0
+58400 is 0 89 2 0
+58400 within 0 89 3 10926 10927
+58400 within 0 89 4 10926 10927
+# swing 75 % (page 2, K2) at speed 3, 1/16: a pair of steps is 2 rows, 1.5 (16389.9) then 0.5 (5463.5); the
+# long one starts on the lock row (every 2 rows), so half the steps start on a row's first sample
+58500 btn 5
+58600 enc 3 25
+62000 within 0 89 0 15 17
+62000 within 0 89 1 7 9
+62000 within 0 89 3 5462 5465
+62000 within 0 89 4 16388 16391
+# ---- the keys up, paused: the settings sector is written (tests/run_host.sh loads it in a second run)
+62100 keys 0
+62200 btn 12
+65000 end
