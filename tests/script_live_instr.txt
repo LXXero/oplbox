@@ -15,16 +15,21 @@
 1100 is 0 90 5 1
 1100 is 0 92 5 8
 1100 is 0 91 4 0
-# ---- PRESETS +2: instrument 3, from the next step; the status line says I03 t.detert
+# ---- PRESETS +2: instrument 3, from the next step. ARP on opened the arp screen (btn 10), so the status line says
+# nothing (91 col 4: 0) and keeps the song's title (col 7, the second line as drawn); the footer says I03 t.detert (col 6)
 1150 enc 6 2
-1160 is 0 91 4 2475309250
+1160 is 0 91 4 0
+1160 is 0 91 6 2475309250
+1160 is 0 91 7 2571953739
 1400 is 0 91 0 3
 1400 is 0 90 5 3
 1400 is 0 92 5 9
 # ---- ALGO -1: a copy at step 11 (additive, feedback 3: C0 7), not one of the song's; instrument 3 itself stays at
-# step 12. The status line says I03 ADDITIVE FB 3
+# step 12. The footer says I03 ADDITIVE FB 3
 1450 enc 1 -1
-1460 is 0 91 4 3238189199
+1460 is 0 91 4 0
+1460 is 0 91 6 3238189199
+1460 is 0 91 7 2571953739
 1700 is 0 91 1 11
 1700 is 0 91 2 12
 1700 is 0 90 5 0
@@ -39,7 +44,9 @@
 2300 is 0 91 2 12
 # ---- PRESETS -3 wraps from 3 to 11 (of 11) and drops the copy: I11 unnamed, the song's own (C0 14)
 2350 enc 6 -3
-2360 is 0 91 4 2209250121
+2360 is 0 91 4 0
+2360 is 0 91 6 2209250121
+2360 is 0 91 7 2571953739
 2600 is 0 91 0 11
 2600 is 0 91 1 255
 2600 is 0 90 5 11
@@ -48,7 +55,9 @@
 # With the song playing, channels 0 and 1 keep the song's instrument 8 (C0 14) while the arp's channel plays the copy
 2650 enc 6 -3
 2700 enc 1 -2
-2710 is 0 91 4 2857839739
+2710 is 0 91 4 0
+2710 is 0 91 6 2857839739
+2710 is 0 91 7 2571953739
 2800 btn 12
 3500 is 0 97 6 5
 3500 is 0 90 0 8
@@ -96,4 +105,22 @@
 11150 enc 4 1
 11250 is 0 91 5 3657983148
 11250 is 0 91 6 3693565465
-11400 end
+# ---- the arp screen's status line shows the song's title, not the instrument the footer has (91 col 7, a hash of
+# the second line as drawn): song 1, BONE AND STONE (OCT+ at 6100). PRESETS here sets no message and the line stays
+11300 is 0 91 7 1829199424
+11320 enc 6 1
+11330 is 0 91 4 0
+11330 is 0 91 7 1829199424
+# ---- a song change on the arp screen shows the new title at once: OCT+ to song 2, PLASTIC AGE; then SELECT +10 to
+# song 12, NEVERENDING STORY II, clipped to the 18 characters left of the CPU readout
+11350 btn 1
+11360 is 0 91 7 1015288639
+11400 enc 0 10
+11410 is 0 91 7 4245169176
+# ---- ARP off: back to the tracker, where PRESETS still says the instrument, and the second line is that message
+11450 btn 10
+11500 enc 6 1
+11510 differs 0 91 4
+11510 save 0 91 4
+11510 same 0 91 7
+11600 end
