@@ -874,6 +874,8 @@ static undo_step *undo_pop(void)              /* put the last step back; the ste
         uint32_t f = irq_save();
         for (i = u->a + 1u; i + k < song.n_orders; i++) song.order[i] = song.order[i + k];
         song.n_orders = (uint16_t)(song.n_orders - k);
+        if (player.order_idx != 0xFFFFu && player.order_idx > u->a)   /* the player stays on its pattern; inside the removed range it drops to the position before */
+            player.order_idx = player.order_idx > u->a + k ? (uint16_t)(player.order_idx - k) : (uint16_t)u->a;
         irq_restore(f);
         pat = macsop_order_pattern(&player, u->a);
         if (pat != 0xFFFFu)
@@ -1132,6 +1134,7 @@ static void arp_write(void)
     for (i = song.n_orders; i-- > cur_order + 1u;) song.order[i + add] = song.order[i];
     for (i = 0; i < add; i++) song.order[cur_order + 1u + i] = (uint16_t)(song.n_patterns + i);
     song.n_patterns = (uint16_t)(song.n_patterns + add); song.n_orders = (uint16_t)(song.n_orders + add);
+    if (player.order_idx != 0xFFFFu && player.order_idx > cur_order) player.order_idx = (uint16_t)(player.order_idx + add);   /* the player stays on its pattern */
     irq_restore(f);
 
     len = (2u * rpm + d) / (2u * d);          /* rows a step: the nearest whole number */
