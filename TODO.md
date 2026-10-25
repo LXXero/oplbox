@@ -177,42 +177,62 @@ skipping it, and the muted channel 3 taken (and unmuted) in pattern 2, which use
   note there names one.
 - Swing, Random, Inclusive / Exclusive / Order / Repeat and octaves above 1 have no host check of their own.
 
-## 4. Save an arpeggio into the tracker as a track
+## 4. Save an arpeggio into the tracker as a track — built, host-tested, not yet tried on hardware
 
 A bassline generator and similar: the arp's output is written as ordinary note rows (note, instrument, volume,
 pitch 32) in one column of a pattern, so the saved song is still a plain `.CMF` that FXDRIVER / SoundFX Macs
 Opera plays. No new data in the file.
 
-**Today.** The cell is `{note, instr, vol, pitch}` (`macsop.h`). A note sounds until a key off (note 4, `==`)
-or the next note in its column. A pattern has 64 rows (row 64 only holds end marks). The format has no effect
-column, no per-pattern tempo and no tempo command. The only timing is the song's speed 1–3: 18.2 / 9.1 / 4.55
-rows per second (`SPR_Q16`, :61; the song screen's K2, :848). Up to 64 patterns and 99 order positions.
+**Built.** ARP in the pattern editor (EDIT, tracker screen) runs `arp_write()` (`oplbox.c`, "the arp into the
+tracker"). Offline, from the chord the arp last played and its settings now, it writes into the cursor's column
+from the cursor down, `arp_len` patterns of rows:
+- Each step is a note in `ed_instr` and `ed_vol`, pitch 32. The gate ends in a key off (`==`) at
+  round(step × gate) rows, at least 1. When that is the whole step (gate 100 %, or a 1-row step) there is no key
+  off and the next note cuts it, which is the live arp's legato. Every other row in the range is emptied.
+- The notes come from the live arp's own step function (`arp_note_of()`, now shared by the ISR and the writer), so
+  every mode and octave setting writes what it plays. RANDOM has its own random state for writing.
+- Rows per step are the nearest whole number to the arp's rate at the song's speed: 1092 / 546 / 273 rows a
+  minute at speed 1 / 2 / 3, divided by BPM × steps a beat. When that isn't exact, the status line says
+  `ROUNDED: 136.5 BPM` (the tempo the rows give). Swing makes pairs of 2 × N rows, the first round(2N × swing)
+  of them, at most 2N − 1; when that rounds, it says `ROUNDED: SWING`. When it is exact: `ARP: 3 ROWS A STEP`.
+- Past row 63, or at the cursor's pattern's end of pattern (or a row that emptying this column would turn into one,
+  macsop's first-cell rule), it goes on in new empty patterns put into the order list right after the cursor's
+  position. It refuses, with a status message and no change, when the song has no room for them (64 patterns,
+  99 positions), on a drum column of a rhythm song, and when no chord has been played since power-on.
+- One ENV takes back all of it: an undo slot now holds either the order list or the 64 cells of the cursor's
+  column (`undo_list` is a union, 256 B a slot; the pool grows 1856 B). Undo removes the inserted order positions
+  and restores the counts and the column.
+- Page 2 of the arp's settings, K4: length 1–8 patterns.
+- Firmware image +2,040 B.
 
-**Where.** The write goes through the same cell code as the pattern editor (:823–837): a loop that runs the arp
-step function from item 3 offline and writes cells from the cursor down, then continues into new patterns
-(:860) when it runs past row 63.
+Checked by `tests/script_arp_write.txt`:
+- A live arp (1/8 at 91 BPM: 3 rows a step at speed 2) is keyed and then written over row 40 of pattern 0.
+- The cells are checked, then played from the cursor. `host_cell` rows 93–95 report each channel's key-ons from the
+  register writes. The player keys the same pitches as the live arp did, at the same 16,390 native samples a step,
+  lets go 2 rows in, and goes on into the new pattern.
+- A second write checks 75 % swing (5 + 1 rows), legato and two patterns over the song's own notes.
+- Undo of both, and the drum-column refusal.
+- Each of five planted bugs fails it: gate or swing truncated instead of rounded, the new pattern's rows mapped to
+  the cursor's pattern, undo not restoring the column, the range not emptied.
 
-**Format limits.**
-- Every arp step must be a whole number of rows. With N rows per quarter note, the tempo is
-  60 × rows per second / N. At speed 1: N = 4 (row = 1/16) is 273 BPM; N = 8 (row = 1/32) is 136.5 BPM. At
-  speed 2 the tempos halve, at speed 3 they halve again.
-- 1/32 needs at least 8 rows a quarter. 1/8T needs N divisible by 3. All five rates at once need N = 24:
-  45.5 BPM at speed 1 and slower at the others. In practice, the rate picks the tempo: 1/32 and the triplet
-  rates only work at some song speeds, and a stock tempo (30–300 BPM) is kept only if it matches one of these
-  values.
-- Gate is a key off N × gate rows after the note, rounded to a row. A step of one row cannot have a gate
-  shorter than 100 %.
-- Swing is alternating long and short steps, so it needs at least 2 rows a step and rounds to whole rows.
-- One column is one voice, and the arp is monophonic, so this fits. In rhythm mode only columns 1–6 are
-  melodic.
+**Decided** (chosen by the colony; xero can change it):
+- Offline from the chord the arp last played, not live recording. "Last played" means the notes as the last key
+  pressed for the arp left them, held or latched; letting go doesn't clear it, so it can be written after the keys
+  are up and EDIT is on (EDIT clears the arp's live chord).
+- Into the cursor's column of the current pattern, overwriting the range, rather than always into a new pattern.
+- Length one pattern of rows by default, 1–8 on page 2 K4. The length isn't kept in the settings sector, because
+  adding a byte would change the sector's size and an older sector would no longer load the arp settings.
+- The overflow goes into new patterns inserted after the cursor's position, so the rest of the song moves one
+  position later per new pattern, rather than overwriting the next position's pattern.
+- Volume is `ed_vol`, not key velocity (the panel keys have none).
+- SAVE gives no warning. The tempo message comes when ARP writes.
+- The last step's key off is dropped when it falls past the range, so the last note rings into what follows.
 
-**Open questions.**
-- How long: one pattern, a number of bars, or until the key is released?
-- Write into the cursor's column of the current pattern (overwriting what is there), or always into a new
-  pattern?
-- Should velocity from the keys go into the volume byte, or use `ed_vol`?
-- Does SAVE then need a warning when the song's speed does not give the arp's tempo?
-- Record live while the song plays (needs 2b), or render offline from a held chord and the arp settings?
+**Still open.**
+- Recording the arp live while the song plays, through 2b's path.
+- Velocity from USB MIDI (2b MIDI in) into the volume byte.
+- Whether a stock tempo should snap to one the song's speed can give, or the speed be offered.
+- Hardware: the write's time on the FM-1 (up to 8 × 64 cells and a pattern clear each, in the main loop).
 
 ## 5. Change the instrument while playing (with an arp running too)
 

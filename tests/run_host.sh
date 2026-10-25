@@ -13,6 +13,8 @@ build/host/oplbox build/host/undo tests/script_undo.txt
 build/host/oplbox build/host/rec tests/script_rec.txt
 # the arpeggiator: steps, tempo, gate, latch and the channel it takes, checked against its state and the chip
 build/host/oplbox build/host/arp tests/script_arp.txt
+# the arp written into the tracker (TODO 4): the cells, their playback against the live arp's key-ons, undo
+build/host/oplbox build/host/arp_write tests/script_arp_write.txt
 # the song slots over SysEx (firmware/src/slot_sysex.c, TODO 2a): pull, push and every refusal through ota.c's framing
 # against a fake computer, macsop_check against macsop_parse; then tools/fm1_slot.py against the same code on a pipe
 cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function -Ifirmware/src -o build/host/slot_sysex_test tests/slot_sysex_test.c
