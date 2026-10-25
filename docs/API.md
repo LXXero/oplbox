@@ -97,7 +97,7 @@ prev = keys;
 | | |
 | --- | --- |
 | `fm1_led_key(id, on)` | a button (`BTN_...`) or a key (`KEY_LED(k)`, k = 0..26) lit or not |
-| `fm1_led[col]`, `fm1_led_dim[col]` | the raw layers, for many LEDs at once (see `hal/fm1_input.h`); `_dim` glows at ~1/24 |
+| `fm1_led[col]`, `fm1_led_dim[col]` | the raw layers, for many LEDs at once (see `bsp/boards/fm1/fm1_input.h`); `_dim` glows at ~1/24 |
 
 ## Screen
 
@@ -224,5 +224,6 @@ In platform.c, before `#include "usb.c"`:
 | | | |
 | --- | --- | --- |
 | `FELUCCA_UAC` | 1 | USB audio input (the output to the computer) |
+| `FELUCCA_UAC_DEEP` | 1 | a USB audio ring a half deeper (+5.8 ms latency), so a render may take its whole half without a crackle in the recording |
 | `FELUCCA_CDC` | 0 | a USB serial console for debugging (some hosts then hide the audio; see usb.c) |
 | `FELUCCA_OTA` | 1 | the updater. **Leave it on**: without it nothing can install over your firmware but the rescue |

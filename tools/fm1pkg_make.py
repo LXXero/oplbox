@@ -9,7 +9,7 @@
              the head.
              app area 0x4000..: app_area_head, app.bin, the SDK cfg_tool.bin and
              eq_cfg_hw.bin, the region descriptors; SFC-encrypted with the chip key
-  ota.bin    the Felucca update loader (firmware/loader)
+  ota.bin    the Felucca update loader (firmware/bsp/loader)
 
 The SDK files come from the JieLi AC79 SDK (AC79_SDK, or --sdk).
 All integrity checks in the format are CRC16 (poly 0x1021, init 0).

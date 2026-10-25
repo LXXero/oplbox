@@ -19,7 +19,7 @@ build/host/oplbox build/host/arp_write tests/script_arp_write.txt
 build/host/oplbox build/host/live_instr tests/script_live_instr.txt
 # the song slots over SysEx (firmware/src/slot_sysex.c, TODO 2a): pull, push and every refusal through ota.c's framing
 # against a fake computer, macsop_check against macsop_parse; then tools/fm1_slot.py against the same code on a pipe
-cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function -Ifirmware/src -o build/host/slot_sysex_test tests/slot_sysex_test.c
+cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function -Ifirmware/src -Ifirmware/bsp/chip -o build/host/slot_sysex_test tests/slot_sysex_test.c
 build/host/slot_sysex_test
 python3 tests/slot_sysex_tool.py build/host/slot_sysex_test build/host
 # the WiFi register header (firmware/hal/fm1_wifi_regs.h): it and the HAL compile warning-free (the device's MMIO
@@ -36,6 +36,10 @@ build/host/wifi_model tests/wifi build/host
 # AES key unwrap against RFC 3394 4.1-4.6, the PMK in main-loop steps, and the refusals
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_crypto tests/wifi_crypto.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c
 build/host/wifi_crypto
+# the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
+# firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
+cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c
+build/host/loader_test
 python3 - <<'PY'
 import array, sys, wave
 from pathlib import Path

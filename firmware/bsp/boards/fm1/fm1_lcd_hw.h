@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only
+/* SPDX-License-Identifier: MPL-2.0
  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
 /* FM-1 LCD wiring: SPI1 on PC9 CLK, PC10 DO, PC7 CS,
  * PC8 D/C; backlight PA2, active low. The panel protocol is src/lcd.c.
@@ -9,6 +9,7 @@
  *   fm1_lcd_send_data(p, n)    D/C high, CS low, DMA n bytes from RAM p
  *   fm1_lcd_wait()             SPI done (or timeout, counted), pending cleared
  *   fm1_lcd_deselect()         CS high
+ *   fm1_lcd_backlight(on)      PA2 low (on) / high (off); the TIMER5 scan writes port A too: IRQs off around it
  */
 #pragma once
 #include <stdint.h>
@@ -42,6 +43,14 @@ FM1_INLINE void fm1_lcd_hw_init(void)
     FM1_LCD_PC_DIR &= ~(FM1_LCD_CS | FM1_LCD_DC | FM1_LCD_CLK | FM1_LCD_DO);
     FM1_LCD_SPI_CON = 0x4021u;
     FM1_LCD_SPI_BAUD = 4u;
+}
+
+FM1_INLINE void fm1_lcd_backlight(uint32_t on)
+{
+    if (on)
+        FM1_LCD_PA_OUT &= ~FM1_LCD_BL;
+    else
+        FM1_LCD_PA_OUT |= FM1_LCD_BL;
 }
 
 FM1_INLINE void fm1_lcd_baud(uint32_t b) { FM1_LCD_SPI_BAUD = b; }

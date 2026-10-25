@@ -1,5 +1,9 @@
 # Unreleased
 
+- Platform: the chip and board layer is now felucca-bsp d6b8f77 (`firmware/bsp/`, MPL-2.0, vendored), in place of
+  the Felucca copies in `firmware/hal/`, `firmware/loader/`, `usb.c`, `ota.c` and `libc.c`. The update can install
+  M-VAVE's V16, the update loader no longer erases a song slot that looks like an update record, and it shows a
+  progress screen. USB audio has a deeper ring (+5.8 ms). `tests/loader_test.c` is new. Not run on hardware (TODO.md 1).
 - Change the instrument while playing: outside EDIT, PRESETS picks which of the song's instruments the keys and the arp play, and ALGO steps a copy of it through FM feedback 0–7 then additive feedback 0–7; the song keeps its own; the status line says which. The instrument screen's CONNECT now says FM for the file's 1 (it had FM and ADD swapped). Host-tested (`tests/script_live_instr.txt`), not yet on hardware.
 - Write the arpeggio into the tracker: ARP in the pattern editor turns the arp's last chord and settings into notes and key offs in the cursor's column, 1–8 patterns (arp page 2, K4), going on in new patterns; steps round to whole rows and the status line gives the tempo that results; one ENV undoes it. Host-tested (`tests/script_arp_write.txt`), not yet on hardware.
 - Pull and push song slots over USB: `tools/fm1_slot.py pull|push SLOT FILE`, SysEx commands 0x60/0x61 in the updater's framing (docs/API.md). A push is checked as a .CMF (`macsop_check`) and refused for the slot in the player or a file bigger than a slot. Host-tested, not yet on hardware.

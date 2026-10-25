@@ -158,8 +158,10 @@ quiet moment the main loop sees the press, pauses, and the installer gets its an
   fed as `(pitch << 8) | 0xFF`, the driver's F-number table, op-1 KSL for single-op drums. Verified
   register-for-register against DOSBox captures of Stone Age tracks 1, 4 and 5 (9,141 of 9,141 key-on events).
 - `firmware/src/songs.h` — the 18 songs as they are on disk (252 KB), from `tools/gen_songs.py`.
+- `firmware/bsp/` — the chip and board layer: boot, USB, the updater and the update loader, the panel's key scan.
+  felucca-bsp (Felucca's, split out; Leo Kuroshita, Charles Vestal and others), vendored, MPL-2.0.
 - Everything else is Dinghy (zvenson) / Felucca (Leo Kuroshita, Hügelton Instruments) / SLOOP (isod89):
-  boot, USB, the updater, the rescue, the screen, the panel. GPL-3.0; see `LICENSING.md` and `CREDITS.md`.
+  the wiring, the rescue, the screen. GPL-3.0; see `LICENSING.md` and `CREDITS.md`.
 
 ## Build
 

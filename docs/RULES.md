@@ -21,8 +21,8 @@ has habits. These are the ones that cost the SLOOP / sloopDX / zp12 people time;
 - code calls or loads an address in the chip ROM (0xFFC00000..0xFFCFFFFF). A constant that happens to look
   like one counts too: `-32767 << 7` is 0xFFC00080, whatever you meant by it. Change the arithmetic so that value
   never appears as a constant (clamp to another range, or shift after the clamp instead of before);
-- code outside `hal/` touches a hardware register (a raw address, a `volatile` pointer cast, inline asm): put
-  a helper in `hal/` and call it;
+- code outside `bsp/` and `hal/` touches a hardware register (a raw address, a `volatile` pointer cast, inline
+  asm): put a helper in `hal/` (OPLBOX's own; `bsp/` is felucca-bsp's, vendored) and call it;
 - code that runs while the flash is busy (`.ram_text`, the flash driver) calls anything.
 
 ## The audio interrupt

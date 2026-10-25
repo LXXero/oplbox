@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-only
+/* SPDX-License-Identifier: MPL-2.0
  * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
 /* Felucca update loader (device side). Runs from RAM, started by the SPL from
  * an update record, with interrupts off: USB is polled from the main loop.
@@ -16,11 +16,12 @@
 #define RING_PUBLISH() __asm__ volatile("" ::: "memory")
 #include "fm1_time.h"
 #include "fm1_sys.h"
-/* the loader may write the app area and erase update records; never the head */
-#define FL_RANGE_OK(off, n) (FL_IN(off, n, 0x4000u, 0x93000u) || FL_IN(off, n, 0x93000u, 0xFC000u))
+/* the loader may write the app area and erase update records; never the head, nor Felucca's store
+ * [0x97000, 0xE0000) (user data, never a record: ldr_core.c) */
+#define FL_RANGE_OK(off, n) (FL_IN(off, n, 0x4000u, 0x97000u) || FL_IN(off, n, 0xE0000u, 0xFC000u))
 #include "fm1_flash.h"
-#include "../src/libc.c"
-#include "../src/usb.c"
+#include "../chip/libc.c"
+#include "../chip/usb.c"
 
 static uint32_t ldr_ms(void)   /* monotonic ms; survives the TIMER4 wrap (178.9 s) */
 {
@@ -53,7 +54,7 @@ static int ota_prog(uint32_t off, const void *p, uint32_t n) { (void)off; (void)
 static int ota_fread(uint32_t off, void *p, uint32_t n) { return fl_read_ram(off, p, n); }
 static void ota_show(uint32_t step, int32_t code) { (void)step; (void)code; }
 static void ota_commit(const uint8_t *parm) { (void)parm; }
-#include "../src/ota.c"
+#include "../chip/ota.c"
 
 /* ---- ldr_core.c hooks: interrupts are off for the whole loader ---- */
 static int ldr_fread(uint32_t off, void *p, uint32_t n) { return fl_read_ram(off, p, n); }
@@ -71,8 +72,8 @@ static void ldr_record_clear(void)
 {
     fm1_updata_parm_clear();                        /* CRC 0: the SPL ignores it on a warm reset */
 }
-static int ldr_flash_known(void) { return fl_jedec_ram() == 0x856014u; }   /* as the app (project.c) */
-static void ldr_progress(uint32_t done, uint32_t total) { (void)done; (void)total; ldr_poll(); }
+#include "ldr_screen.c"
+static void ldr_progress(uint32_t done, uint32_t total) { ldr_screen_progress(done, total); ldr_poll(); }
 #include "ldr_core.c"
 
 extern uint32_t _bss_start[], _bss_end[];
@@ -81,6 +82,7 @@ void ldr_main(void)
 {
     fm1_wdt_arm(0x0D);                              /* ~8 s, fed by ldr_poll */
     fm1_time_init();
+    ldr_screen_init();                              /* "UPDATING", "DO NOT UNPLUG", the bar (~0.4 s) */
     usb_start();
     for (;;) {
         ldr_poll();
@@ -92,10 +94,8 @@ void ldr_main(void)
         }
         ota_service();                              /* handshake */
         if (usb.ota_req) {
-            int rc;
             usb.ota_req = 0;
-            rc = ldr_session();
-            if (rc == 0 || rc == LDR_EFLASH) {      /* done, or another flash chip: the old firmware again */
+            if (ldr_session() == 0) {
                 fm1_delay_ms(200);                  /* the "success" reply leaves */
                 usb_detach();
                 fm1_delay_ms(30);
