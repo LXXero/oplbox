@@ -91,13 +91,15 @@ void wpa_hmac_sha1(const uint8_t *key, size_t key_len, const uint8_t *data, size
     wipe(&k, sizeof k);
 }
 
-void wpa_prf_sha1(const uint8_t *key, size_t key_len, const char *label, const uint8_t *data, size_t len,
+int wpa_prf_sha1(const uint8_t *key, size_t key_len, const char *label, const uint8_t *data, size_t len,
                   uint8_t *out, size_t out_len)
 {
     br_hmac_key_context k;
     br_hmac_context c;
     uint8_t r[20], zero = 0;
     size_t label_len = 0;
+    if (out_len > WPA_PRF_MAX)
+        return -1;
     while (label[label_len])
         label_len++;
     br_hmac_key_init(&k, &br_sha1_vtable, key, key_len);
@@ -116,6 +118,7 @@ void wpa_prf_sha1(const uint8_t *key, size_t key_len, const char *label, const u
     wipe(&k, sizeof k);
     wipe(&c, sizeof c);
     wipe(r, sizeof r);
+    return 0;
 }
 
 /* a < b as big-endian numbers of n bytes (the Min/Max of 12.7.1.3) */

@@ -134,6 +134,10 @@ static void test_prf(void)
                             "9dd8d177ead710bc9b590547239107aef7b4abd43d87f0a68f1cbd9e2b6f7607"), "PRF J.3 case 3");
     wpa_prf_sha1(k2, sizeof k2, "prefix", d2, sizeof d2, cut, 13);   /* a shorter output is a prefix */
     check(memcmp(cut, out, 13) == 0, "PRF cut to 13 bytes");
+    memset(cut, 0x5a, sizeof cut);
+    check(wpa_prf_sha1(k2, sizeof k2, "prefix", d2, sizeof d2, cut, WPA_PRF_MAX + 1) == -1 && cut[0] == 0x5a,
+          "PRF refuses more than 255 blocks, output untouched");
+    check(wpa_prf_sha1(k2, sizeof k2, "prefix", d2, sizeof d2, cut, 0) == 0, "PRF of zero bytes is fine");
 }
 
 static void test_ptk(void)

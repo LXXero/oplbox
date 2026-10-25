@@ -45,8 +45,10 @@ void wpa_pmk_clear(struct wpa_pmk_job *j);
 void wpa_hmac_sha1(const uint8_t *key, size_t key_len, const uint8_t *data, size_t len, uint8_t out[20]);
 
 /* PRF-(8 * out_len) of IEEE 802.11 12.7.1.2: HMAC-SHA1(K, A || 0 || B || i) for i = 0, 1, ..., concatenated
- * and cut to out_len bytes. label is A without its NUL. out_len at most 255 * 20. */
-void wpa_prf_sha1(const uint8_t *key, size_t key_len, const char *label, const uint8_t *data, size_t len,
+ * and cut to out_len bytes. label is A without its NUL. out_len at most WPA_PRF_MAX (255 * 20, the 8-bit counter's
+ * range). Returns 0, or -1 with out untouched when out_len is larger. */
+#define WPA_PRF_MAX (255 * 20)
+int wpa_prf_sha1(const uint8_t *key, size_t key_len, const char *label, const uint8_t *data, size_t len,
                   uint8_t *out, size_t out_len);
 
 /* The CCMP PTK (12.7.1.3): PRF-384(PMK, "Pairwise key expansion", Min(AA, SPA) || Max(AA, SPA) ||
