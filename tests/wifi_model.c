@@ -22,6 +22,19 @@ static void check(int ok, const char *what) { if (!ok) { fprintf(stderr, "FAIL: 
 
 static FILE *quiet;
 
+/* A scratch file under <out> instead of tmpfile(): glibc's tmpfile() always uses /tmp, and where /tmp is
+ * read-only it returns NULL. Stops the test with a message when the file cannot be made either. */
+static const char *scratch_dir = ".";
+static FILE *scratch(void)
+{
+    char path[512];
+    snprintf(path, sizeof path, "%s/wifi_model.tmp", scratch_dir);
+    FILE *f = fopen(path, "w+");
+    if (!f) { perror(path); fputs("FAIL: cannot open a scratch file under <out>\n", stderr); exit(1); }
+    remove(path);                       /* stays usable until fclose; nothing is left behind */
+    return f;
+}
+
 static sdio_model *card(const char *script)
 {
     sdio_model *m = sdio_model_new();
@@ -83,7 +96,7 @@ static void test_enum(const char *dir, const char *outdir)
     /* the diff catches a change against this run: one byte, a missing, an extra and a reordered record */
     char *text = NULL;
     {
-        FILE *t = tmpfile();
+        FILE *t = scratch();
         wifi_fix_write(t, &want);
         long n = ftell(t);
         rewind(t);
@@ -110,7 +123,7 @@ static void test_enum(const char *dir, const char *outdir)
     if (p) { memmove(p + 30, p, strlen(p) + 1); memcpy(p, "cmd52 r f0 0x00003 02        \n", 30); }
     check(p && diff_text(mut, &run, quiet) == 1, "diff: a record the run lacks is one difference");
     {
-        FILE *t = tmpfile();
+        FILE *t = scratch();
         strcpy(mut, text);
         p = strstr(mut, "0x00007 02");
         if (p) p[9] = '1';
@@ -269,7 +282,7 @@ static void test_format(void)
         check(f.r[5].kind == WIFI_REC_FRAME && !f.r[5].write && !strcmp(f.r[5].attr, "ch=6 rssi=-42") && f.r[5].n == 16 &&
                   f.r[5].data[0] == 0x80 && f.r[5].data[15] == 0x01, "rx frame with attributes, CRLF and a tab continuation");
         check(f.r[6].kind == WIFI_REC_FRAME && f.r[6].write && f.r[6].n == 2, "tx frame");
-        FILE *t = tmpfile();
+        FILE *t = scratch();
         wifi_fix_write(t, &f);
         long n = ftell(t);
         rewind(t);
@@ -314,7 +327,7 @@ static void test_format(void)
     }
     /* the error names the line */
     {
-        FILE *t = tmpfile();
+        FILE *t = scratch();
         wifi_fix b = { 0 };
         wifi_fix_parse(&b, "cmd5 0 -> 0\n\n# x\ncmd52 w f0 0x00002 ff 00\n", "named.txt", t);
         wifi_fix_free(&b);
@@ -351,8 +364,9 @@ int main(int argc, char **argv)
 {
     if (argc == 4 && !strcmp(argv[1], "diff")) return diff_files(argv[2], argv[3]);
     if (argc != 3) { fputs("usage: wifi_model <dir> <out> | wifi_model diff <want> <got>\n", stderr); return 2; }
+    scratch_dir = argv[2];
     quiet = fopen("/dev/null", "w");
-    if (!quiet) quiet = tmpfile();
+    if (!quiet) quiet = scratch();
     test_enum(argv[1], argv[2]);
     test_enum_errors();
     test_model();
