@@ -1,13 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* Dinghy's platform: everything an FM-1 firmware needs before it can be fun, taken unchanged from
- * SLOOP / Felucca / sloopDX and wired up here. You should not need to touch this file.
+/* Dinghy's platform: everything an FM-1 firmware needs before it can be fun, wired up here. The chip and
+ * board layer (registers, USB, the updater, the update loader) is felucca-bsp's, vendored in firmware/bsp/
+ * (MPL-2.0); this file, the boot guard, the rescue and the screen code stay GPL-3.0-only (Dinghy, Felucca,
+ * SLOOP). You should not need to touch this file.
  *
  *   boot + boot guard   a firmware that crashes at boot falls back to the USB rescue, then to the ROM
  *   USB rescue          OCT- held at power-on: no audio, only the updater (the web installer still works)
  *   updater             the M-UPGRADE SysEx path: the web installer / the hub can always reach the FM-1
  *   USB-MIDI            in and out (midi_get, midi_send)
  *   USB audio           the output as a class-compliant 16-bit stereo input, 44.1 or 48 kHz
- *   keys, knobs, LEDs   fm1_in.notes / buttons, fm1_input_edges, fm1_enc_take, fm1_led_key (hal/fm1_input.h)
+ *   keys, knobs, LEDs   fm1_in.notes / buttons, fm1_input_edges, fm1_enc_take, fm1_led_key (bsp/boards/fm1/fm1_input.h)
  *   screen              240 x 240, lcd_fill, draw_text_box with FONT_S (16 px) / FONT_L (32 px) (gfx.c)
  *   settings            one 4 KiB flash sector with a CRC (settings_load / settings_save)
  *   crash screen        the PC of a fault, then a reboot
@@ -58,11 +60,12 @@ static volatile uint32_t fm1_ms;                /* milliseconds since power-on (
 #include "gfx.c"
 
 #define FS 44100u                               /* the sample rate */
-#define HALF_FRAMES 256u                        /* I2S half buffer: 5.8 ms (as sloopDX: the USB audio band is set for it) */
+#define HALF_FRAMES 256u                        /* I2S half buffer: 5.8 ms (the bsp's USB audio band follows it) */
 #define HALF_WORDS (HALF_FRAMES * 2u)
 #define FELUCCA_OTA 1
 #define FELUCCA_CDC 0
 #define FELUCCA_UAC 1
+#define FELUCCA_UAC_DEEP 1                      /* dbopl2 may take most of a half: keep a half more in the USB audio ring */
 #define FELUCCA_UART 0
 #include "usb.c"
 
@@ -220,13 +223,15 @@ void fm1_timer5_irq(void)
 }
 extern void isr_timer5(void);
 
-/* ---- the sound: ALNK0 I2S, two halves; the app renders, the MASTER knob scales, Q15 -> 24 bit (-6 dBFS ceiling) */
+/* ---- the sound: ALNK0 I2S, two halves; the app renders, the MASTER knob scales, Q15 -> 24 bit (-6 dBFS ceiling).
+ * USB audio gets the samples at full 24-bit scale (Q15 << 8: uac_tap takes 24 bit and keeps the top 16, so the
+ * recording is the Q15 value, as before); the I2S then takes them a bit lower (>> 1, the -6 dBFS ceiling) */
 static int32_t abuf[2u * HALF_WORDS] __attribute__((aligned(4)));
 static volatile int32_t master_q12 = 2048;
 static void app_audio(int32_t *out, uint32_t n);
 static void app_main(void);
 
-void fm1_alnk0_irq(void)                       /* via isr_alnk0 (hal/fm1_isr.S) */
+void fm1_alnk0_irq(void)                       /* via isr_alnk0 (bsp/chip/fm1_isr.S) */
 {
     uint8_t p;
     in_audio = 1;
@@ -241,12 +246,12 @@ void fm1_alnk0_irq(void)                       /* via isr_alnk0 (hal/fm1_isr.S) 
         app_audio(o, HALF_FRAMES);
         for (i = 0; i < HALF_WORDS; i++) {
             int32_t v = (o[i] * master_q12) >> 12;
-            o[i] = v > 32767 ? 32767 : v < -32767 ? -32767 : v;
+            o[i] = (v > 32767 ? 32767 : v < -32767 ? -32767 : v) * 256;
         }
         for (b = 0; b < HALF_FRAMES; b += 32u)
             uac_tap(o + 2u * b, 32u);           /* the computer records what the speaker plays */
         for (i = 0; i < HALF_WORDS; i++)
-            o[i] <<= 7;
+            o[i] >>= 1;                         /* exact: the low 8 bits are zero */
         fm1_audio_ack_half();
     }
     in_audio = 0;
@@ -260,7 +265,7 @@ static void platform_poll(void)
     int32_t a;
     fm1_wdt_feed();
     usb_retry(fm1_ms);
-    ota_service();
+    (void)ota_service();                        /* the frame's length: OPLBOX has no commands of its own yet (TODO 2a) */
     if (usb.ota_req) {
         usb.ota_req = 0;
         if (flash_ok)

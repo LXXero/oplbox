@@ -1,5 +1,9 @@
 # Unreleased
 
+- Platform: the chip and board layer is now felucca-bsp d6b8f77 (`firmware/bsp/`, MPL-2.0, vendored), in place of
+  the Felucca copies in `firmware/hal/`, `firmware/loader/`, `usb.c`, `ota.c` and `libc.c`. The update can install
+  M-VAVE's V16, the update loader no longer erases a song slot that looks like an update record, and it shows a
+  progress screen. USB audio has a deeper ring (+5.8 ms). `tests/loader_test.c` is new. Not run on hardware (TODO.md 1).
 - Arpeggiator: ARP outside EDIT turns it on and opens its settings (LFO opens them / turns the page). Held keys
   feed it; modes up, down, inclusive, exclusive, random, order, repeat; 1–4 octaves; 1/4 1/8 1/8T 1/16 1/32;
   30–300 BPM; gate 20–100 %; swing 50–75 %; latch. Its clock runs in the audio ISR beside the row clock. While a

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
-"""Build OPLBOX (on Felucca / SLOOP's platform, based on Dinghy by zvenson): the app, the update loader and an
-installable .fwsc package.
+"""Build OPLBOX (based on Dinghy by zvenson, on felucca-bsp's chip and board layer in firmware/bsp/): the app,
+the update loader and an installable .fwsc package.
 
   tools/build.py [--release X.Y[-suffix]]
 
@@ -26,6 +26,8 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1]
 FW = SRC / "firmware"
+BSP = FW / "bsp"                    # felucca-bsp, vendored (MPL-2.0; firmware/bsp/README.md)
+BSP_INC = ["-Ifirmware/bsp/chip", "-Ifirmware/bsp/boards/fm1"]
 OUT = SRC / "build"
 GEN = OUT / "gen"
 LDR = OUT / "loader"
@@ -123,8 +125,8 @@ def ldr_wrap(image):
 
 def build_loader():
     LDR.mkdir(parents=True, exist_ok=True)
-    src = FW / "loader"
-    flags = [*CFLAGS, "-Ifirmware/hal", "-Ifirmware/src"]
+    src = BSP / "loader"
+    flags = [*CFLAGS, *BSP_INC]
     tc_all(("cc", "-c", src / "crt0_ldr.S", "-o", LDR / "crt0_ldr.o"),
            ("cc", *flags, "-c", src / "loader.c", "-o", LDR / "loader.o"))
     elf = LDR / "loader.elf"
@@ -153,15 +155,15 @@ def build_loader():
 # ---- app
 
 def build_app():
-    inc = ["-Ifirmware/hal", "-Ifirmware/src", "-Ifirmware/gen"]
+    inc = [*BSP_INC, "-Ifirmware/hal", "-Ifirmware/src", "-Ifirmware/gen"]   # hal/: OPLBOX's own hardware files
     # the app (platform included) at -Os like Dinghy: at -O2 the USB stack babbles on the device (USB-MIDI IN,
     # dinghy tools/build.py; OPLBOX 0.4.1 dropped off USB on every SysEx). The OPL core, the budget, is its own
     # object at -O2.
     flags = [*CFLAGS, *inc, f'-DFELUCCA_ID="{PRODUCT}"', f'-DAPP_VER="{VERSION or "0.0"}"', f"-DDBOPL2_SCOPE_N={SCOPE_N}"]
     core = [*[f for f in CFLAGS if f != "-Os"], "-O2", *inc, "-DDBOPL2_ON_DEVICE", f"-DDBOPL2_SCOPE_N={SCOPE_N}"]
-    cmds = [("cc", "-c", FW / "crt0.S", "-o", OUT / "crt0.o"),
-            ("cc", "-c", FW / "hal" / "fm1_vec.S", "-o", OUT / "fm1_vec.o"),
-            ("cc", "-c", FW / "hal" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
+    cmds = [("cc", "-c", BSP / "chip" / "crt0.S", "-o", OUT / "crt0.o"),
+            ("cc", "-c", BSP / "chip" / "fm1_vec.S", "-o", OUT / "fm1_vec.o"),
+            ("cc", "-c", BSP / "chip" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
             ("cc", *flags, "-c", FW / "src" / "oplbox.c", "-o", OUT / "oplbox.o"),
             ("cc", *core, "-c", FW / "src" / "dbopl2.c", "-o", OUT / "dbopl2.o")]
     tc_all(*cmds)
@@ -240,14 +242,15 @@ def check(img, syms, dis, rt):
     return errors, notes
 
 
-# Every hardware register access lives in hal/. In src/ and loader/ (comments stripped):
+# Every hardware register access lives in the bsp (firmware/bsp/) or in OPLBOX's own hal/. In src/ (comments
+# stripped):
 #  - no volatile pointer cast, except of a C object's address (`*(volatile T *)&x`: a read-once
 #    of a RAM flag shared with an ISR, e.g. usb.c ota_wire_send);
 #  - no literal in a register or reserved window (core SFRs 0x10000-0x13FFF, SFC 0x40000-0x43FFF,
 #    GPIO/IOMAP 0x50000-0x51FFF, CPU 0x1EE0000-0x1EEFFFF, RAM top 0x01C7F000- (boot info,
 #    mailbox, vectors), XIP 0x02000000-0x020FFFFF);
 #  - no inline asm, except the empty compiler barrier RING_PUBLISH() (emits no instruction);
-#  - no HAL register macro (a hal/ #define that is, or expands to, a volatile access).
+#  - no HAL register macro (a bsp/ or hal/ #define that is, or expands to, a volatile access).
 # Linker symbols (_bss_start[], _rt_load[], ...) are plain C objects and pass.
 MMIO_LIT = re.compile(r"\b0x0*(1[0-3][0-9a-f]{3}|4[0-3][0-9a-f]{3}|5[01][0-9a-f]{3}|1ee[0-9a-f]{4}|"
                       r"1c7f[0-9a-f]{3}|20[0-9a-f]{5})u?l?\b", re.I)
@@ -260,7 +263,7 @@ def mmio_check():
         s = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), s, flags=re.S)
         return re.sub(r"//[^\n]*", "", s)
     defs = {}
-    for h in sorted((FW / "hal").glob("*.h")):
+    for h in sorted([*(BSP / "chip").glob("*.h"), *(BSP / "boards" / "fm1").glob("*.h"), *(FW / "hal").glob("*.h")]):
         for m in re.finditer(r"^#define\s+(\w+)(?:\([^)]*\))?\s+(.*)$", strip(h.read_text()), re.M):
             defs[m.group(1)] = m.group(2)
     regs = {n for n, b in defs.items() if re.search(r"\bvolatile\b", b)}
@@ -270,17 +273,17 @@ def mmio_check():
             break
         regs |= more
     errors = []
-    for f in sorted([*(FW / "src").glob("*.[ch]"), *(FW / "loader").glob("*.c")]):
+    for f in sorted((FW / "src").glob("*.[ch]")):
         for no, ln in enumerate(strip(f.read_text()).splitlines(), 1):
             where = f"{f.relative_to(FW)}:{no}"
             for rx, what in ((MMIO_LIT, "register/window address"), (MMIO_CAST, "volatile pointer cast"),
                              (MMIO_ASM, "inline asm")):
                 m = rx.search(ln)
                 if m:
-                    errors.append(f"{where}: {what} outside hal/ ({m.group(0).strip()}); add a hal/ helper")
+                    errors.append(f"{where}: {what} outside bsp/ and hal/ ({m.group(0).strip()}); add a hal/ helper")
             used = set(re.findall(r"\b[A-Z_][A-Z0-9_]*\b", ln)) & regs
             if used:
-                errors.append(f"{where}: HAL register macro {sorted(used)[0]} outside hal/; use a hal/ helper")
+                errors.append(f"{where}: HAL register macro {sorted(used)[0]} outside bsp/ and hal/; use a hal/ helper")
     return errors
 
 
@@ -309,7 +312,7 @@ def main():
     hal_err = mmio_check()
     errors += hal_err
     if not hal_err:
-        notes.append("register access: hal/ only (src/, loader/ clean)")
+        notes.append("register access: bsp/ and hal/ only (src/ clean)")
     for n in notes:
         print("  ok   ", n)
     for e in errors:

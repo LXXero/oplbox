@@ -10,6 +10,9 @@ below). It stands on the work of the people and projects named here. Licences an
   its host mode (`tests/`) and its docs.
 - **Felucca**, Leo Kuroshita (@kurogedelic), Hügelton Instruments, https://github.com/hugelton/Felucca: the
   platform (boot, USB, the updater, the rescue, the screen, the panel).
+- **felucca-bsp**, https://github.com/hugelton/felucca-bsp: Felucca's chip and board layer, split out, with the
+  fixes made since (Leo Kuroshita, Charles Vestal, keremimo and the others in `firmware/bsp/NOTICE`). OPLBOX's
+  `firmware/bsp/` is a copy of it.
 - **SLOOP**, isod89, https://github.com/isod89/sloop-fm1: the changes to that platform that Dinghy builds on.
 
 ## Changes taken from others

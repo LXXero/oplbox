@@ -4,11 +4,17 @@ OPLBOX is free software under the GNU General Public License, version 3 only (`G
 `LICENSE`). You may use, study, change and share it. If you give someone a firmware built from it, give them its
 complete source under the same licence too.
 
+One part is under another licence: `firmware/bsp/`, felucca-bsp's chip and board layer, is MPL-2.0 (each file's
+SPDX line, full text in `firmware/bsp/LICENSE`). Those files sit inside the GPL-3.0-only work as MPL-2.0 files, as
+MPL-2.0 section 3.3 allows (they carry no "Incompatible With Secondary Licenses" notice). A firmware built from
+OPLBOX is GPL-3.0-only as a whole; the source of the MPL files, changes included, stays available under MPL-2.0.
+
 ## Who made what
 
 | | |
 | --- | --- |
-| The platform: `firmware/hal/`, `firmware/loader/`, `crt0.S`, `app.ld`, `firmware/src/` (`usb.c`, `ota.c`, `recovery.c`, `lcd.c`, `gfx.c`, `libc.c`, `bootguard.h`, `uac_fir.h`), `tools/` | Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments ([Felucca](https://github.com/hugelton/Felucca)), with the changes of [SLOOP](https://github.com/isod89/sloop-fm1) (isod89) |
+| The chip and board layer, `firmware/bsp/` (registers, boot entry, USB, the updater `ota.c`, the update loader), **MPL-2.0**: felucca-bsp d6b8f77, vendored, one change marked in `chip/ota.c` (`firmware/bsp/README.md`) | Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments, Charles Vestal, Kerem Kilic (keremimo), and the others named in `firmware/bsp/NOTICE` and the files' copyright lines ([felucca-bsp](https://github.com/hugelton/felucca-bsp)) |
+| The rest of the platform: `app.ld`, `firmware/src/` (`recovery.c`, `lcd.c`, `gfx.c`, `bootguard.h`, `uac_fir.h`), `tools/` | Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments ([Felucca](https://github.com/hugelton/Felucca)), with the changes of [SLOOP](https://github.com/isod89/sloop-fm1) (isod89) |
 | Dinghy (based on Dinghy by zvenson, https://github.com/zvenson/dinghy): its app (`dinghy.c` there, now `firmware/src/oplbox.c` here), the wiring `platform.c`, the host mode `tests/`, the docs | zvenson |
 | OPLBOX: the app `firmware/src/oplbox.c`, the player `macsop.c`/`.h`, `opl2fast.c`, `songs.h`, `host/`, `tools/gen_songs.py` | 2026, GPL-3.0-only like the rest; the player follows AdPlug's `cmfmcsop.cpp` (Sebastian Kienzl, LGPL-2.1) |
 

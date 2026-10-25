@@ -13,6 +13,10 @@ build/host/oplbox build/host/undo tests/script_undo.txt
 build/host/oplbox build/host/rec tests/script_rec.txt
 # the arpeggiator: steps, tempo, gate, latch and the channel it takes, checked against its state and the chip
 build/host/oplbox build/host/arp tests/script_arp.txt
+# the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
+# firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
+cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c
+build/host/loader_test
 python3 - <<'PY'
 import array, sys, wave
 from pathlib import Path

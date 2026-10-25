@@ -47,6 +47,72 @@ recommends moving the platform files onto felucca-bsp, keeping the app and the O
 writer, and the update loader can erase a song slot that happens to look like an update record. Its last section
 has the two questions for xero. The questions below are from before it.
 
+**xero's answers to BASE.md (2026-10-25).**
+1. felucca-bsp now, not fm1-base ("i guess we can start with felucca-bsp").
+2. He does not switch one FM-1 between Felucca (or a Felucca-based firmware) and OPLBOX for now ("i dont at the
+   moment, not to say i never could"). So the song slots stay at 0x98000..0xE0000. If he ever does, they have to
+   move: the free window 0xE7000..0xFBFFF holds only 2 of the 9.
+
+**The platform on felucca-bsp (2026-10-25, branch `xyphia/fanout/c8e7be1c55c37b5b/0`, waiting for the FM-1 test
+below).** The Felucca-derived files listed under "Today" were swapped for felucca-bsp's:
+
+- felucca-bsp `d6b8f771795be04d77e15d72a79f474a723796d7` (2026-10-24), its latest `main` on 2026-10-25 and the
+  same commit BASE.md read: nothing changed upstream since. Vendored in `firmware/bsp/` (`chip/`, `boards/fm1/`,
+  `loader/`), MPL-2.0 with its SPDX lines, `LICENSE` and `NOTICE`; the file list and the one change in
+  `firmware/bsp/README.md`. A vendored copy rather than a git submodule was chosen by the colony; xero can change it.
+- Gone: `firmware/hal/` (all Felucca's), `firmware/loader/`, `firmware/crt0.S`, `firmware/src/usb.c`, `ota.c`,
+  `libc.c`. `firmware/hal/` stays as the place for OPLBOX's own hardware files (README.md there; the WiFi branches
+  add theirs to it), on the include path after the bsp.
+- `chip/ota.c` has OPLBOX's `OTA_IDENTITY` hook again, marked "OPLBOX change" (it stays MPL-2.0): the USB rescue
+  answers "FM-1_000".
+- `platform.c`: `uac_tap` gets 24-bit samples (Q15 × 256, then `>> 1` for the I2S, so the USB recording keeps its
+  old level and the speaker its -6 dBFS ceiling); `ota_service()`'s return value is read and dropped (OPLBOX has no
+  commands of its own yet, TODO 2a); `FELUCCA_UAC_DEEP 1`. `tools/build.py`: the bsp's include paths and sources;
+  the register check now allows `bsp/` and `hal/` and checks `src/`.
+- `uac_fir.h` (the 48 kHz resampler) stays OPLBOX's 12-tap Q15 table, stored as `int32_t`, the type the bsp's
+  `usb.c` reads. Felucca's 24-tap Q30 table would do twice the work per frame in the audio interrupt. Chosen by
+  the colony; xero can change it.
+- Unchanged: `oplbox.c`, `lcd.c`, `gfx.c`, `recovery.c`, `bootguard.h`, the OCT− rescue with PR #4's
+  `fm1_lcd_hw_init()` before it, `FL_RANGE_OK` with the song slots at 0x98000..0xE0000, the settings sector at
+  0xFC000, `app.ld`. No slot moved. Nothing from Dinghy 0.4 (`midi_uart.c`, SysEx and recording are TODO 2a/2b).
+- The fixes BASE.md lists, all in d6b8f77:
+  - afd83ed: `ota.c` stages any well-formed update writer and checks that a flash image's boot area is one the
+    FM-1 boots (`ota_boot_valid`), so M-VAVE's V16 can be installed from OPLBOX.
+  - The update loader skips Felucca's store 0x97000..0xE0000 when it clears update records (`ldr_core.c`), and
+    its flash guard cannot write there or at 0xFC000 and up (`loader.c`): no song slot or settings sector is
+    erased by mistake. `tests/loader_test.c` checks it.
+  - The USB audio ring band 96..160 for 256-frame halves, a half higher with `FELUCCA_UAC_DEEP` (352..416 in a
+    1024-frame ring; +5.8 ms of latency on the recording).
+  - The supply-rail raises (`fm1_vdc14_raise`, `fm1_sysvdd_raise`, `fm1_power_stock` in `fm1_sys.h`): there, not
+    called. They are opt-in, and BASE.md gives no reason to turn them on.
+  - The crash register dump: `fm1_crash_ctx` keeps r0..r15, usp, ssp and pc of the last four crashes in
+    `.noinit`. OPLBOX's crash screen still shows vec, pc and rets; nothing reads the dump yet.
+- Also new from the bsp: the update loader's screen ("UPDATING", "DO NOT UNPLUG", a bar). The key scan debounce is
+  unchanged; the bsp's analog key rows, LED glow levels and power-on sweep stay off unless the app calls them.
+- Size: app image 346,708 B (main 9ef2a93: 342,792 B, +3,916), RAM .data+.bss 38,832 B (+2,056: the deeper USB
+  audio ring), loader `ota.bin` 8,340 B (6,954 B, +1,386: its screen). `./build.sh` and `tests/run_host.sh` pass.
+- `tests/loader_test.c` (in `run_host.sh`) builds a package in the test and runs the bsp's `ota.c` and
+  `ldr_core.c` against a fake host. It checks the identity (FM-1_960, FM-1_000 in the rescue) and that
+  `ota_service()` hands back a frame of the firmware's own. It also checks an install that keeps the song slots and the
+  settings even where their bytes look like an update record, and the refusal of a damaged package and of one for
+  another chip key before anything is erased. Each of six planted bugs (the old loader's record scan among them)
+  fails it.
+
+**Test on an FM-1 before this ships** (nothing of it has run on hardware):
+1. Update over M-UPGRADE: install this branch's `build/oplbox.fwsc` from OPLBOX 0.4.x with the web installer or
+   `tools/fm1_install.py`. The loader's new screen shows "UPDATING", "DO NOT UNPLUG" and a filling bar; OPLBOX
+   starts after it.
+2. The OCT− rescue: hold OCT− at power-on. The USB rescue opens, the installer sees "FM-1_000", and an install
+   through it works.
+3. Installing V16 from OPLBOX: from a running OPLBOX, install M-VAVE's V16 package (its new bootloader). The old
+   `ota.c` refused it. Then put OPLBOX back on.
+4. Song slots and settings survive an update: save songs in slot 1 and slot 9, change a setting (MASTER isn't one;
+   e.g. the arp's), update OPLBOX (step 1), and check that both songs and the setting are still there.
+5. USB audio in: record the FM-1 on a computer at 44.1 kHz and at 48 kHz while a song plays. No crackle or
+   dropout, and the same level as with OPLBOX 0.4.x.
+6. The screen at boot: OPLBOX's screen comes up as before. Check the keys, the knobs and the LEDs too (the key
+   scan is the bsp's now).
+
 **Open questions.**
 - Keep tracking upstream? If yes: add Dinghy as a remote (done: `upstream`, fetch-only), merge or cherry-pick 0.4's
   platform and HAL files, and decide whether to offer OPLBOX's platform changes (`FL_RANGE_OK` and the PR #4
