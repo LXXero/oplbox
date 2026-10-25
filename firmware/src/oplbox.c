@@ -756,7 +756,7 @@ static void draw_ins(void)
                 if (r <= 24) { p = cat(s, "OP"); *p++ = (char)('1' + (r - 1) / 12); *p++ = ' '; *p++ = ' '; p = cat(p, INS_NAME[(r - 1) % 12]); }
                 else p = cat(s, r == 25 ? "FEEDBACK" : "CONNECT");
                 cv_text(20, y, &FONT_S, s, cur_line ? C_TXT : C_MUTE);
-                if (r == 26) p = cat(s, v ? "ADD" : "FM");
+                if (r == 26) p = cat(s, v ? "FM" : "ADD");   /* the file's 1 is FM: the chip gets 1 - connection (macsop.c set_instr) */
                 else if (r <= 24 && (r - 1) % 12 == 11) p = cat(s, v == 0 ? "SINE" : v == 1 ? "HALF" : v == 2 ? "ABS" : "PULSE");
                 else p = catn(s, v, 2);
                 cv_text(170, y, &FONT_S, s, cur_line ? C_ACC : C_MUTE);
