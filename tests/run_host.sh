@@ -13,6 +13,29 @@ build/host/oplbox build/host/undo tests/script_undo.txt
 build/host/oplbox build/host/rec tests/script_rec.txt
 # the arpeggiator: steps, tempo, gate, latch and the channel it takes, checked against its state and the chip
 build/host/oplbox build/host/arp tests/script_arp.txt
+# the arp written into the tracker (TODO 4): the cells, their playback against the live arp's key-ons, undo
+build/host/oplbox build/host/arp_write tests/script_arp_write.txt
+# the keys' instrument outside EDIT (TODO 5): PRESETS, ALGO's copy against the chip's C0, the song's own left alone
+build/host/oplbox build/host/live_instr tests/script_live_instr.txt
+# the song slots over SysEx (firmware/src/slot_sysex.c, TODO 2a): pull, push and every refusal through ota.c's framing
+# against a fake computer, macsop_check against macsop_parse; then tools/fm1_slot.py against the same code on a pipe
+cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function -Ifirmware/src -o build/host/slot_sysex_test tests/slot_sysex_test.c
+build/host/slot_sysex_test
+python3 tests/slot_sysex_tool.py build/host/slot_sysex_test build/host
+# the WiFi register header (firmware/hal/fm1_wifi_regs.h): it and the HAL compile warning-free (the device's MMIO
+# path too), the accessors hit their addresses, and every address matches docs/WIFI.md
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/hal -c -o build/host/fm1_wifi_hal.o firmware/hal/fm1_wifi_hal.c
+cc -std=c11 -Wall -Wextra -Werror -DFM1_WIFI_HOST -Ifirmware/hal -o build/host/wifi_regs tests/wifi_regs.c firmware/hal/fm1_wifi_hal.c
+build/host/wifi_regs > build/host/wifi_regs.txt
+python3 tests/wifi_regs.py build/host/wifi_regs.txt
+# the WiFi register model (tests/wifi/sdio_model.c), its fixture format and diff: the HAL's enumeration runs
+# against a fake card and must match tests/wifi/sdio_enum_expect.txt (wl30_sdio_enum, docs/WIFI.md)
+cc -std=c11 -Wall -Wextra -Werror -DFM1_WIFI_HOST -DFM1_WIFI_SDIO_MODEL -Ifirmware/hal -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/hal/fm1_wifi_hal.c
+build/host/wifi_model tests/wifi build/host
+# the WPA2 key primitives (firmware/wifi/wpa_crypto.c on BearSSL): PSK and PRF against IEEE 802.11 J.4.2 / J.3,
+# AES key unwrap against RFC 3394 4.1-4.6, the PMK in main-loop steps, and the refusals
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_crypto tests/wifi_crypto.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c
+build/host/wifi_crypto
 python3 - <<'PY'
 import array, sys, wave
 from pathlib import Path

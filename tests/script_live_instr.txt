@@ -1,0 +1,89 @@
+# t(ms) what ...   : the keys' instrument outside EDIT (TODO.md 5): PRESETS picks which of the song's instruments the
+# arp plays, ALGO steps a copy of it through FM feedback 0-7 then additive feedback 0-7, checked against the chip
+# (exits 1 when a check fails). Rows of host_cell (oplbox.c): 92 col c is channel c's C0 as last written (feedback << 1
+# | bit 0, 1 = additive), 90 col c the instrument number channel c plays (0: none of the song's, e.g. the copy),
+# 91 col 0 the instrument (ed_instr), 1 ALGO's step (255: no copy), 2 the song's own instrument ed_instr as a step,
+# 4 a hash of the status line's message (h * 31 + c, decimal; 0: none showing); 97 col 6 the arp's channel.
+# Song 0 (STARDUST FALLING), rhythm mode: the arp takes channel 5 (0-based). Its instruments as connection/feedback
+# (the file's 1 = FM): 1 stoneage 1/4 (C0 8), 3 t.detert 0/4 (C0 9), 8 "1992 by" 1/7 (C0 14), 11 unnamed 1/7.
+100 btn 12
+200 btn 10
+# ---- the song paused, C4 held: instrument 1 (the editor's default), no copy, no message
+1000 keys 128
+1100 is 0 91 0 1
+1100 is 0 91 1 255
+1100 is 0 90 5 1
+1100 is 0 92 5 8
+1100 is 0 91 4 0
+# ---- PRESETS +2: instrument 3, from the next step; the status line says I03 t.detert
+1150 enc 6 2
+1160 is 0 91 4 2475309250
+1400 is 0 91 0 3
+1400 is 0 90 5 3
+1400 is 0 92 5 9
+# ---- ALGO -1: a copy at step 11 (additive, feedback 3: C0 7), not one of the song's; instrument 3 itself stays at
+# step 12. The status line says I03 ADDITIVE FB 3
+1450 enc 1 -1
+1460 is 0 91 4 3238189199
+1700 is 0 91 1 11
+1700 is 0 91 2 12
+1700 is 0 90 5 0
+1700 is 0 92 5 7
+# ---- the list ends at 0 (FM, feedback 0: C0 0) and 15 (additive, feedback 7: C0 15)
+1750 enc 1 -20
+2000 is 0 91 1 0
+2000 is 0 92 5 0
+2050 enc 1 40
+2300 is 0 91 1 15
+2300 is 0 92 5 15
+2300 is 0 91 2 12
+# ---- PRESETS -3 wraps from 3 to 11 (of 11) and drops the copy: I11 unnamed, the song's own (C0 14)
+2350 enc 6 -3
+2360 is 0 91 4 2209250121
+2600 is 0 91 0 11
+2600 is 0 91 1 255
+2600 is 0 90 5 11
+2600 is 0 92 5 14
+# ---- instrument 8, the one the song's channels 0 and 1 play, then ALGO -2: a copy at FM feedback 5 (C0 10).
+# With the song playing, channels 0 and 1 keep the song's instrument 8 (C0 14) while the arp's channel plays the copy
+2650 enc 6 -3
+2700 enc 1 -2
+2710 is 0 91 4 2857839739
+2800 btn 12
+3500 is 0 97 6 5
+3500 is 0 90 0 8
+3500 is 0 92 0 14
+3500 is 0 90 1 8
+3500 is 0 92 1 14
+3500 is 0 90 5 0
+3500 is 0 92 5 10
+3500 is 0 91 2 7
+# ---- EDIT: ALGO is the volume and PRESETS the step again; the keys' instrument and its copy do not move, and
+# nothing is said
+5000 btn 6
+5100 enc 1 3
+5100 enc 6 1
+5200 is 0 91 0 8
+5200 is 0 91 1 5
+5200 is 0 91 4 0
+# ---- leaving EDIT keeps the copy (the same instrument) ...
+5300 btn 6
+5400 is 0 91 0 8
+5400 is 0 91 1 5
+# ---- ... unless K4 in the editor picked another instrument: 9, no copy
+5500 btn 6
+5600 enc 5 1
+5700 btn 6
+5800 is 0 91 0 9
+5800 is 0 91 1 255
+# ---- loading a song drops the copy: ALGO +1 (instrument 9 is 1/5, step 5 -> 6), then OCT+ to song 1
+5900 enc 1 1
+6000 is 0 91 1 6
+6100 btn 1
+6200 is 0 91 1 255
+6200 is 0 91 0 9
+# ---- the longest message, on screen at the 9000 ms screenshot: I09 ADDITIVE FB 7
+8800 enc 1 40
+8810 is 0 91 1 15
+8810 is 0 91 4 3693565465
+9100 end

@@ -15,12 +15,15 @@
  *   GLO            the battery's raw ADC count in the status line, for a moment (the icon at the top right)
  *   scope: the first nine white keys (F3..G4) mute / unmute channels 1..9 (key LED = muted)
  *   ARP            the arpeggiator on (its settings open) / off  LFO   the arp's settings: open, or the next page
+ *   PRESETS        the instrument the keys / the arp play (one of the song's; the editor's I too)
+ *   ALGO           its connection and feedback, FM 0-7 then additive 0-7, on a copy the song never hears (see below)
  * Arpeggiator (ARP on, outside EDIT): held keys play an arpeggio instead of nothing, on a channel the song leaves
  * free (see "the arpeggiator"); not from the scope screen, whose keys stay the mutes; EDIT gives the keys back
  * to the editor. Its settings screen (LFO turns the page; SEQ / FX leave it, the arp plays on):
  *   page 1:        K1 mode (up, down, inclusive, exclusive, random, order, repeat)  K2 octaves 1-4
  *                  K3 rate (1/4 1/8 1/8T 1/16 1/32)  K4 tempo 30-300 BPM
  *   page 2:        K1 gate 20-100 %  K2 swing 50-75 %  K3 latch (right: on, left: off)
+ *                  K4 length ARP writes into the tracker, 1-8 patterns (not kept)
  * Editing (EDIT, LED lit; the tracker screen follows the cursor, not the playback):
  *   K1 / K2        cursor column / row          SELECT   order position
  *   keys           enter the note (and audition it), then step; OCT- OCT+ keyboard octave
@@ -28,6 +31,7 @@
  *   FX             key off (==)                 SCL      clear the cell        GLO   end of pattern here
  *   PLAY           play from the cursor / pause SAVE     save the song to its flash slot (or the first free one)
  *   ENV            undo one edit (32 steps, no redo)    REC   arm recording: keys during playback land on the playing row
+ *   ARP            write the arp's last chord into the column, as notes, from the cursor down (see "the arp into the tracker")
  *   song screen:   SELECT position, K1 pattern number, GLO insert, SCL delete, ARP new pattern, K2 speed, K3 rhythm
  *   instrument:    PRESETS instrument, SELECT parameter, K1 value (name: K1 position, K2 character), ARP new, keys audition
  *
@@ -75,6 +79,8 @@ static uint32_t arp_acc;                      /* the arpeggiator's clock: native
 static void tick_arp(void);                   /* (the arpeggiator, below) */
 static void arp_follow(void);
 static void arp_drop(void);
+#define LIVE_OWN 0xFFu
+static volatile uint32_t live_alg = LIVE_OWN; /* ALGO's copy (the keys' instrument, below): its step 0-15, or none */
 #ifdef DINGHY_HOST
 static uint32_t host_nat;                     /* native samples generated, for tests/host.c's arp checks */
 #endif
@@ -86,6 +92,13 @@ static volatile uint16_t wq_reg[WQ_N];
 static volatile uint8_t wq_val[WQ_N];
 static volatile uint32_t wq_w, wq_r;
 
+#ifdef DINGHY_HOST
+/* tests/host.c's view of the notes keyed, whoever keys them (the player, the arp, an audition): per channel, the pitch
+ * (A0 | B0's block and F-number bits << 8) and the time of the last key-on, the gap before it, and how many */
+static uint8_t host_a0[9], host_b0[9];
+static uint32_t host_kon_n[9], host_kon_at[9], host_kon_gap[9], host_kon_pitch[9];
+static uint8_t host_c0[9];                    /* C0 + channel as last written: feedback << 1 | C0 bit 0 (1: additive) */
+#endif
 static void opl_write(void *ctx, uint16_t reg, uint8_t val)
 {
     uint32_t f = irq_save(), i = wq_w;
@@ -95,6 +108,18 @@ static void opl_write(void *ctx, uint16_t reg, uint8_t val)
         wq_w = i + 1u;
     }
     irq_restore(f);
+#ifdef DINGHY_HOST
+    if (reg >= 0xA0u && reg <= 0xA8u) host_a0[reg - 0xA0u] = val;
+    if (reg >= 0xC0u && reg <= 0xC8u) host_c0[reg - 0xC0u] = val;
+    if (reg >= 0xB0u && reg <= 0xB8u) {
+        i = reg - 0xB0u;
+        if ((val & 0x20u) && !(host_b0[i] & 0x20u)) {
+            host_kon_gap[i] = host_nat - host_kon_at[i]; host_kon_at[i] = host_nat; host_kon_n[i]++;
+            host_kon_pitch[i] = host_a0[i] | (uint32_t)(val & 0x1Fu) << 8;
+        }
+        host_b0[i] = val;
+    }
+#endif
 }
 
 static void tick_row(void)                    /* the row clock: before a native sample, when it is due */
@@ -317,6 +342,7 @@ static void load_song(uint32_t i)             /* with the ISR off the chip (chip
 {
     cur = i;
     undo_cnt = 0;                             /* a new song: the log is about the old one */
+    live_alg = LIVE_OWN;                      /* and ALGO's copy is of the old one's instrument */
     chip_reset();
     arp_drop();                               /* the reset took the arp's note: it picks a channel again */
     chip_mute(mute_mask);                     /* the reset cleared the chip's copy: a restart keeps the mutes */
@@ -465,6 +491,54 @@ static uint32_t song_pos;                     /* the song editor's cursor: order
 static const char *msg; static uint32_t msg_until;   /* a line in the status area, for a moment */
 
 static void say(const char *m) { msg = m; msg_until = fm1_ms + 2000u; }
+
+/* ---- the instrument the keys and the arp play outside EDIT (TODO.md 5). PRESETS picks one of the song's: ed_instr,
+ * the editor's too, so what was played is what the editor writes. ALGO steps through connection and feedback as one
+ * list, FM with feedback 0-7 (steps 0-7), then additive with feedback 0-7 (8-15), on a copy only the keys and the arp
+ * play: the song keeps its own (its channels, SAVE). Loading a song drops the copy, and so does another instrument
+ * (PRESETS, or K4 in the editor); edits to the instrument in the editor reach the copy when EDIT ends. */
+static uint32_t live_src;                     /* the instrument (1..) the copy is of */
+static macsop_instr live_patch;               /* the copy: the ISR plays it, main writes it with the ISR held off */
+
+static uint32_t live_step_of(const macsop_instr *in)   /* the list's step for an instrument: the file's 1 is FM */
+{
+    return ((in->connection & 1u) ? 0u : 8u) + (in->feedback & 7u);
+}
+
+static void live_set(uint32_t step)           /* the copy of ed_instr (1..n_instr) at this step, or none (LIVE_OWN) */
+{
+    uint32_t f = irq_save();
+    if (step != LIVE_OWN) {
+        live_patch = song.instr[ed_instr - 1u];
+        live_patch.connection = step < 8u ? 1u : 0u; live_patch.feedback = (uint8_t)(step & 7u);
+    }
+    live_alg = step; live_src = ed_instr;
+    irq_restore(f);
+}
+
+static void live_note(uint32_t ch, uint32_t note, uint32_t vol)   /* (ISR) a note in the keys' instrument */
+{
+    if (live_alg != LIVE_OWN) macsop_play_patch(&player, (int)ch, (int)note, &live_patch, (int)vol);
+    else macsop_play_note(&player, (int)ch, (int)note, (int)(ed_instr <= song.n_instr ? ed_instr : 1u), (int)vol);
+}
+
+static void live_say(void)                    /* "I03 BRASS", or with a copy "I03 FM FB 5" / "I03 ADDITIVE FB 5" */
+{
+    static char m[24];
+    const char *nm = song.instr[ed_instr - 1u].name;
+    uint32_t i, n;
+    char *p = cat(m, "I");
+    p = catn(p, ed_instr, 2); *p++ = ' ';
+    if (live_alg == LIVE_OWN) {
+        for (n = 13u; n && (nm[n - 1u] == ' ' || !nm[n - 1u]); n--) { }
+        for (i = 0; i < n; i++) *p++ = nm[i] >= ' ' && nm[i] <= '~' ? nm[i] : '?';
+        *p = 0;
+    } else {
+        p = cat(p, live_alg < 8u ? "FM FB " : "ADDITIVE FB ");
+        catn(p, live_alg & 7u, 1);
+    }
+    say(m);
+}
 
 static void draw_status(int play, int loop_all)
 {
@@ -737,7 +811,7 @@ static void draw_ins(void)
                 if (r <= 24) { p = cat(s, "OP"); *p++ = (char)('1' + (r - 1) / 12); *p++ = ' '; *p++ = ' '; p = cat(p, INS_NAME[(r - 1) % 12]); }
                 else p = cat(s, r == 25 ? "FEEDBACK" : "CONNECT");
                 cv_text(20, y, &FONT_S, s, cur_line ? C_TXT : C_MUTE);
-                if (r == 26) p = cat(s, v ? "ADD" : "FM");
+                if (r == 26) p = cat(s, v ? "FM" : "ADD");   /* the file's 1 is FM: the chip gets 1 - connection (macsop.c set_instr) */
                 else if (r <= 24 && (r - 1) % 12 == 11) p = cat(s, v == 0 ? "SINE" : v == 1 ? "HALF" : v == 2 ? "ABS" : "PULSE");
                 else p = catn(s, v, 2);
                 cv_text(170, y, &FONT_S, s, cur_line ? C_ACC : C_MUTE);
@@ -785,11 +859,12 @@ typedef struct {
     uint32_t off[3], old[3];                  /* the scalars, restored last to first */
     uint8_t size[3], n;
     uint8_t merge;                            /* which control made it (0: none, never merged into) */
-    uint8_t list;                             /* the order list was kept too, in undo_list[this slot] */
+    uint8_t list;                             /* 1: the order list was kept too, in undo_list[this slot]; 2: the
+                                               * cursor's column of its pattern was (an arp written, arp_write) */
     uint8_t view, a, b, c;                    /* where the cursors were, to put them back */
 } undo_step;
 static undo_step undo_log[UNDO_N];
-static uint16_t undo_list[UNDO_N][MACSOP_MAX_ORDERS] __attribute__((section(".pool")));
+static union { uint16_t order[MACSOP_MAX_ORDERS]; macsop_cell col[MACSOP_ROWS]; } undo_list[UNDO_N] __attribute__((section(".pool")));
 static uint32_t undo_t;                       /* ms of the last change logged */
 
 static undo_step *undo_last(void) { return undo_cnt ? &undo_log[(undo_head + UNDO_N - 1u) % UNDO_N] : 0; }
@@ -835,7 +910,7 @@ static undo_step *undo_save(const void *p, uint32_t size, uint32_t merge)
 static void undo_save_orders(void)            /* before an insert or delete moves the order list */
 {
     undo_step *u = undo_push();
-    memcpy(undo_list[(undo_head + UNDO_N - 1u) % UNDO_N], song.order, sizeof song.order);
+    memcpy(undo_list[(undo_head + UNDO_N - 1u) % UNDO_N].order, song.order, sizeof song.order);
     u->list = 1;
     undo_add(u, &song.n_orders, 2);
     undo_t = fm1_ms;
@@ -848,7 +923,19 @@ static undo_step *undo_pop(void)              /* put the last step back; the ste
     if (!undo_cnt) return 0;
     undo_head = (undo_head + UNDO_N - 1u) % UNDO_N; undo_cnt--;
     u = &undo_log[undo_head];
-    if (u->list) memcpy(song.order, undo_list[undo_head], sizeof song.order);
+    if (u->list == 1u) memcpy(song.order, undo_list[undo_head].order, sizeof song.order);
+    if (u->list == 2u) {                      /* an arp written: its new order positions out, the column back */
+        uint32_t k = song.n_orders - (u->old[0] & 0xFFFFu), pat;
+        uint32_t f = irq_save();
+        for (i = u->a + 1u; i + k < song.n_orders; i++) song.order[i] = song.order[i + k];
+        song.n_orders = (uint16_t)(song.n_orders - k);
+        if (player.order_idx != 0xFFFFu && player.order_idx > u->a)   /* the player stays on its pattern; inside the removed range it drops to the position before */
+            player.order_idx = player.order_idx > u->a + k ? (uint16_t)(player.order_idx - k) : (uint16_t)u->a;
+        irq_restore(f);
+        pat = macsop_order_pattern(&player, u->a);
+        if (pat != 0xFFFFu)
+            for (i = 0; i < MACSOP_ROWS; i++) song.pat[pat].cell[i][u->c].u = undo_list[undo_head].col[i].u;
+    }
     for (i = u->n; i-- > 0;)
         memcpy((uint8_t *)&song + u->off[i], &u->old[i], u->size[i]);   /* a cell is one aligned 32-bit store: whole */
     return u;
@@ -873,8 +960,8 @@ static void audition(int ch, uint32_t note, uint32_t instr)   /* a key held: tha
  * melodic one (6 in rhythm mode, 9 otherwise; the rhythm-mode drums, 7-9, never). With no song playing, the highest
  * one not muted. While the arp has a channel the player leaves that column alone (player.skip), and a muted
  * channel is let back into the mix for the arp. Picked again when the pattern changes and when playback starts
- * (tick_row -> arp_follow), given back when the notes stop. The instrument is the editor's (ed_instr), the volume
- * ed_vol. Settings in the settings sector; whether the arp is on is not kept. */
+ * (tick_row -> arp_follow), given back when the notes stop. The instrument is the keys' (live_note: ed_instr, or
+ * ALGO's copy of it), the volume ed_vol. Settings in the settings sector; whether the arp is on is not kept. */
 enum { ARP_UP, ARP_DOWN, ARP_INCL, ARP_EXCL, ARP_RAND, ARP_ORDER, ARP_REPEAT, ARP_MODES };
 #define ARP_NONE 0xFFu
 #define ARP_MAXN 27u                          /* every key at once */
@@ -890,6 +977,8 @@ static uint8_t arp_key[ARP_MAXN], arp_ord[ARP_MAXN], arp_sort[ARP_MAXN];   /* ke
 static volatile uint32_t arp_ch = ARP_NONE, arp_unmute;   /* the ISR's (main reads them): the channel held; a muted one let back in */
 static uint32_t arp_pos, arp_rest, arp_off_due, arp_rng = 0x2545F491u;            /* the ISR's */
 static uint16_t arp_pat = 0xFFFF;             /* the pattern the channel was picked for (0xFFFF: no song playing) */
+static uint32_t arpw_n;                       /* main's: the chord as the last key pressed left it, for arp_write */
+static uint8_t arpw_ord[ARP_MAXN], arpw_sort[ARP_MAXN];
 #ifdef DINGHY_HOST
 static uint32_t host_arp_steps, host_arp_at, host_arp_gap, host_arp_last[8];   /* note | channel << 8 */
 #endif
@@ -943,16 +1032,16 @@ static void arp_drop(void)                    /* (main, the ISR off the chip) th
     player.skip = 0;
 }
 
-static uint32_t arp_note(uint32_t pos)        /* (ISR) step pos of the arpeggio */
-{
-    uint32_t n = arp_n, len = n * arp_oct, i, v;
-    const uint8_t *src = arp_mode == ARP_ORDER ? arp_ord : arp_sort;
+static uint32_t arp_note_of(uint32_t pos, uint32_t n, const uint8_t *ord, const uint8_t *sort, uint32_t *rng)
+{                                             /* step pos of the arpeggio of n notes (in press order, sorted) */
+    uint32_t len = n * arp_oct, i, v;
+    const uint8_t *src = arp_mode == ARP_ORDER ? ord : sort;
     switch (arp_mode) {
     case ARP_DOWN:   i = len - 1u - pos % len; break;
     case ARP_INCL:   i = pos % (2u * len); if (i >= len) i = 2u * len - 1u - i; break;   /* the ends twice */
     case ARP_EXCL:   if (len < 2u) { i = 0; break; }
                      i = pos % (2u * len - 2u); if (i >= len) i = 2u * len - 2u - i; break;   /* the ends once */
-    case ARP_RAND:   arp_rng ^= arp_rng << 13; arp_rng ^= arp_rng >> 17; arp_rng ^= arp_rng << 5; i = arp_rng % len; break;
+    case ARP_RAND:   *rng ^= *rng << 13; *rng ^= *rng >> 17; *rng ^= *rng << 5; i = *rng % len; break;
     case ARP_REPEAT: i = (pos / 2u) % len; break;   /* each note twice */
     default:         i = pos % len;           /* up; order: up through the notes as pressed */
     }
@@ -960,6 +1049,7 @@ static uint32_t arp_note(uint32_t pos)        /* (ISR) step pos of the arpeggio 
     while (v > 119u) v -= 12u;
     return v;
 }
+static uint32_t arp_note(uint32_t pos) { return arp_note_of(pos, arp_n, arp_ord, arp_sort, &arp_rng); }   /* (ISR) */
 
 static void tick_arp(void)                    /* (ISR) the arp's next event is due: a step, or its gate's end */
 {
@@ -974,7 +1064,7 @@ static void tick_arp(void)                    /* (ISR) the arp's next event is d
     if (arp_ch == ARP_NONE) arp_move();
     s = arp_pos++;
     note = arp_note(s);
-    macsop_play_note(&player, (int)arp_ch, (int)note, (int)(ed_instr <= song.n_instr ? ed_instr : 1u), (int)ed_vol);
+    live_note(arp_ch, note, ed_vol);
 #ifdef DINGHY_HOST
     host_arp_gap = host_nat - host_arp_at; host_arp_at = host_nat;
     host_arp_last[host_arp_steps++ & 7u] = note | arp_ch << 8;
@@ -1015,6 +1105,7 @@ static void arp_press(uint32_t k)             /* key k down: its note joins; the
     if (!arp_n++) { arp_acc = 0; arp_pos = 0; }
     arp_sorted();
     irq_restore(f);
+    arpw_n = arp_n; memcpy(arpw_ord, arp_ord, arp_n); memcpy(arpw_sort, arp_sort, arp_n);
 }
 
 static void arp_lift(uint32_t k)              /* key k up (not latched): its note leaves; the last one stops the arp now */
@@ -1036,12 +1127,108 @@ static void arp_clear(void)
     irq_restore(f);
 }
 
+/* ---- the arp into the tracker (ARP in the pattern editor, TODO.md 4). Offline, from the chord the arp last played
+ * (the keys pressed last, held or latched) and its settings now: ordinary cells in the cursor's column, from the cursor
+ * down, arp_len patterns of rows. A note each step (ed_instr, ed_vol, pitch 32), a key off where the gate ends, every
+ * other row of the range emptied, so the column plays back as the arp's steps and the song stays a plain .CMF. Past
+ * row 63, or at the cursor's pattern's end of pattern, it goes on in new empty patterns put into the order list right
+ * after the cursor's position. A step is a whole number of rows, the nearest to the arp's rate at the song's speed;
+ * the status line says when that is not the arp's tempo. Swing (a long step, then a short one) and the gate round
+ * to rows too; a step of one row cannot swing. One undo step takes all of it back (undo_list keeps the column). */
+#define ARP_LEN_MAX 8u
+static uint32_t arp_len = 1;                  /* patterns of rows ARP writes (the settings' page 2, K4); not kept */
+static uint32_t arpw_rng = 0x2545F491u;       /* RANDOM's state for writing, apart from the ISR's */
+static const uint16_t ROWS_PER_MIN[4] = { 0, 1092, 546, 273 };   /* speed 1..3: 18.2 / 9.1 / 4.55 rows a second */
+
+static int row_ends(const macsop_pattern *p, uint32_t r, uint32_t skip)   /* macsop.c row_is_break, column skip empty */
+{
+    uint32_t c;
+    for (c = 0; c < MACSOP_CHANNELS; c++)
+        if (c != skip && p->cell[r][c].f.note) return p->cell[r][c].f.note == 1u;
+    return 0;
+}
+
+static macsop_cell *arpw_cell(uint32_t r, uint32_t first)   /* row r of the range: in the cursor's pattern, then the new ones */
+{
+    uint16_t pat;
+    if (r < first) { pat = macsop_order_pattern(&player, (uint16_t)cur_order); r += cur_row; }
+    else { r -= first; pat = song.order[cur_order + 1u + r / MACSOP_ROWS]; r %= MACSOP_ROWS; }
+    return &song.pat[pat].cell[r][cur_col];
+}
+
+static void arp_write(void)
+{
+    static char m[24];
+    uint32_t spb = ARP_RATE_SPB[arp_rate], d = arp_bpm * spb, rpm = ROWS_PER_MIN[song.speed];
+    uint32_t total = arp_len * MACSOP_ROWS, first, add, len, lng, sht, step, on, at, s, i, r, f;
+    uint32_t instr = ed_instr <= song.n_instr ? ed_instr : 1u;
+    uint16_t pat = macsop_order_pattern(&player, (uint16_t)cur_order);
+    undo_step *u;
+    macsop_cell t;
+    char *p;
+    if (!arpw_n) { say("ARP: NO CHORD YET"); return; }
+    if (song.rhythm && cur_col >= 6u) { say("ARP: NOT ON DRUMS"); return; }
+    if (pat == 0xFFFFu) return;
+    /* the rows the cursor's pattern plays from the cursor: up to an end of pattern (or a row emptying this
+     * column would make one) */
+    for (r = cur_row; r < MACSOP_ROWS && !row_ends(&song.pat[pat], r, MACSOP_CHANNELS) && !row_ends(&song.pat[pat], r, cur_col); r++) { }
+    first = r - cur_row;
+    add = (total - first + MACSOP_ROWS - 1u) / MACSOP_ROWS;
+    if (song.n_patterns + add > MACSOP_MAX_PATTERNS || song.n_orders + add > MACSOP_MAX_ORDERS) { say("ARP: SONG IS FULL"); return; }
+
+    u = undo_push();                          /* one step: the column as it was, the order list's length, the patterns' count */
+    u->list = 2;
+    for (r = 0; r < MACSOP_ROWS; r++) undo_list[(undo_head + UNDO_N - 1u) % UNDO_N].col[r].u = song.pat[pat].cell[r][cur_col].u;
+    undo_add(u, &song.n_orders, 2);
+    undo_add(u, &song.n_patterns, 2);
+    undo_t = fm1_ms;
+
+    for (i = 0; i < add; i++)                 /* the new patterns, empty, then into the order list after the cursor's position */
+        for (r = 0; r <= MACSOP_ROWS; r++) for (s = 0; s < MACSOP_CHANNELS; s++) song.pat[song.n_patterns + i].cell[r][s].u = 0;
+    f = irq_save();                           /* the ISR may be playing the order list */
+    for (i = song.n_orders; i-- > cur_order + 1u;) song.order[i + add] = song.order[i];
+    for (i = 0; i < add; i++) song.order[cur_order + 1u + i] = (uint16_t)(song.n_patterns + i);
+    song.n_patterns = (uint16_t)(song.n_patterns + add); song.n_orders = (uint16_t)(song.n_orders + add);
+    if (player.order_idx != 0xFFFFu && player.order_idx > cur_order) player.order_idx = (uint16_t)(player.order_idx + add);   /* the player stays on its pattern */
+    irq_restore(f);
+
+    len = (2u * rpm + d) / (2u * d);          /* rows a step: the nearest whole number */
+    if (!len) len = 1;
+    lng = (len * arp_swing + 25u) / 50u;      /* swing: two steps of 2 x len rows, the first swing % of them */
+    if (lng > 2u * len - 1u) lng = 2u * len - 1u;
+    if (lng < len) lng = len;
+    sht = 2u * len - lng;
+    for (r = 0; r < total; r++) arpw_cell(r, first)->u = 0;   /* each cell one aligned store: the player sees it whole */
+    for (s = 0, at = 0; at < total; s++, at += step) {
+        step = s & 1u ? sht : lng;
+        t.u = 0; t.f.note = (uint8_t)arp_note_of(s, arpw_n, arpw_ord, arpw_sort, &arpw_rng);
+        t.f.instr = (uint8_t)instr; t.f.vol = (uint8_t)ed_vol; t.f.pitch = 32;
+        arpw_cell(at, first)->u = t.u;
+        on = (step * arp_gate + 50u) / 100u;  /* the gate: a key off that many rows on, if the step has room */
+        if (!on) on = 1;
+        if (on < step && at + on < total) { t.u = 0; t.f.note = 4; arpw_cell(at + on, first)->u = t.u; }
+    }
+
+    if (len * d != rpm) {                     /* the tempo the rows give, to a tenth */
+        uint32_t v = (20u * rpm / (len * spb) + 1u) / 2u, w = v / 10u;
+        p = cat(m, "ROUNDED: ");
+        p = catn(p, w, w >= 1000u ? 4u : w >= 100u ? 3u : w >= 10u ? 2u : 1u);
+        *p++ = '.'; *p++ = (char)('0' + v % 10u);
+        cat(p, " BPM");
+    } else if (lng * 50u != len * arp_swing)
+        cat(m, "ROUNDED: SWING");
+    else {
+        p = cat(m, "ARP: "); p = catn(p, len, len >= 10u ? 2u : 1u); cat(p, " ROWS A STEP");
+    }
+    say(m);
+}
+
 /* ---- the arp's settings screen: two pages of four knobs, the channel it plays on */
 static uint32_t arp_page, arp_back = V_JUKE;  /* the page shown; the view ARP off goes back to */
 static uint32_t arp_shown_ch = ARP_NONE, arp_shown_n;
 static void draw_arp(void)
 {
-    static const char *const LBL[2][4] = { { "K1 MODE", "K2 OCTAVES", "K3 RATE", "K4 TEMPO" }, { "K1 GATE", "K2 SWING", "K3 LATCH", "" } };
+    static const char *const LBL[2][4] = { { "K1 MODE", "K2 OCTAVES", "K3 RATE", "K4 TEMPO" }, { "K1 GATE", "K2 SWING", "K3 LATCH", "K4 LENGTH" } };
     char s[24], *p;
     uint32_t i;
     lcd_fill(0, 0, 240, TR_TOP, C_BLACK);
@@ -1061,7 +1248,8 @@ static void draw_arp(void)
             } else switch (i) {
                 case 0: v = arp_gate; break;
                 case 1: v = arp_swing; break;
-                default: p = cat(s, arp_latch ? "ON" : "OFF");
+                case 2: p = cat(s, arp_latch ? "ON" : "OFF"); break;
+                default: p = catn(s, arp_len, 1); p = cat(p, arp_len > 1u ? " PATTERNS" : " PATTERN");
             }
             if (p == s) { p = catn(s, v, v >= 100u ? 3u : v >= 10u ? 2u : 1u); if (arp_page) p = cat(p, " %"); else if (i == 3u) p = cat(p, " BPM"); }
             cv_text(20, 4, &FONT_S, LBL[arp_page][i], C_TXT);
@@ -1107,6 +1295,23 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
         default: return chip.mute;
 #endif
         }
+    if (row == 92u) return col < 9u ? host_c0[col] : 0;   /* the keys' instrument (TODO 5): channel col's C0 */
+    if (row == 90u) return (uint32_t)macsop_channel_instr_no(&player, (int)col);   /* its instrument 1.. (0: not the song's) */
+    if (row == 91u) {                         /* col 0 ed_instr, 1 ALGO's step (255: no copy), 2 the song's instrument
+                                               * ed_instr as a step, 4 a hash of the status message (h * 31 + c; 0: none) */
+        uint32_t h = 0; const char *q;
+        switch (col) {
+        case 0: return ed_instr;
+        case 1: return live_alg;
+        case 2: return ed_instr >= 1u && ed_instr <= song.n_instr ? live_step_of(&song.instr[ed_instr - 1u]) : 255u;
+        default:
+            if (msg && (int32_t)(msg_until - fm1_ms) > 0) for (q = msg; *q; q++) h = h * 31u + (uint8_t)*q;
+            return h;
+        }
+    }
+    if (row == 95u) return col < 9u ? host_kon_pitch[col] | (uint32_t)(host_b0[col] & 0x20u) << 11 : 0;   /* channel col: */
+    if (row == 94u) return col < 9u ? host_kon_gap[col] : 0;   /* the last key-on's pitch (| 0x10000 while keyed), */
+    if (row == 93u) return col < 9u ? host_kon_n[col] : 0;     /* native samples since the one before, key-ons so far */
     if (row == 96u) return host_arp_last[(host_arp_steps - 1u - col) & 7u] & 0xFFu;   /* the note col steps back */
     if (row == 98u) { uint32_t i, h = 0; for (i = 0; i < MACSOP_MAX_ORDERS; i++) h = h * 31u + song.order[i]; return h; }
     uint16_t pat = macsop_order_pattern(&player, (uint16_t)order);
@@ -1125,6 +1330,23 @@ static void save_song(void)
     else say("SAVE FAILED");
     chip_run = 1;
 }
+
+/* ---- the slots' .CMF files over USB SysEx (slot_sysex.c, docs/API.md): pull any slot, push any slot but the
+ * song in the player */
+static int slot_in_player(uint32_t i) { return cur == N_SONGS + i; }
+static int slot_store(uint32_t i, uint32_t n)
+{
+    int rc;
+    uint32_t was_playing = playing;           /* chip_off() clears it: a push must not stop the song */
+    chip_off();                               /* the erase stalls the sound, as SAVE does */
+    rc = slot_program(i, slot_buf, n + SLOT_HDR);
+    chip_run = 1; playing = was_playing;
+    return rc;
+}
+#ifndef DINGHY_HOST                           /* tests/slot_sysex.c runs it on a computer */
+#include "slot_sysex.c"
+static void app_usb_cmd(const uint8_t *d, uint32_t n) { slot_sysex(d, n); }
+#endif
 
 static void app_main(void)
 {
@@ -1175,7 +1397,11 @@ static void app_main(void)
         /* ---- the views and the modes */
         if (b & (1u << BTN_EDIT)) {
             edit ^= 1u;
-            if (!edit) rec_arm = 0;
+            if (!edit) {
+                rec_arm = 0;
+                if (live_alg != LIVE_OWN)     /* the copy again from the instrument as edited; none if K4 picked another */
+                    live_set(live_src == ed_instr && ed_instr <= song.n_instr ? live_alg : LIVE_OWN);
+            }
             else arp_clear();                 /* the keys are the editor's now */
             if (edit) { cur_order = pos_order; cur_row = pos_row; cur_col = 0; song_pos = cur_order; if (view != V_SONG && view != V_INS) view = V_TRACK; }
             else if (view == V_SONG || view == V_INS) view = V_TRACK;
@@ -1281,6 +1507,7 @@ static void app_main(void)
             } else {
                 if (k1) { v = (int32_t)arp_gate + 5 * k1; arp_gate = (uint32_t)(v < 20 ? 20 : v > 100 ? 100 : v); }
                 if (k2) { v = (int32_t)arp_swing + k2; arp_swing = (uint32_t)(v < 50 ? 50 : v > 75 ? 75 : v); }
+                if (k4) { v = (int32_t)arp_len + k4; arp_len = (uint32_t)(v < 1 ? 1 : v > (int32_t)ARP_LEN_MAX ? (int32_t)ARP_LEN_MAX : v); }
                 if (k3) {
                     arp_latch = k3 > 0;
                     if (!arp_latch)                   /* latch off: only the keys still down stay */
@@ -1293,6 +1520,17 @@ static void app_main(void)
             set.arp_bpm = (uint16_t)arp_bpm;
             dirty = 1; t_change = fm1_ms;
             draw_arp();
+        }
+        /* ---- the keys' instrument (outside EDIT; in EDIT the two knobs keep their editor meanings) */
+        if (!edit && (pre || alg) && song.n_instr) {
+            int32_t v;
+            if (ed_instr < 1u || ed_instr > song.n_instr) ed_instr = 1;   /* from a song with more instruments */
+            if (pre) { ed_instr = (uint32_t)wrap((int32_t)ed_instr - 1 + pre, (int32_t)song.n_instr) + 1u; live_set(LIVE_OWN); }
+            if (alg) {
+                v = (int32_t)(live_alg == LIVE_OWN ? live_step_of(&song.instr[ed_instr - 1u]) : live_alg) + alg;
+                live_set((uint32_t)(v < 0 ? 0 : v > 15 ? 15 : v));
+            }
+            live_say(); shown_order = ~0u;
         }
         if (arp_on && !edit) {                    /* the keys feed it, except on the scope (the mutes); key ups always count */
             if (up && !arp_latch)
@@ -1374,6 +1612,7 @@ static void app_main(void)
                 if (b & (1u << BTN_FX))  { macsop_cell t; t.u = 0; t.f.note = 4; undo_save(&c->u, 4, 0); c->u = t.u; cursor_step(); moved = 1; }
                 if (b & (1u << BTN_SEL)) { undo_save(&c->u, 4, 0); c->u = 0; cursor_step(); moved = 1; }
                 if (b & (1u << BTN_GLO)) { macsop_cell t; t.u = 0; t.f.note = c->f.note == 1 ? 0 : 1; t.f.vol = 127; t.f.pitch = 32; undo_save(&c->u, 4, 0); c->u = t.u; moved = 1; }
+                if (b & (1u << BTN_ARP)) { arp_write(); moved = 1; }
             }
             if (up && held_ch) { audition((int)(held_ch - 1u), 0, 0); held_ch = 0; }
             if (moved) { draw_tracker_head(); draw_tracker(); shown_order = ~0u; }

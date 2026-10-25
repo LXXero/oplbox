@@ -202,6 +202,26 @@ def build_app():
     return bytes(img), syms, dis, rt
 
 
+# ---- the WiFi driver (firmware/wifi/, docs/WIFI.md): compiled with the app's flags so its size is known against
+# the budget there, not linked until stage 9 calls it. Object sizes without --gc-sections: an upper bound.
+
+def build_wifi():
+    srcs = sorted([*(FW / "wifi").glob("*.c"), *(FW / "wifi" / "bearssl").glob("*.c")])
+    out = OUT / "wifi"
+    out.mkdir(parents=True, exist_ok=True)
+    objs = [out / f"{s.parent.name}_{s.stem}.o" for s in srcs]
+    tc_all(*[("cc", *CFLAGS, "-Ifirmware/wifi", "-c", s, "-o", o) for s, o in zip(srcs, objs)])
+    code = data = 0
+    for o in objs:
+        for ln in tc("common/bin/objdump", "-h", o).splitlines():
+            p = ln.split()
+            if len(p) > 3 and re.match(r"\.(text|rodata)", p[1]):
+                code += int(p[2], 16)
+            elif len(p) > 3 and re.match(r"\.(data|bss)", p[1]):
+                data += int(p[2], 16)
+    return f"firmware/wifi/ (not linked yet): {len(objs)} objects, {code} B code+rodata, {data} B data+bss"
+
+
 def check(img, syms, dis, rt):
     errors, notes = [], []
     m = re.search(r"^([0-9a-f]+) .*\s_start$", syms, re.M)
@@ -240,7 +260,7 @@ def check(img, syms, dis, rt):
     return errors, notes
 
 
-# Every hardware register access lives in hal/. In src/ and loader/ (comments stripped):
+# Every hardware register access lives in hal/. In src/, loader/ and wifi/ (comments stripped):
 #  - no volatile pointer cast, except of a C object's address (`*(volatile T *)&x`: a read-once
 #    of a RAM flag shared with an ISR, e.g. usb.c ota_wire_send);
 #  - no literal in a register or reserved window (core SFRs 0x10000-0x13FFF, SFC 0x40000-0x43FFF,
@@ -248,6 +268,8 @@ def check(img, syms, dis, rt):
 #    mailbox, vectors), XIP 0x02000000-0x020FFFFF);
 #  - no inline asm, except the empty compiler barrier RING_PUBLISH() (emits no instruction);
 #  - no HAL register macro (a hal/ #define that is, or expands to, a volatile access).
+# The vendored BearSSL in wifi/bearssl/ skips the address-literal rule only: its constants (AES Rcon 0x02000000)
+# fall in the windows, and the other three rules still hold there.
 # Linker symbols (_bss_start[], _rt_load[], ...) are plain C objects and pass.
 MMIO_LIT = re.compile(r"\b0x0*(1[0-3][0-9a-f]{3}|4[0-3][0-9a-f]{3}|5[01][0-9a-f]{3}|1ee[0-9a-f]{4}|"
                       r"1c7f[0-9a-f]{3}|20[0-9a-f]{5})u?l?\b", re.I)
@@ -270,11 +292,13 @@ def mmio_check():
             break
         regs |= more
     errors = []
-    for f in sorted([*(FW / "src").glob("*.[ch]"), *(FW / "loader").glob("*.c")]):
+    for f in sorted([*(FW / "src").glob("*.[ch]"), *(FW / "loader").glob("*.c"), *(FW / "wifi").rglob("*.[ch]")]):
         for no, ln in enumerate(strip(f.read_text()).splitlines(), 1):
             where = f"{f.relative_to(FW)}:{no}"
             for rx, what in ((MMIO_LIT, "register/window address"), (MMIO_CAST, "volatile pointer cast"),
                              (MMIO_ASM, "inline asm")):
+                if rx is MMIO_LIT and f.parent == FW / "wifi" / "bearssl":
+                    continue
                 m = rx.search(ln)
                 if m:
                     errors.append(f"{where}: {what} outside hal/ ({m.group(0).strip()}); add a hal/ helper")
@@ -306,10 +330,11 @@ def main():
     ota = build_loader()
     img, syms, dis, rt = build_app()
     errors, notes = check(img, syms, dis, rt)
+    notes.append(build_wifi())
     hal_err = mmio_check()
     errors += hal_err
     if not hal_err:
-        notes.append("register access: hal/ only (src/, loader/ clean)")
+        notes.append("register access: hal/ only (src/, loader/, wifi/ clean)")
     for n in notes:
         print("  ok   ", n)
     for e in errors:
