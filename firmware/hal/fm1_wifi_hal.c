@@ -34,7 +34,20 @@ void fm1_wl_anl_wr(unsigned n, uint32_t v) { if (n < FM1_WL_ANL_CON_N) WR(FM1_WL
 uint32_t fm1_wf_rd(unsigned n) { return n < FM1_WF_CON_N ? RD(FM1_WF_CON(n)) : 0; }
 void fm1_wf_wr(unsigned n, uint32_t v) { if (n < FM1_WF_CON_N) WR(FM1_WF_CON(n), v); }
 
-static int wl30_off_ok(uint32_t off) { return off <= FM1_WL30_HOST_LAST - FM1_WL30_HOST_BASE && !(off & 3u); }
+static int wl30_off_ok(uint32_t off)
+{
+    switch (off) {
+    case FM1_WL30_HOST_00 - FM1_WL30_HOST_BASE:
+    case FM1_WL30_HOST_04 - FM1_WL30_HOST_BASE:
+    case FM1_WL30_HOST_10 - FM1_WL30_HOST_BASE:
+    case FM1_WL30_HOST_14 - FM1_WL30_HOST_BASE:
+    case FM1_WL30_HOST_18 - FM1_WL30_HOST_BASE:
+    case FM1_WL30_HOST_1C - FM1_WL30_HOST_BASE:
+        return 1;
+    default:
+        return 0;
+    }
+}
 uint32_t fm1_wl30_host_rd(uint32_t off) { return wl30_off_ok(off) ? RD(FM1_WL30_HOST(off)) : 0; }
 void fm1_wl30_host_wr(uint32_t off, uint32_t v) { if (wl30_off_ok(off)) WR(FM1_WL30_HOST(off), v); }
 
