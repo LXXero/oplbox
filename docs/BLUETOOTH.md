@@ -243,7 +243,7 @@ service UUID `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`; one characteristic `7772E5D
 read, write-without-response and notify; each packet starts with a header byte holding the high 6 bits of a 13-bit
 millisecond timestamp, and each message is preceded by a timestamp-low byte with the high bit set; running status
 and SysEx can span packets; advertising includes the 128-bit service UUID. Apple's Bluetooth Accessory Design
-Guidelines ask for a connection interval of 15 ms or longer [unchecked]. This is pure data handling and can be built
+Guidelines ask for a connection interval of 15 ms or less, starting at 11.25 ms [unchecked]. This is pure data handling and can be built
 and tested on the host with no radio.
 
 ## Flash and RAM cost against the 238 KB
