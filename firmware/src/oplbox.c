@@ -1132,9 +1132,10 @@ static int slot_in_player(uint32_t i) { return cur == N_SONGS + i; }
 static int slot_store(uint32_t i, uint32_t n)
 {
     int rc;
+    uint32_t was_playing = playing;           /* chip_off() clears it: a push must not stop the song */
     chip_off();                               /* the erase stalls the sound, as SAVE does */
     rc = slot_program(i, slot_buf, n + SLOT_HDR);
-    chip_run = 1;
+    chip_run = 1; playing = was_playing;
     return rc;
 }
 #ifndef DINGHY_HOST                           /* tests/slot_sysex.c runs it on a computer */
