@@ -90,6 +90,26 @@ on every channel is the noise floor, a higher one may be a busy channel, and if 
 them all level that is worth knowing too. The trim runs from RAM with interrupts off for about half a second, so USB
 goes quiet meanwhile. **SAVE** leaves: the core is powered down (every register back to how it was) and the sound
 comes back. If the FM-1 hangs on the page, power it off and on: nothing was written to flash, and it boots as before.
+Before the core is powered up, PLAY also raises the chip's supply rails to the levels M-VAVE's own firmware uses
+(VDC14 1.60 V, SYSVDD 1.38 V, the 1.3 V supply on its DC-DC, the WiFi 1.2 V regulator on automatic); they stay until
+the FM-1 is switched off.
+
+**If it crashes** (a red `OPLBOX CRASH` screen, for 8 seconds, then a reboot), photograph the screen or copy every
+line:
+
+```
+OPLBOX CRASH
+VEC 00000001  EMU xxxxxxxx    the vector (00000001: a CPU exception); EMU_MSG: stack limit, illegal instruction, ...
+PC  xxxxxxxx  DBG xxxxxxxx    where the CPU was; DBG_MSG: a bus error, a write into a guarded area, a PC limit
+RET xxxxxxxx  SP  xxxxxxxx    the return address and the stack pointer
+ETM xxxxxxxx  xxxxxxxx        the last four branches the trace unit kept
+    xxxxxxxx  xxxxxxxx
+RAM CODE SAME AS FLASH        or CHANGED AT xxxxxxxx: the code that runs from RAM was overwritten there
+WIFI AT TX LO I               only for a crash inside the WiFi bring-up: the step it was in
+WR 00011930 = xxxxxxxx        and its last register write (address = value)
+```
+
+The crash on 2026-10-26 (vector 1, PC 01C02674 in `rmw()`) is in docs/WIFI_STAGE3.md "First run on an FM-1".
 
 **Battery.** Every screen shows a battery at the top right: 3 bars, red outline when empty. It reads ADC ch3
 (the battery divider) once a second, smoothed over a few seconds. The bars switch at raw counts 531 / 561 / 591,

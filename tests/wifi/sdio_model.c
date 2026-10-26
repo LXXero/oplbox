@@ -344,6 +344,8 @@ struct sdio_model {
     int hang_tune, hang_measure, hang_anl, hang_after, measures;
     unsigned poll[N_POLL], poll_max;
     wifi_fix log, wlog;
+    void (*on_wr)(void *ctx, uint32_t addr, uint32_t v);
+    void *on_wr_ctx;
 };
 
 static sdio_model *cur;
@@ -367,6 +369,7 @@ void sdio_model_free(sdio_model *m)
 }
 
 void sdio_model_use(sdio_model *m) { cur = m; }
+void sdio_model_on_wr(sdio_model *m, void (*fn)(void *ctx, uint32_t addr, uint32_t v), void *ctx) { m->on_wr = fn; m->on_wr_ctx = ctx; }
 const wifi_fix *sdio_model_log(const sdio_model *m) { return &m->log; }
 const wifi_fix *sdio_model_wlog(const sdio_model *m) { return &m->wlog; }
 void sdio_model_wlog_clear(sdio_model *m) { wifi_fix_free(&m->wlog); }
@@ -646,6 +649,7 @@ void fm1wifi_port_wr32(uint32_t addr, uint32_t v)
 {
     sdio_model *m = model();
     uint32_t *r = reg_at(m, addr);
+    if (m->on_wr) m->on_wr(m->on_wr_ctx, addr, v);
     log_rec(m, WIFI_REC_WR, addr, v);
     m->poll[POLL_STUCK] = 0;                                  /* a stuck register's polls: a run without writes */
     if (!r) { m->bad++; return; }

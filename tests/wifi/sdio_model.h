@@ -105,3 +105,5 @@ uint8_t sdio_model_win(const sdio_model *m, unsigned w, uint8_t a);   /* a windo
 int sdio_model_trims(const sdio_model *m);   /* fm1wifi_port_trim(1) calls so far; -1 if 0 came without a 1 */
 int sdio_model_in_trim(const sdio_model *m);
 unsigned sdio_model_polls(const sdio_model *m);   /* the longest run of busy answers to one wait */
+/* fn(ctx, addr, v) at every fm1wifi_port_wr32, before the model takes the write (NULL: none) */
+void sdio_model_on_wr(sdio_model *m, void (*fn)(void *ctx, uint32_t addr, uint32_t v), void *ctx);

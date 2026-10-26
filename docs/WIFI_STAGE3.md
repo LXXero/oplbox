@@ -3,7 +3,7 @@
 This is the plain description `firmware/wifi/fm1wifi.c`'s stage 3 code is written from (docs/WIFI.md, "What stages
 1 and 3 may take from `wl_rf_common.a`": facts from the archive, code from a description). Each step says which
 register gets which value, what is read and when a loop ends. Where JieLi's code waits without a bound, the step
-says so and the library bounds it. Nothing here has run on an FM-1 yet.
+says so and the library bounds it. Its first run on an FM-1 crashed: "First run on an FM-1" at the end.
 
 The facts were read with `tools/wifi_ir.py`, which turns the eight clean members of `wl_rf_common.a` (SHA-256
 `ec50bb31…`) back into LLVM IR and runs that IR against a register model. Its output is the straight-line part of
@@ -227,3 +227,51 @@ of the trim settings in force (TX: LO, DC, gain and phase imbalance; RX IQ: gain
 analog DC against a target per gain range); the ADC peak grows with the VGA fields and varies with the channel; every
 wait ends at once. With the defaults the trims land on TX LO 57/41, TX DC -1/0, TX gain imbalance 5 (gain Q 1018),
 TX phase Q 2, RX gain I 235, RX phase I 7, RX DC I 123 and Q -77 in range 0, PLL bank 64.
+
+## First run on an FM-1 (2026-10-26): the crash in `rmw()`
+
+OPLBOX main 80a6917 (`oplbox.fwsc` SHA-256 `e3736f02…`, rebuilt byte-identical from that commit) was flashed at
+05:50 UTC and the bring-up started on the WiFi test page. The red crash screen showed vector 1 (CPU exception), PC
+01C02674, RETS 01C02674.
+
+**What the numbers say.** 0x01C02674 is in `rmw()` (`.ram_code.fm1wifi`), the instruction after `call r7` with r7 =
+`fm1wifi_port_wr32`, i.e. right after the write of the read-modify-write returned. RETS = PC means that call ran
+and returned (`fm1wifi_port_wr32` is a leaf and returns to RETS), and the exception was raised at the instruction it
+returned to, `sp += 8`, which cannot fault itself. So either the write's bus error arrived late (an imprecise fault on
+a store), or the instruction fetched at 0x01C02674 was not `sp += 8` (an illegal instruction from RAM code that was
+overwritten or misread). The screen showed neither EMU_MSG nor DBG_MSG, so the two cannot be told apart from it.
+The first `rmw()` of the whole bring-up is table `RF_INIT`'s first step (`WLA_CON12`, the crystal caps): every step
+before it goes through the core's window, not `rmw()`. So the crash was in `RF_INIT` or later.
+
+**The addresses, checked.** Run against the register model, the bring-up writes these CPU-side registers, first
+write first: `WLA_CON12` (`RF_INIT`), `WLA_CON20`, `WLA_CON0`-`CON11`, `CON13`-`CON17`, `WLA_CON25`, `CON26`, `CON30`
+(the status read), `CON21`, `CON23`, `CON24`, then `WL_ANL_CON0`-`CON2` (the RF RAM table) and
+`WF_CON7` (power and channel). All are inside the blocks `fm1wifi_port.h` names (`WLA_CON0`-`30` at 0x11900, JL_WL at
+0x14000), none of them a read-only `WLA_CON31`-`39`, and `WLA()`, `ANL()` and the table runner's register numbers
+(below 64 `WLA_CONn`, from 64 JL_WL word n - 64) give the addresses JieLi's code uses: the host test diffs the whole
+sequence against `tools/wifi_ir.py --trace`'s run of `wl_rf_common.a` record for record, so no write is out of order,
+at a wrong offset or missing against the archive. What the archive does not show is what JieLi's system does before
+`wf_rf_common_init`. In the SDK: `WL_CON0` bit 1 (`wifi_rf_on`, "bt_en & wf_en") is set by `wlc_main`, after the
+radio's bring-up, so JieLi's bring-up runs without it too; no clock gate or reset outside `wf_clk_rst_init` (which
+stage 2 does, and which ran on this FM-1) is touched first. No register-side cause was found in the code.
+
+**The supply, the likely cause (not confirmed).** felucca-bsp's `fm1_sys.h`: "At the boot loader's [levels], under
+load (both cores, or WiFi in fm1-radio), some units read flash and SRAM wrong." M-VAVE's firmware raises VDC14 to
+1.60 V and SYSVDD (the core and SRAM rail) to 1.38 V as it starts, moves the 1.3 V supply onto its DC-DC and puts the
+WiFi 1.2 V regulator on automatic; the bsp has these as `fm1_vdc14_raise`, `fm1_sysvdd_raise` and `fm1_power_stock`,
+and OPLBOX called none of them (TODO.md: "there, not called"). The radio's analog set-up and the trim are the WiFi
+load, the code at the fault runs from SRAM, and a misread instruction fetch raises exactly this kind of exception at
+a PC in RAM code. So the WiFi page now raises the rails (`platform_supply_full`, platform.c) before the core is
+powered up. Remaining candidates, if it crashes again: a late bus error from one of the writes above (DBG_MSG's bus
+bits would show it), and the RAM code overwritten by the hardware (fm1-base saw the radio write into its RAM; the new
+crash screen compares the RAM code with its copy in the flash).
+
+**The next crash says where it was.** The library keeps `fm1wifi_where` in `.noinit` (fm1wifi.h): the step it is in
+(set before each step of the sequence above, the trims' searches each a step of their own) and the address and value
+of the last CPU-side register write, recorded just before each write is made; a magic word says a call is running.
+The crash screen (`fm1_fault`, platform.c) shows vector, PC and RETS as before, plus EMU_MSG, DBG_MSG, sp, the four
+ETM trace PCs, whether the RAM code still equals its flash copy, and, for a crash inside the WiFi library, the step
+and the last write (README.md "If it crashes"). `tests/wifi_model.c` checks the record at every register write of the
+bring-up: magic set, the address and value the write's, the steps in the order above each with writes of their own,
+`WLA_CON12` first written in `RF_INIT`, `WL_ANL_CON0` only in the RF RAM table, magic clear after every call (a
+TIMEOUT too). Not run on an FM-1 yet.

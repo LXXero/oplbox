@@ -231,8 +231,8 @@ def build_wifi():
 
 # ---- the WiFi trim's RAM code (docs/WIFI_STAGE3.md "What runs from RAM"): the radio's trim must not touch the flash,
 # so the sections it runs from (fm1wifi.c's .ram_code.fm1wifi, the port's .ram_code.fm1wifi_port) may refer only to
-# RAM: other RAM code, .data and .bss. Read from the objects' own relocations (a small ELF32 reader: the toolchain's
-# objdump does not name this target's relocation symbols).
+# RAM: other RAM code, .data, .bss and .noinit (fm1wifi_where). Read from the objects' own relocations (a small ELF32
+# reader: the toolchain's objdump does not name this target's relocation symbols).
 
 def elf_relocs(path):
     """[(target section, symbol, the symbol's section or None if undefined)], and {defined symbol: section}"""
@@ -278,7 +278,7 @@ def trim_ram_check(objs):
             continue
         n += 1
         sec = sec or defined.get(nm)
-        if not sec or not re.match(r"\.(ram_code|bss|sbss|data|sdata)\b|COMMON$", sec):
+        if not sec or not re.match(r"\.(ram_code|bss|sbss|data|sdata|noinit)\b|COMMON$", sec):
             errors.append(f"WiFi trim RAM code ({target}) refers to {nm} in {sec or 'no object'}: the flash during the trim")
     return errors, f"WiFi trim RAM code: {n} references, all to RAM"
 

@@ -464,6 +464,68 @@ static void test_radio_waits(const char *dir)
     }
 }
 
+/* fm1wifi_where (fm1wifi.h), what a crash screen reads: at every register write the library makes, magic is set, the
+ * address and value are the write's, and the step is the one the sequence is in; the steps come in fm1wifi_radio_up's
+ * order, each with writes of its own; magic is clear again whenever a call has returned. */
+typedef struct { unsigned bad, n; uint32_t seq[FM1WIFI_STEP_N + 8u], step_12, step_anl0, anl0_other; } where_seen;
+static void where_on_wr(void *ctx, uint32_t addr, uint32_t v)
+{
+    where_seen *s = ctx;
+    uint32_t step = fm1wifi_where.step;
+    if (fm1wifi_where.magic != FM1WIFI_WHERE_MAGIC || fm1wifi_where.addr != addr || fm1wifi_where.val != v) s->bad++;
+    if ((!s->n || s->seq[s->n - 1u] != step) && s->n < sizeof s->seq / sizeof s->seq[0]) s->seq[s->n++] = step;
+    if (addr == FM1_WLA_CON(12) && !s->step_12) s->step_12 = step;
+    if (addr == FM1_WL_ANL_CON(0)) { if (!s->step_anl0) s->step_anl0 = step; else if (step != s->step_anl0) s->anl0_other = step; }
+}
+
+static void test_where(const char *dir)
+{
+    char path[512], what[160];
+    where_seen s;
+    fm1wifi_diag d;
+    fm1wifi_radio r;
+    uint8_t peak;
+    unsigned i, ok;
+    snprintf(path, sizeof path, "%s/core_model.txt", dir);
+    sdio_model *m = core(path, NULL);
+    sdio_model_raw_log(m, 0);
+    memset(&s, 0, sizeof s);
+    sdio_model_on_wr(m, where_on_wr, &s);
+    check(fm1wifi_diag_read(&d) == FM1WIFI_OK && fm1wifi_where.magic == 0, "where: magic clear after the diagnostic read");
+    check(s.bad == 0 && s.n == 2 && s.seq[0] == FM1WIFI_STEP_POWER_UP && s.seq[1] == FM1WIFI_STEP_DIAG,
+          "where: power-up's writes as POWER UP, the BBP read's as DIAG READ, each with its address and value");
+    memset(&s, 0, sizeof s);
+    check(fm1wifi_radio_up(NULL, &r) == FM1WIFI_OK && fm1wifi_where.magic == 0, "where: magic clear after the radio's bring-up");
+    snprintf(what, sizeof what, "where: every write of the bring-up recorded before it was made (%u not)", s.bad);
+    check(s.bad == 0, what);
+    ok = s.n == FM1WIFI_STEP_MCS_GAIN - FM1WIFI_STEP_PHY_MAC_RST + 1u;
+    for (i = 0; ok && i < s.n; i++) ok = s.seq[i] == FM1WIFI_STEP_PHY_MAC_RST + i;
+    snprintf(what, sizeof what, "where: the steps PHY_MAC_RST .. MCS GAINS in order, each with writes (%u seen, last %s)", s.n,
+             s.n ? fm1wifi_step_name(s.seq[s.n - 1u]) : "-");
+    check(ok, what);
+    check(s.step_12 == FM1WIFI_STEP_RF_INIT && s.step_anl0 == FM1WIFI_STEP_RAM_TABLE && !s.anl0_other,
+          "where: the first WLA_CON12 write in RF_INIT, every WL_ANL_CON0 write in RF RAM TABLE");
+    memset(&s, 0, sizeof s);
+    check(fm1wifi_set_channel(3) == FM1WIFI_OK && fm1wifi_set_power(2) == FM1WIFI_OK && fm1wifi_adc_peak(&peak) == FM1WIFI_OK &&
+              fm1wifi_where.magic == 0 && s.bad == 0 && s.n == 3 && s.seq[0] == FM1WIFI_STEP_SET_CHANNEL &&
+              s.seq[1] == FM1WIFI_STEP_SET_POWER && s.seq[2] == FM1WIFI_STEP_ADC_PEAK,
+          "where: SET CHANNEL, SET POWER, ADC PEAK");
+    memset(&s, 0, sizeof s);
+    fm1wifi_power_down();
+    check(fm1wifi_where.magic == 0 && s.bad == 0 && s.n == 1 && s.seq[0] == FM1WIFI_STEP_POWER_DOWN, "where: POWER DOWN");
+    check(!strcmp(fm1wifi_step_name(FM1WIFI_STEP_RF_INIT), "RF_INIT") && !strcmp(fm1wifi_step_name(FM1WIFI_STEP_N), "?"),
+          "where: step names");
+    for (i = ok = 0; i < FM1WIFI_STEP_N; i++) ok |= strlen(fm1wifi_step_name(i)) > 18u;
+    check(!ok, "where: every step name at most 18 characters (the crash screen's line)");
+    sdio_model_free(m);
+    /* a wait that runs out: the call still returns with magic clear */
+    m = core(path, "hang tune\n");
+    sdio_model_raw_log(m, 0);
+    check(fm1wifi_radio_up(NULL, &r) == FM1WIFI_ETIMEOUT && fm1wifi_where.magic == 0, "where: magic clear after a TIMEOUT");
+    fm1wifi_power_down();
+    sdio_model_free(m);
+}
+
 static int diff_files(const char *want_path, const char *got_path)
 {
     wifi_fix want = { 0 }, got = { 0 };
@@ -489,9 +551,10 @@ int main(int argc, char **argv)
     test_format();
     test_radio(argv[1], argv[2]);
     test_radio_waits(argv[1]);
+    test_where(argv[1]);
     fclose(quiet);
     if (bad) return 1;
     printf("wifi_model: fm1wifi power-up, first reads, bounded waits, power-down, RAM check; the radio against JieLi's "
-           "trace, its results, its waits; model, fixtures, diff pass\n");
+           "trace, its results, its waits, where a crash would be; model, fixtures, diff pass\n");
     return 0;
 }

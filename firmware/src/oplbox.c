@@ -61,6 +61,10 @@ static inline void irq_restore(uint32_t f) { (void)f; }
 #include "macsop.h"
 #include "songs.h"
 #include "fm1wifi.h"                         /* the WiFi driver (firmware/wifi/), for the WiFi test page */
+#ifdef DINGHY_HOST
+static uint32_t host_supply;                  /* platform_supply_full: 1 called with the WiFi core down, 2 with it up */
+static void platform_supply_full(void) { host_supply = fm1wifi_is_up() ? 2u : 1u; }
+#endif
 
 static macsop_song song __attribute__((section(".pool")));    /* the song being played / edited (190 KB) */
 static macsop player;                         /* the audio ISR owns the chip and the player while playing */
@@ -1581,6 +1585,19 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
     wifi_line(9, "PLAY: PAGE 1   SAVE: LEAVE", C_MUTE);
 }
 
+/* The crash screen's note (platform.c): the WiFi step and the last register write, when the crash came inside the
+ * WiFi library (fm1wifi_where). Called from the fault handler: reads memory only. */
+static const char *app_crash_note(uint32_t i)
+{
+    static char s[2][32];
+    char *p;
+    if (fm1wifi_where.magic != FM1WIFI_WHERE_MAGIC || i > 1u) return 0;
+    if (i == 0u) { cat(cat(s[0], "WIFI AT "), fm1wifi_step_name(fm1wifi_where.step)); return s[0]; }
+    p = hexn(cat(s[1], "WR "), fm1wifi_where.addr, 8);
+    hexn(cat(p, " = "), fm1wifi_where.val, 8);
+    return s[1];
+}
+
 static void wifi_page(void)
 {
     uint32_t was_run = chip_run, was_play = playing, started = 0, page = 0, t_check = 0, rel, i, peak_got = 0;   /* bit i: peak[i] read */
@@ -1613,6 +1630,7 @@ static void wifi_page(void)
             started = 1;
             chip_off();                       /* no sound while the core comes up: */
             fm1_delay_ms(15);                 /* both output halves rendered silent, so a masked trim stays quiet */
+            platform_supply_full();           /* the rails at M-VAVE's levels before the radio's load (platform.c) */
             wifi_line(1, "WORKING (ABOUT 2 S)", C_TXT);
             fm1wifi_pattern_fill(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             fm1wifi_diag_read(&d);
@@ -1666,8 +1684,10 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
 #endif
         }
     if (row == 88u)                           /* the WiFi page: col 0 the core powered up, 1 the song's rows ticking, 2 the chip
-                                               * sounding, 3 the radio up (stage 3) */
-        return col == 0u ? (uint32_t)fm1wifi_is_up() : col == 1u ? playing : col == 2u ? chip_run : (uint32_t)fm1wifi_radio_is_up();
+                                               * sounding, 3 the radio up (stage 3), 4 the supply rails raised (1 before the
+                                               * core came up, 2 after), 5 the crash screen's note (1: it would show one) */
+        return col == 0u ? (uint32_t)fm1wifi_is_up() : col == 1u ? playing : col == 2u ? chip_run : col == 3u ? (uint32_t)fm1wifi_radio_is_up()
+             : col == 4u ? host_supply : (uint32_t)(app_crash_note(0) != 0);
     if (row == 89u)                           /* SYNC, since the settings last changed: col 0 steps, 1 those not on a row's first
                                                * sample, 2 those on a row the grid has no step on, 3 / 4 the shortest / longest
                                                * gap between two (native samples); 5 arp_bpm (0 SYNC), 6 the song's speed */
@@ -1751,6 +1771,7 @@ static void app_usb_cmd(const uint8_t *d, uint32_t n) { slot_sysex(d, n); }
 
 static void app_main(void)
 {
+    fm1wifi_where_clear();                    /* .noinit: what the last run left (fm1wifi.h) */
     /* the first two as before the arp, the first ten as before kb_oct: a sector an older OPLBOX wrote still loads (its two
      * or ten bytes; the rest at the defaults). arp_bpm 0 is SYNC: no older sector holds a 0 (they kept 30-300, the
      * defaults say 120), and an older OPLBOX reading this one takes 0 for out of range, so 120 BPM */
