@@ -48,11 +48,24 @@ build/host/slot_sysex_test
 python3 tests/slot_sysex_tool.py build/host/slot_sysex_test build/host
 # the fm1wifi library (firmware/wifi/, docs/WIFI.md "Standalone library") stands alone: compiled with only its own
 # directory and a port (no firmware/src, hal or bsp on the include path), warning-free, and none of its files
-# includes anything from outside it
-for f in firmware/wifi/*.c firmware/wifi/*.h; do
-  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v '"\(fm1wifi[a-z_]*\|wpa_crypto\|bearssl/[a-z_]*\)\.h"'; then
+# includes anything from outside it: its own headers, BearSSL's, and lwIP's (firmware/wifi/lwip/: lwip/*.h with its
+# priv/ and prot/, netif/*.h, arch/cc.h and lwipopts.h, the port's two). The vendored lwIP files are held to the
+# upstream release by their checksums instead (firmware/wifi/lwip/SHA256SUMS: lwIP 2.1.3, unchanged)
+for f in firmware/wifi/*.c firmware/wifi/*.h firmware/wifi/lwip/port/*.h firmware/wifi/lwip/port/arch/*.h; do
+  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v '"\(fm1wifi[a-z_]*\|wpa_crypto\|bearssl/[a-z_]*\|lwip/\(priv/\|prot/\)\{0,1\}[a-z0-9_]*\|netif/[a-z0-9_]*\|arch/cc\|lwipopts\)\.h"'; then
     echo "FAIL: $f includes a file from outside firmware/wifi/" >&2; exit 1; fi
 done
+python3 - <<'PY'
+import hashlib, sys
+from pathlib import Path
+d = Path("firmware/wifi/lwip")
+want = dict(reversed(l.split(None, 1)) for l in (d / "SHA256SUMS").read_text().splitlines())
+have = {str(p.relative_to(d)) for p in (d / "src").rglob("*") if p.is_file()} | {"COPYING"}
+bad = [f for f in sorted(want) if not (d / f).is_file() or hashlib.sha256((d / f).read_bytes()).hexdigest() != want[f]]
+bad += [f"{f} (not in SHA256SUMS)" for f in sorted(have - set(want))]
+if bad: sys.exit("FAIL: firmware/wifi/lwip differs from lwIP 2.1.3: " + ", ".join(bad))
+print(f"lwIP: {len(want)} files as in the 2.1.3 release")
+PY
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -c -o build/host/fm1wifi.o firmware/wifi/fm1wifi.c
 # the register header: the accessors hit their addresses, and every address matches docs/WIFI.md
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_regs tests/wifi_regs.c firmware/wifi/fm1wifi.c
@@ -130,6 +143,17 @@ echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) 
 # AES key unwrap against RFC 3394 4.1-4.6, the PMK in main-loop steps, and the refusals
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_crypto tests/wifi_crypto.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c
 build/host/wifi_crypto
+# IP over WiFi (firmware/wifi/fm1wifi_net.c on lwIP 2.1.3, docs/WIFI.md stage 7): a test that plays the AP, a DHCP
+# server and two pinging hosts as 802.11 data frames (DHCP with a silent server, ARP, ICMP echo, the drop rules,
+# EAPOL to its callback). lwIP's own files without -Werror (upstream code, a newer compiler may warn), ours with it
+mkdir -p build/host/lwip
+LWIP_INC="-Ifirmware/wifi/lwip/port -Ifirmware/wifi/lwip/src/include"
+for f in firmware/wifi/lwip/src/core/*.c firmware/wifi/lwip/src/core/ipv4/*.c firmware/wifi/lwip/src/netif/*.c; do
+  cc -std=c11 -O2 -Wall -Wextra -DFM1WIFI_NET_DEBUG $LWIP_INC -c "$f" -o "build/host/lwip/$(basename "$f" .c).o"
+done
+cc -std=c11 -O2 -Wall -Wextra -Werror -DFM1WIFI_NET_DEBUG -Ifirmware/wifi $LWIP_INC -o build/host/wifi_net \
+   tests/wifi_net.c firmware/wifi/fm1wifi_net.c build/host/lwip/*.o
+build/host/wifi_net
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c

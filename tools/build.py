@@ -210,6 +210,8 @@ def build_app():
 # ---- the WiFi library (firmware/wifi/, docs/WIFI.md): every file compiled alone with the app's flags and only its
 # own directory on the include path, so a dependency on OPLBOX or the bsp fails here, and its size is known
 # against the budget there. fm1wifi.c is linked (the WiFi test page); the rest (WPA2) not until stage 8 calls it.
+# fm1wifi_net.c (stage 7) also gets lwIP's headers and options (wifi/lwip/, still inside the library); the vendored
+# lwIP sources themselves are not compiled here (they need the C library's string.h: wifi/lwip/README.md).
 # Object sizes without --gc-sections: an upper bound.
 
 def build_wifi():
@@ -217,7 +219,8 @@ def build_wifi():
     out = OUT / "wifi"
     out.mkdir(parents=True, exist_ok=True)
     objs = [out / f"{s.parent.name}_{s.stem}.o" for s in srcs]
-    tc_all(*[("cc", *CFLAGS, "-Ifirmware/wifi", "-c", s, "-o", o) for s, o in zip(srcs, objs)])
+    lwip = ["-Ifirmware/wifi/lwip/port", "-Ifirmware/wifi/lwip/src/include"]
+    tc_all(*[("cc", *CFLAGS, "-Ifirmware/wifi", *lwip, "-c", s, "-o", o) for s, o in zip(srcs, objs)])
     code = data = 0
     for o in objs:
         for ln in tc("common/bin/objdump", "-h", o).splitlines():
@@ -330,8 +333,9 @@ def check(img, syms, dis, rt):
 #    mailbox, vectors), XIP 0x02000000-0x020FFFFF);
 #  - no inline asm, except the empty compiler barrier RING_PUBLISH() (emits no instruction);
 #  - no HAL register macro (a bsp/ or hal/ #define that is, or expands to, a volatile access).
-# The vendored BearSSL in wifi/bearssl/ skips the address-literal rule only: its constants (AES Rcon 0x02000000)
-# fall in the windows, and the other three rules still hold there. So does wifi/fm1wifi_regs.h, the WiFi register
+# The vendored BearSSL in wifi/bearssl/ and lwIP in wifi/lwip/src/ skip the address-literal rule only: their constants
+# (AES Rcon 0x02000000, lwIP's TCP MSS option 0x02040000) fall in the windows, and the other three rules still hold
+# there. So does wifi/fm1wifi_regs.h, the WiFi register
 # map: its addresses are numbers the library hands to its port (hal/fm1wifi_port_bsp.c makes the access), and
 # the other rules keep any access out of firmware/wifi/; and wifi/fm1wifi_tables.h, generated register values
 # (tools/wifi_ir.py) some of which look like addresses.
@@ -362,7 +366,7 @@ def mmio_check():
             where = f"{f.relative_to(FW)}:{no}"
             for rx, what in ((MMIO_LIT, "register/window address"), (MMIO_CAST, "volatile pointer cast"),
                              (MMIO_ASM, "inline asm")):
-                if rx is MMIO_LIT and (f.parent == FW / "wifi" / "bearssl" or
+                if rx is MMIO_LIT and (f.parent == FW / "wifi" / "bearssl" or FW / "wifi" / "lwip" / "src" in f.parents or
                                        f.name in ("fm1wifi_regs.h", "fm1wifi_tables.h")):
                     continue
                 m = rx.search(ln)
