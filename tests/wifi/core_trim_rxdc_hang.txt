@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# A WiFi core (made up, as core_model.txt) whose measurement stops answering part-way through the first RX DC gain
+# range: page 2 says TRIM FAILED and shows that range's codes so far (+96, -96), not the finished ones (+123, -77).
+
+clk 0xc000                  # CLK_CON1's WiFi bits before power-up (both set, so clearing them shows)
+reg 0x1405c 0x00001234      # WF_CON7 before power-up
+reg 0x30f04 0x00000008      # WL30 host 0x04 before power-up: bit 3 set, so wdma_init clearing it shows
+reg 0x31000 0x35920200      # MAC_CSR0: a made-up chip id and revision
+reg 0x31004 0x0000000c      # MAC_SYS_CTRL: TX and RX enabled (made up)
+bbp 0x00 0x21               # BBP register 0 (made up)
+hang measure after 2320   # part-way through the first RX DC range

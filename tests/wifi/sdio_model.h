@@ -46,6 +46,7 @@
  *   clk 0xc000                        CLK_CON1's WiFi bits before the library changes them
  *   hang tune|measure|anl             that wait never ends: the filter tune is never done, the measurement
  *                                     never ready, the RF digital block always busy
+ *   hang measure after N              the first N measurements answer, then none is ever ready
  *
  * A poll that gets the same busy answer SDIO_MODEL_POLL_MAX times in a row ends the program (exit 3, "unbounded
  * wait"): a test of a wait that lost its bound fails instead of hanging.
