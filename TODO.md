@@ -875,9 +875,25 @@ static RAM, compiled by `./build.sh` but not linked. **Untested on an FM-1**: wh
 same way (the same opcodes, credits, buffer size, events after these masks, answers inside or after the send call) is
 stage 4's question.
 
-**Next.** Stage 2 (the BLE-MIDI profile) is host only; stage 3 ports NimBLE against the fake controller. Stage 4, the first FM-1 test: xero flashes a diagnostic build and
-reads the controller's start-up numbers off the screen.
+**Stage 2 done (host only, 2026-10-26).** `firmware/ble/ble_midi.c`/`.h`: the BLE-MIDI profile, our own code from the
+specification (MMA/AMEI RP-052, BLE-MIDI 1.0, which was read; midi.org's download is members-only, so the copy read
+was the PDF in `github.com/stuffmatic/zephyr-ble-midi`). It has the service and characteristic UUIDs (checked against
+the specification's strings), the characteristic's properties, the empty first read, and the advertising data and scan
+response; an encoder that batches messages into packets of the size given, with 13-bit timestamps and their wrap,
+running status where the specification allows it and a timestamp byte where it requires one, and SysEx split over
+packets (no timestamp byte in a continuation, one before 0xF7); a decoder that rebuilds the times, drops and counts
+what the rules forbid and carries on; and the bridge to the app's input: `ble_midi_get` has `midi_get()`'s contract
+over a 64-message queue, and a whole SysEx goes to a sink. `tests/ble_midi.c` (419 checks: packets byte for byte,
+round trips of random messages and SysEx at ten packet sizes, every dropped case, the bridge, 40,000 random packets;
+also clean under ASan/UBSan) and `tests/ble_midi_mutants.py` (32 deliberate bugs, all caught) run in
+`tests/run_host.sh`. 2,064 B of code, no static RAM; compiled by `./build.sh`, not linked. The specification has no
+packets in hex, so the test's vectors are our reading of its rules; a misreading would pass every test. **Untested on
+hardware and against any real central** (a Mac, an iPhone): that is stage 5. The earlier note that Apple asks for
+11.25 ms is not in the specification, which says 15 ms or less; Apple's guidelines were not read.
+
+**Next.** Stage 3 ports NimBLE against the fake controller and puts its attribute table on the stage 2 constants.
+Stage 4, the first FM-1 test: xero flashes a diagnostic build and reads the controller's start-up numbers off the screen.
 
 **Open.** Whether OPLBOX may ship the controller binary (xero's decision). Whether both radios fit in one image. Whether
-the controller takes plain `send_packet` calls without JieLi's OS. The BLE-MIDI specification's exact UUIDs and packet
-format (not fetched). Coexistence index 8. Whether an iPhone connects without bonding.
+the controller takes plain `send_packet` calls without JieLi's OS. Whether a Mac or an iPhone accepts the stage 2
+packets and the connection interval (needs the FM-1). Coexistence index 8. Whether an iPhone connects without bonding.

@@ -236,15 +236,35 @@ handling.
 
 ### The BLE-MIDI profile
 
-Written by us from the MIDI Association and AMEI specification "MIDI over Bluetooth Low Energy" (BLE-MIDI 1.0), which
-this task did not fetch [unchecked]; the values below are from memory and from fm1-radio's working
-`ble/midi/le_midi.c` (not read; 34,827 B in fm1-base `aa2b3bc`). Check against the specification before use:
-service UUID `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`; one characteristic `7772E5DB-3868-4112-A1A9-F2669D106BF3` with
-read, write-without-response and notify; each packet starts with a header byte holding the high 6 bits of a 13-bit
-millisecond timestamp, and each message is preceded by a timestamp-low byte with the high bit set; running status
-and SysEx can span packets; advertising includes the 128-bit service UUID. Apple's Bluetooth Accessory Design
-Guidelines ask for a connection interval of 15 ms or less, starting at 11.25 ms [unchecked]. This is pure data handling and can be built
-and tested on the host with no radio.
+Written by us from "Specification for MIDI over Bluetooth Low Energy (BLE-MIDI)" 1.0, MMA/AMEI RP-052, November 1,
+2015, which stage 2 read (the section numbers in `firmware/ble/ble_midi.h` are its). midi.org gives the download only
+to members, so the copy read was the ten-page PDF in `github.com/stuffmatic/zephyr-ble-midi` (`BLE-MIDI-spec.pdf`);
+it is not copied into this repository. What the document says, and what the code does about it:
+
+- **Service and characteristic (section 3).** Service `03B80E5A-EDE8-4B33-A751-6CE34EC4C700`; one MIDI Data I/O
+  characteristic `7772E5DB-3868-4112-A1A9-F2669D106BF3` with write (write without response required), read (must
+  answer the first read with no payload, section 5) and notify; encryption is "recommended", not required, so no
+  pairing is a legal first step. The earlier text here, from memory, had these right.
+- **Connection interval (section 4): 15 ms or less.** The earlier text here said Apple asks for 15 ms or less,
+  starting at 11.25 ms; the document says only 15 ms or less (12 units of 1.25 ms), and the 11.25 ms is not in it
+  [unchecked: Apple's Accessory Design Guidelines were not read]. The device must also support MTU exchange
+  (section 6); a packet is at most the ATT MTU minus 3 bytes (20 bytes at the default MTU of 23).
+- **Packet (section 7).** A header byte `1 0 tttttt` (bit 6 reserved, 0; the top 6 bits of a 13-bit millisecond
+  timestamp), then timestamp bytes `1 ttttttt` (the low 7 bits) before every status byte, then the messages. A
+  message is full (status and data) or running status (data only, allowed after a full message of 2 bytes or more
+  that is neither System Common nor Real-Time, with the same status, in the same packet); a running-status message
+  may leave out its timestamp byte (then it takes the previous message's), except after a System Common or
+  Real-Time message; the end of a packet cancels running status; Real-Time messages are not interleaved inside other
+  messages, only inside SysEx.
+- **Timestamps (section 9).** 13 bits, 0 to 8191 ms, increasing; when a timestamp low is smaller than the one before
+  it in the packet, the receiver adds one to timestampHigh (it is not sent). The sender must keep the messages of one
+  packet within that rule; timestamps are in the sender's clock and are never in the future; relating them to the
+  receiver's clock is not in the document.
+- **SysEx (section 8).** Only SysEx spans packets. The start byte has a timestamp byte before it; a continuation
+  packet is a header and data bytes with no timestamp byte (that is how the decoder knows it is one); a Real-Time
+  message inside a SysEx has its own timestamp byte and the data resumes right after it; the last packet has a
+  timestamp byte before 0xF7. Not supported (the document says so on its preface): multiple virtual cables and clock
+  synchronisation.
 
 ## Flash and RAM cost against the 238 KB
 
@@ -360,8 +380,8 @@ packet handler `hci_host_receive(type, packet, size)`, the shape of the controll
 
 - `firmware/ble/ble_midi.c`: encode and decode BLE-MIDI packets (13-bit timestamps, running status, SysEx split
   across packets, batching), the GATT database for the service and characteristic.
-- Tests against the specification's examples (read the specification first) and a round trip with `midi_get()`'s
-  USB-MIDI events. **FM-1**: nothing.
+- Tests against the specification's rules (it has no packets in hex) and a round trip with `midi_get()`'s
+  USB-MIDI events. **FM-1**: nothing. Built: see "Stage 2 as built" below.
 
 ### Stage 3: host stack port (host only, after 1 and 2)
 
@@ -414,6 +434,59 @@ packet handler `hci_host_receive(type, packet, size)`, the shape of the controll
 Stages 1 and 2 are independent. Stage 3 needs both. The gate can be answered at any time. Stages 4 onward need the
 FM-1, in order; 6 also needs WiFi stage 4. Stages 1-3 need nothing from xero's hardware.
 
+### Stage 2 as built
+
+`firmware/ble/ble_midi.c`/`.h`, our own code from the specification above and nothing else: not from `btstack.a`, not
+from Apple's headers, not from another BLE-MIDI implementation (Espressif's and Zephyr's pages were read only to find
+the specification's copy). It includes no C library header, like `hci.c`.
+
+- **The GATT database.** The two UUIDs as text and as the 16 bytes ATT carries (least significant first), the
+  characteristic's properties (`0x16`: read, write without response, notify), the connection interval limit, the empty
+  first read, the advertising data (Flags, then the 128-bit service UUID, 21 bytes) and the scan response (the device
+  name, shortened to 29 characters when longer). It is data and builders, not an ATT server: stage 3 puts the NimBLE
+  host's attribute table on top of these constants.
+- **The encoder** (`ble_midi_enc`, one packet buffer the caller owns). `ble_midi_enc_msg(ts, status, d1, d2)` batches
+  messages into one packet while they fit the size given (ATT MTU minus 3, at least 5) and while the receiver could
+  rebuild each 13-bit time: a time that would need a second wrap, or an earlier one, starts a new packet. It leaves
+  the status out for running status and the timestamp byte out when the time is the previous message's, and puts both
+  back where the specification requires (after System Common and Real-Time, after a SysEx). `ble_midi_enc_sysex`
+  takes a whole 0xF0 ... 0xF7 message and splits it, filling each packet, with no timestamp byte in the
+  continuations and one before 0xF7. `ble_midi_enc_flush` hands the packet to the send function (a notification);
+  the caller flushes once per connection interval. A send that fails drops that packet and counts it. Real-Time
+  messages cannot be put inside a SysEx being encoded (the SysEx is one call): the decoder accepts them there, the
+  encoder never makes them.
+- **The decoder** (`ble_midi_dec`, no buffers: it hands out what it finds). Per packet it rebuilds each message's
+  13-bit time and gives messages (status and data bytes) and SysEx chunks (first and last flags) to two callbacks. It
+  drops and counts what the rules forbid and carries on with the rest of the packet: a bad header, data bytes with no
+  status, running status after the end of a packet or after a Real-Time byte with no timestamp, a message cut by the
+  end of a packet or by the next timestamp, a status byte inside a SysEx (which ends it unfinished), a stray 0xF7, and
+  the undefined statuses 0xF4 and 0xF5. A SysEx open at the end of a packet stays open for the next one.
+- **The bridge to the app's MIDI input** (`ble_midi_in`). `ble_midi_in_write` is the GATT write handler;
+  `ble_midi_get` has `midi_get()`'s contract (`platform.c`: 1 and `(status, data 1, data 2)`, the data bytes a message
+  lacks read 0) over a 64-message queue, so the app's input loop reads Bluetooth and USB the same way once stage 5 calls
+  both. A full queue drops the newest message and counts it. SysEx does not go through `midi_get()` on USB either (the
+  update and song-slot code take a whole frame): a complete BLE SysEx goes to a sink function as one 0xF0 ... 0xF7
+  message, or is dropped and counted when it is longer than the buffer the caller gave. Timestamps are not kept; a
+  message is acted on when it arrives.
+- **Tests**, `tests/ble_midi.c`, 419 checks: the UUID bytes checked against the specification's strings by a second
+  conversion; packets byte for byte, worked out by hand from the rules because the document has field tables and
+  figures but no packets in hex (the one-message, two-message and running-status figures on its page 3, the wrap, 8191
+  to 0, running status around Real-Time bytes, SysEx over two packets and ending exactly at the end of a packet);
+  round trips of 250 random messages (channel, System Common, Real-Time, SysEx up to 89 bytes, mostly close in time,
+  sometimes 400 ms apart, from random start times) at ten packet sizes from 5 to 244 bytes and three seeds, each
+  message back with its bytes and its 13-bit time; every case the decoder drops; the bridge (the queue's wrap and
+  overflow, a SysEx across packets with Real-Time inside it, too long, never ended, a reset, no sink, no buffer, the
+  encoder into the bridge); and 40,000 random packets (also run once under AddressSanitizer and UBSan: clean).
+  `tests/ble_midi_mutants.py`: 32 deliberate bugs in `ble_midi.c`, all caught.
+- **Size**: 2,064 B of code and read-only data, no static RAM (the encoder, decoder and queue are the caller's: the
+  queue 64 x 3 B plus the SysEx buffer). Compiled by `./build.sh` with the app's flags, not linked.
+- **Untested on hardware**, and untested against any real central: a Mac or an iPhone has never read these packets.
+  The vectors come from our reading of the specification, so a misreading would pass every test here; the first
+  check is stage 5's.
+- Not in stage 2: the ATT server and GATT attribute table (stage 3), pairing, the connection interval request
+  (L2CAP, stage 3), MTU exchange, timestamps smoothing on receive, and a bridge from the app's `midi_send()` to the
+  encoder (one call with `fm1_ms` as the time, wired in stage 5).
+
 ## Open questions
 
 - Whether OPLBOX may ship the controller binary (the gate above); and who to ask. Who would answer for JieLi is
@@ -423,7 +496,9 @@ FM-1, in order; 6 also needs WiFi stage 4. Stages 1-3 need nothing from xero's h
   same rule as WIFI.md's tables applies (facts only, no translated code).
 - How much of the 124 KB belongs to the controller and how much to JieLi's host (a link map would say).
 - Whether an iPhone connects without bonding (fm1-radio found a Mac does).
-- The BLE-MIDI specification's exact UUIDs and packet format: read the document before stage 2.
+- Whether an iPhone or a Mac wants more than the specification says: whether they need the connection interval at
+  the 11.25 ms Apple's guidelines may ask for (not read), whether they read the characteristic before they write,
+  and how they react to a notification with a timestamp in the past (stage 5).
 - Whether the licence finding about `crypto_toolbox_Osize.a` (GPL-2.0-or-later headers beside the archive) should be
   passed on to fm1-radio's and fm1-base's authors, as WIFI.md asks of the WiFi finding.
 
