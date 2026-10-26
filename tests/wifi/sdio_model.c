@@ -576,8 +576,12 @@ static void measure(const sdio_model *m, int32_t *i, int32_t *q)   /* the measur
     }
 }
 
+/* The ADC peak, a made-up level from the VGA fields and the channel, but only with the PHY in its loopback (BBP 25 =
+ * 0x18: the trim, where adc_pp_tune reads it); in the receive state 0, as the FM-1 read on every channel on its first
+ * clean run (docs/WIFI_STAGE3.md "ADC peak 0 on every channel"). Which of the two the hardware does is not known. */
 static uint8_t adc_peak(const sdio_model *m)
 {
+    if (m->bbp[25] != 0x18u) return 0;
     uint32_t w4 = wla(m, 4), w5 = wla(m, 5), ch = m->wl[(FM1_WF_CON(7) - FM1_JL_WL_BASE) / 4u] & 0xFFu;
     uint32_t g = (w5 >> 15 & 7u) + 8u * (w5 >> 5 & 7u) + 2u * (w5 >> 12 & 7u) + (w4 >> 22 & 7u) + 3u * (w4 >> 25 & 3u);
     uint32_t p = 6u + 3u * g + (ch * 7u) % 11u;

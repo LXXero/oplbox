@@ -399,15 +399,32 @@ static void test_radio(const char *dir, const char *outdir)
     check(fm1wifi_set_power(3) == FM1WIFI_OK && (sdio_model_peek(m, FM1_WF_CON(7)) >> 16 & 0xFFu) == 3u, "TX power 3");
     check(fm1wifi_set_power(7) == FM1WIFI_ERANGE, "TX power 7: RANGE");
     sdio_model_wlog_clear(m);
-    check(fm1wifi_adc_peak(&peak) == FM1WIFI_OK && peak > 0, "ADC peak read");
+    check(fm1wifi_adc_peak(&peak) == FM1WIFI_OK && peak == 0, "ADC peak read: 0 outside the PHY's loopback (the model)");
     {
         const wifi_fix *w = sdio_model_wlog(m);
         check(w->n == 3 && w->r[0].kind == WIFI_REC_WIN && w->r[0].addr == 0x317 && w->r[0].val == 0x82 &&
                   w->r[1].kind == WIFI_REC_DELAY && w->r[1].val == 1000 && w->r[2].val == 2,
               "... as RX front end 23 = 0x82, 1 ms, the peak, 23 = 2");
     }
+    check(r.vga[0] < 36u && r.vga[1] < 36u && r.vga[2] < 36u && r.vga_peak[0] > 47u && r.vga_peak[1] > 47u &&
+              r.vga_peak[2] > 47u,
+          "the trim's three VGA searches end before their limit, on a peak above 47 (in loopback)");
+    {
+        fm1wifi_rxprobe rx;
+        uint32_t w4 = sdio_model_peek(m, FM1_WLA_CON(4)), w5 = sdio_model_peek(m, FM1_WLA_CON(5));
+        check(fm1wifi_rx_probe(&rx) == FM1WIFI_OK, "RX probe: OK");
+        check(rx.bbp25 == 0 && rx.rxfe0 == 0x3A && rx.rxfe19 == 0 && rx.rxfe20 == 0 && rx.rxfe23 == 0x82,
+              "RX probe: the receive state PHY_INIT_B leaves (BBP 25 0, RX front end 0 = 3A, 19 = 0, 20 = 0), 23 read back");
+        check(rx.peak == 0 && rx.peak_vga41 == 0 && rx.idle80 == 0, "RX probe: the peak 0 at VGA 0 and 41 (the model)");
+        check(sdio_model_peek(m, FM1_WLA_CON(4)) == w4 && sdio_model_peek(m, FM1_WLA_CON(5)) == w5,
+              "RX probe: the VGA gain back at 0 (WLA_CON4, WLA_CON5 as before)");
+    }
     fm1wifi_power_down();
     check(!fm1wifi_is_up() && !fm1wifi_radio_is_up(), "powered down");
+    {
+        fm1wifi_rxprobe rx;
+        check(fm1wifi_rx_probe(&rx) == FM1WIFI_ESTATE, "RX probe after power-down: OFF");
+    }
     for (i = 0; i < N_CPU; i++) {
         char what[80];
         snprintf(what, sizeof what, "power-down restores %05x after the radio", (unsigned)cpu_reg(i));
@@ -437,8 +454,8 @@ static void test_radio_waits(const char *dir)
 {
     static const struct { const char *script, *stage, *what; unsigned polls; uint32_t got; } T[] = {
         { "hang tune\n", "TRIM", "the filter tune never done", 1000, 0 },
-        { "hang measure\n", "TRIM", "the measurement never ready", 1000, 7 },                /* the filter codes only */
-        { "hang anl\n", "TABLE", "the RF digital block always busy", 1001, 0xF7FFF },        /* + the read that saves it */
+        { "hang measure\n", "TRIM", "the measurement never ready", 1000, 0x100007 },         /* the filter codes, the first VGA search */
+        { "hang anl\n", "TABLE", "the RF digital block always busy", 1001, 0x7F7FFF },       /* + the read that saves it */
         { "stuck 0x3101c 0x00020000\n", "PHY", "BBP BUSY stuck", 1000, 0 },
     };
     char path[512];
@@ -510,6 +527,13 @@ static void test_where(const char *dir)
               fm1wifi_where.magic == 0 && s.bad == 0 && s.n == 3 && s.seq[0] == FM1WIFI_STEP_SET_CHANNEL &&
               s.seq[1] == FM1WIFI_STEP_SET_POWER && s.seq[2] == FM1WIFI_STEP_ADC_PEAK,
           "where: SET CHANNEL, SET POWER, ADC PEAK");
+    memset(&s, 0, sizeof s);
+    {
+        fm1wifi_rxprobe rx;
+        check(fm1wifi_rx_probe(&rx) == FM1WIFI_OK && fm1wifi_where.magic == 0 && s.bad == 0 && s.n == 1 &&
+                  s.seq[0] == FM1WIFI_STEP_RX_PROBE,
+              "where: the RX probe's writes (the VGA gain) as RX PROBE");
+    }
     memset(&s, 0, sizeof s);
     fm1wifi_power_down();
     check(fm1wifi_where.magic == 0 && s.bad == 0 && s.n == 1 && s.seq[0] == FM1WIFI_STEP_POWER_DOWN, "where: POWER DOWN");

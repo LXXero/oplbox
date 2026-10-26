@@ -20,9 +20,10 @@
 # the rails raised first (platform_supply_full, before the core came up); the bring-up over, no WiFi note for a crash
 800 is 0 88 4 1
 800 is 0 88 5 0
-# PLAY again: page 2 (the trim and the channels), and again: page 1
+# PLAY again: page 2 (the trim and the channels), again: page 3 (the VGA searches, the receive state), again: page 1
 1000 btn 12
 1200 btn 12
+1400 btn 12
 # SAVE leaves: the core down again, the song where it was
 1600 btn 9
 1800 is 0 88 0 0

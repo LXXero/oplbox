@@ -99,7 +99,8 @@ typedef struct {
     int8_t tx_phase;          /* TX trim: the phase, on Q when tx_gain >= 0, else on I */
     uint16_t rx_dc[4][2];     /* RX DC trim: the analog DC codes I, Q per gain range (0x200 | value: positive) */
     int8_t rx_gain, rx_phase; /* RX IQ trim: as tx_gain, tx_phase */
-    uint8_t vga[3];           /* the VGA gain each trim's ADC search settled on (TX LO, TX DC, RX IQ) */
+    uint8_t vga[3];           /* the VGA gain each trim's ADC search settled on (TX LO, TX DC, RX IQ); 36 = its limit */
+    uint8_t vga_peak[3];      /* the ADC peak each search read last (at that gain): above 47 ends a search early */
     uint8_t channel, power;
     uint32_t got;             /* FM1WIFI_GOT_*: the values above that were read; one whose bit is clear was never reached */
 } fm1wifi_radio;
@@ -114,7 +115,8 @@ typedef struct {
 #define FM1WIFI_GOT_RX_GAIN   (1u << 13)
 #define FM1WIFI_GOT_RX_PHASE  (1u << 14)
 #define FM1WIFI_GOT_CHANNEL   (1u << 15)           /* channel and power set */
-#define FM1WIFI_GOT_ALL       0xFFFFFu             /* every bit above */
+#define FM1WIFI_GOT_VGA(k)    (1u << (20u + (k)))  /* vga[k] and vga_peak[k], k 0-2 */
+#define FM1WIFI_GOT_ALL       0x7FFFFFu            /* every bit above */
 
 /* Power up (stage 2, if not up yet), then the radio: the MAC/PHY reset and tables, the PLL bank scan, a fresh trim
  * (TX LO and IQ, RX DC, RX IQ), the PA configuration, the RF RAM table, channel 6 and TX power 6, as JieLi's
@@ -127,12 +129,26 @@ int fm1wifi_radio_is_up(void);
  * fm1wifi_radio_up, FM1WIFI_ERANGE outside those. */
 int fm1wifi_set_channel(unsigned ch);
 int fm1wifi_set_power(unsigned level);
-/* The receiver's ADC peak (0-255, 1 ms): what rd_adc_peak reads, a relative level, not dBm. */
+/* The receiver's ADC peak (0-255, 1 ms): what rd_adc_peak reads, a relative level, not dBm. JieLi reads it only inside
+ * the trim (adc_pp_tune, from txiq_tune_soft and rxiq_tune_soft), with the PHY in loopback and the RX front end set
+ * for the trim; read after fm1wifi_radio_up it is outside any state JieLi reads it in (docs/WIFI_STAGE3.md "ADC
+ * peak 0 on every channel"). */
 int fm1wifi_adc_peak(uint8_t *peak);
+/* A diagnostic of the receive state after fm1wifi_radio_up, on the current channel: the registers the trim sets
+ * differently from the receive state, and the ADC peak at VGA gain 0 (where the bring-up leaves it) and at 41 (the
+ * table's highest). Leaves the VGA gain at 0 again. FM1WIFI_ESTATE before fm1wifi_radio_up. */
+typedef struct {
+    uint8_t peak, peak_vga41; /* the ADC peak (second of two readings, as adc_pp_tune counts) at VGA gain 0 and 41 */
+    uint8_t idle80;           /* RX front end 0x80 before the peak's start (RX front end 23 = 2) */
+    uint8_t rxfe23;           /* RX front end 23 read back with the peak started (0x82 written) */
+    uint8_t rxfe0, rxfe19, rxfe20;   /* the RX front end set-up the trim changes (trim: 62, 30, 52 or 4) */
+    uint8_t bbp25;            /* BBP 25: 0x18 is the PHY's loopback (the trim), 0 its receive state */
+} fm1wifi_rxprobe;
+int fm1wifi_rx_probe(fm1wifi_rxprobe *p);
 
 /* ---- where a crash happened: the step the library is in and its last register write
  *
- * fm1wifi_power_up, _power_down, _diag_read, _radio_up, _set_channel, _set_power and _adc_peak set fm1wifi_where
+ * fm1wifi_power_up, _power_down, _diag_read, _radio_up, _set_channel, _set_power, _adc_peak and _rx_probe set fm1wifi_where
  * before each of their steps (step, then magic) and clear magic when they return; every CPU-side register write
  * the library makes (the radio's analog controls, JL_WL, the core's window) records its address and value just
  * before it is made. So a crash handler that finds magic ==
@@ -162,6 +178,6 @@ enum {
     FM1WIFI_STEP_RF_DONE, FM1WIFI_STEP_PA, FM1WIFI_STEP_RF_GAIN, FM1WIFI_STEP_VGA0, FM1WIFI_STEP_PHY_INIT_A2,
     FM1WIFI_STEP_AGC2, FM1WIFI_STEP_PHY_INIT_B2, FM1WIFI_STEP_CFR1, FM1WIFI_STEP_RAPP, FM1WIFI_STEP_RAM_TABLE,
     FM1WIFI_STEP_BSB_AUTO, FM1WIFI_STEP_CHANNEL6, FM1WIFI_STEP_MCS_GAIN, FM1WIFI_STEP_SET_CHANNEL,
-    FM1WIFI_STEP_SET_POWER, FM1WIFI_STEP_ADC_PEAK, FM1WIFI_STEP_N
+    FM1WIFI_STEP_SET_POWER, FM1WIFI_STEP_ADC_PEAK, FM1WIFI_STEP_RX_PROBE, FM1WIFI_STEP_N
 };
 const char *fm1wifi_step_name(uint32_t step);   /* "RF_INIT", "TX LO I", ...: at most 18 characters; "?" past the list */

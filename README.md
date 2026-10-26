@@ -54,7 +54,7 @@ right; then EDIT, cursor to the row it should start on, and **ARP** writes what 
 **WiFi test page** (stages 2 and 3 of docs/WIFI.md; for xero to read back off a real FM-1). Outside EDIT press
 **SAVE**: the page opens and says `PLAY: POWER UP, TRIM, READ`. Nothing touches the radio yet. Press **PLAY**: the
 sound stops, the WiFi core is powered up and read (stage 2), then the radio is brought up and calibrated (stage 3:
-the PLL, a fresh trim, channel 6), and the receiver's level is read on channels 1-13. It takes a second or two
+the PLL, a fresh trim, channel 6), the receiver's level is read on channels 1-13, and the receive state on channel 6. It takes a second or two
 (`WORKING`). Page 1:
 
 ```
@@ -68,7 +68,7 @@ RAM CHECK: n CHANGED          bytes of free RAM the hardware wrote (0 is the goo
 FIRST AT xxxxxxxx             the first changed byte's address (only when n is not 0)
 ```
 
-Press **PLAY** again for page 2 (and again to go back):
+Press **PLAY** again for page 2, again for page 3, and again to go back to page 1. Page 2:
 
 ```
 TRIM  CH  6  PWR 6            the channel and TX power the radio was left on
@@ -82,7 +82,25 @@ ADC  6-10 ...
 ADC 11-13 ...
 ```
 
-Read back everything on both pages. What would look wrong: `RESULT` other than OK (the word after `AT` says which
+Page 3, why the ADC peaks read what they do (the first clean run read 0 on all 13 channels; docs/WIFI_STAGE3.md
+"ADC peak 0 on every channel"):
+
+```
+RX CHECK  CH  6        3/3
+VGA GAIN   nn  nn  nn         the VGA gain each trim search settled on (TX LO, TX DC, RX IQ); 36 = it ran to its limit
+VGA PEAK  nnn nnn nnn         the ADC peak each search read last; above 47 ends a search early
+PEAK AT VGA  0  nnn           the ADC peak on channel 6 at VGA gain 0 (where the bring-up leaves it)
+PEAK AT VGA 41  nnn           the same at the highest VGA gain (then back to 0)
+RXFE 80 xx  23 xx             RX front end 0x80 before the peak starts; 23 read back once started (82 expected)
+RXFE 0  xx  19 xx  20 xx      the RX front end set-up the trim changes (3A 00 00 after the bring-up; trim: 3E 1E 34)
+BBP 25  xx                    00 receive, 18 the PHY's loopback (the trim)
+```
+
+Reading page 3: VGA GAIN below 36 with VGA PEAK above 47 means the peak reads fine inside the trim, so an all-zero
+scan is the receive state; 36 36 36 with peaks of 0 means the peak reads 0 everywhere. A nonzero PEAK AT VGA 41 means
+the receive state reads too, only below 1 at VGA gain 0. A `--` means the step was never reached.
+
+Read back everything on all three pages. What would look wrong: `RESULT` other than OK (the word after `AT` says which
 step stopped: PHY, PLL, TRIM, RF, TABLE), `BBP 0` still `00`, a PLL bank of 0 or 127, a middle bank of 15 (the scan
 found no edge), trim values sitting at the end of their range (TX LO 0 or 127, TX DC ±127, an RX DC near ±510) or a
 filter code of 0 or 255: each means a search ran to its limit. The ADC peaks are a relative level; the same numbers

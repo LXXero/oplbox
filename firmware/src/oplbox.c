@@ -1438,8 +1438,9 @@ static void draw_arp(void)
  * output buffers hold silence), fills the free pool (past the last .pool buffer, up to the stacks) with a pattern,
  * powers the WiFi core up and reads MAC_CSR0, MAC_SYS_CTRL and BBP 0 (stage 2), then brings the radio up (stage 3:
  * MAC/PHY reset, PLL bank scan, the trim from RAM with interrupts masked, RF RAM table, channel 6), reads the
- * receiver's ADC peak on channels 1-13 and goes back to 6. Page 1 shows the bring-up, page 2 the trim and the
- * channels; PLAY again switches. The pool is checked again every half second while the page is open, for RAM the
+ * receiver's ADC peak on channels 1-13, goes back to 6 and reads the receive state there (fm1wifi_rx_probe). Page 1
+ * shows the bring-up, page 2 the trim and the channels, page 3 the VGA searches and the receive state; PLAY again
+ * goes to the next page. The pool is checked again every half second while the page is open, for RAM the
  * hardware writes. SAVE leaves: the core powered down (its registers back as they were), the sound back. The page
  * runs its own loop, so the rest of the app is held meanwhile; platform_poll() keeps USB (the updater) alive. */
 #ifdef DINGHY_HOST
@@ -1514,14 +1515,14 @@ static uint32_t wifi_reached(const fm1wifi_radio *r)   /* 0 not started .. 6 don
 }
 
 static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio *r, const uint8_t *peak, uint32_t peak_got,
-                      fm1wifi_ramcheck rc)
+                      const fm1wifi_rxprobe *rx, int rx_ok, fm1wifi_ramcheck rc)
 {
     char s[40], *p;
     uint32_t i, k;
     lcd_fill(0, 0, 240, 240, C_BLACK);
     if (page == 0u) {
         int ok = d->err == FM1WIFI_OK && r->err == FM1WIFI_OK;
-        wifi_line(0, "WIFI TEST (STAGE 3)    1/2", C_ACC);
+        wifi_line(0, "WIFI TEST (STAGE 3)    1/3", C_ACC);
         p = cat(s, "RESULT: ");
         if (d->err != FM1WIFI_OK) cat(p, fm1wifi_strerror(d->err));
         else if (r->err != FM1WIFI_OK) { p = cat(p, fm1wifi_strerror(r->err)); p = cat(p, " AT "); cat(p, r->stage); }
@@ -1548,13 +1549,38 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         return;
     }
     if (wifi_reached(r) < 3u) {                       /* stopped before the trim began: nothing to show */
-        wifi_line(0, "TRIM                   2/2", C_ACC);
+        wifi_line(0, page == 1u ? "TRIM                   2/3" : "RX CHECK               3/3", C_ACC);
         wifi_line(1, "NOT REACHED", C_TXT);
+        wifi_line(9, page == 1u ? "PLAY: PAGE 3   SAVE: LEAVE" : "PLAY: PAGE 1   SAVE: LEAVE", C_MUTE);
+        return;
+    }
+    if (page == 2u) {                                 /* the VGA searches, and the receive state on channel 6 */
+        static const char *const RXL[3] = { "RXFE 0  ", "  19 ", "  20 " };
+        const uint8_t rxv[3] = { rx->rxfe0, rx->rxfe19, rx->rxfe20 };
+        wifi_line(0, "RX CHECK  CH  6        3/3", C_ACC);
+        p = cat(s, "VGA GAIN ");
+        for (i = 0; i < 3u; i++) p = wifi_val(p, r->got, FM1WIFI_GOT_VGA(i), r->vga[i], 4, 0);
+        wifi_line(1, s, C_ACC);
+        p = cat(s, "VGA PEAK ");
+        for (i = 0; i < 3u; i++) p = wifi_val(p, r->got, FM1WIFI_GOT_VGA(i), r->vga_peak[i], 4, 0);
+        wifi_line(2, s, C_ACC);
+        p = cat(s, "PEAK AT VGA  0 "); wifi_val(p, rx_ok, 1u, rx->peak, 4, 0);
+        wifi_line(3, s, C_ACC);
+        p = cat(s, "PEAK AT VGA 41 "); wifi_val(p, rx_ok, 1u, rx->peak_vga41, 4, 0);
+        wifi_line(4, s, C_ACC);
+        p = cat(s, "RXFE 80 ");
+        if (rx_ok) { p = hexn(p, rx->idle80, 2); p = cat(p, "  23 "); hexn(p, rx->rxfe23, 2); } else cat(p, "--");
+        wifi_line(5, s, C_ACC);
+        p = s;
+        for (i = 0; i < 3u; i++) { p = cat(p, RXL[i]); p = rx_ok ? hexn(p, rxv[i], 2) : cat(p, "--"); }
+        wifi_line(6, s, C_ACC);
+        p = cat(s, "BBP 25  "); if (rx_ok) hexn(p, rx->bbp25, 2); else cat(p, "--");
+        wifi_line(7, s, C_ACC);
         wifi_line(9, "PLAY: PAGE 1   SAVE: LEAVE", C_MUTE);
         return;
     }
     p = cat(s, wifi_reached(r) == 3u ? "TRIM FAILED  CH " : "TRIM  CH "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->channel, 2, 0);
-    p = cat(p, "  PWR "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->power, 1, 0); cat(p, "    2/2");
+    p = cat(p, "  PWR "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->power, 1, 0); cat(p, "    2/3");
     wifi_line(0, s, C_ACC);
     p = cat(s, "TX LO "); p = wifi_val(p, r->got, FM1WIFI_GOT_TXLO_I, r->txlo[0], 3, 0);
     p = wifi_val(p, r->got, FM1WIFI_GOT_TXLO_Q, r->txlo[1], 4, 0);
@@ -1582,7 +1608,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         *p = 0;
         wifi_line(6u + k, s, C_ACC);
     }
-    wifi_line(9, "PLAY: PAGE 1   SAVE: LEAVE", C_MUTE);
+    wifi_line(9, "PLAY: PAGE 3   SAVE: LEAVE", C_MUTE);
 }
 
 /* The crash screen's note (platform.c): the WiFi step and the last register write, when the crash came inside the
@@ -1604,6 +1630,8 @@ static void wifi_page(void)
     fm1wifi_ramcheck rc = { 0, 0 };
     fm1wifi_diag d;
     fm1wifi_radio r;
+    fm1wifi_rxprobe rx = { 0 };
+    int rx_ok = 0;
     uint8_t peak[13] = { 0 };
 #ifdef DINGHY_HOST
     static sdio_model *core;
@@ -1625,7 +1653,7 @@ static void wifi_page(void)
         platform_poll();
         b = fm1_input_edges(&rel);
         if (b & (1u << BTN_SAVE)) break;
-        if ((b & (1u << BTN_PLAY)) && started) { page ^= 1u; wifi_show(page, &d, &r, peak, peak_got, rc); }
+        if ((b & (1u << BTN_PLAY)) && started) { page = (page + 1u) % 3u; wifi_show(page, &d, &r, peak, peak_got, &rx, rx_ok, rc); }
         if ((b & (1u << BTN_PLAY)) && !started) {
             started = 1;
             chip_off();                       /* no sound while the core comes up: */
@@ -1640,10 +1668,11 @@ static void wifi_page(void)
                 for (i = 0; i < 13u; i++)     /* the receiver's level per channel, then back to 6 */
                     if (fm1wifi_set_channel(i + 1u) == FM1WIFI_OK && fm1wifi_adc_peak(&peak[i]) == FM1WIFI_OK) peak_got |= 1u << i;
                 fm1wifi_set_channel(6);
+                rx_ok = fm1wifi_rx_probe(&rx) == FM1WIFI_OK;   /* why the peaks read what they do (page 3) */
             }
             rc = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             t_check = fm1_ms;
-            wifi_show(page, &d, &r, peak, peak_got, rc);
+            wifi_show(page, &d, &r, peak, peak_got, &rx, rx_ok, rc);
         }
         if (started && fm1_ms - t_check >= 500u) {   /* the pool again: a later write by the hardware shows too */
             fm1wifi_ramcheck now = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
