@@ -1,5 +1,14 @@
 # Unreleased
 
+- Bluetooth stage 2, host only (docs/BLUETOOTH.md): `firmware/ble/ble_midi.c`, the BLE-MIDI profile, our own code
+  from the MIDI Association's BLE-MIDI 1.0 specification (read this time). The service and characteristic UUIDs, the
+  advertising data, an encoder (13-bit timestamps and their wrap, running status, SysEx split over packets) and a
+  decoder, and a bridge that gives the app's input loop `midi_get()`'s `(status, data 1, data 2)` messages and a
+  whole SysEx message to a sink. `tests/ble_midi.c` (419 checks, round trips of random messages at ten packet sizes,
+  random garbage) catches 32 deliberate bugs. 2 KB of code, no static RAM; compiled by `./build.sh`, not linked,
+  untested against a Mac or an iPhone. Corrects an earlier note: the specification asks for a connection interval of
+  15 ms or less; the 11.25 ms was Apple's, from memory, and is unread.
+
 - Bluetooth stage 1, host only (docs/BLUETOOTH.md): `firmware/ble/hci.c`, the host side of HCI for a BLE peripheral,
   our own code from the Bluetooth Core Specification. It packs and decodes command, event and ACL packets, reads H4
   framing from a byte stream, starts a controller (Reset, both event masks, the buffer size, the address, the
