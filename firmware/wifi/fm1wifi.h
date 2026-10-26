@@ -3,8 +3,10 @@
  * OPLBOX code, headers or globals, only this directory and the board's port (fm1wifi_port.h). README.md here
  * has the API and how another firmware links it; docs/WIFI.md the hardware and the plan.
  *
- * Stage 2 (this): power the core up and down, read and write its MAC registers and its baseband (BBP)
- * registers, a diagnostic snapshot, and a RAM pattern check. Not run on an FM-1 yet.
+ * Stage 2: power the core up and down, read and write its MAC registers and its baseband (BBP) registers, a
+ * diagnostic snapshot, and a RAM pattern check (run on xero's FM-1 on 2026-10-26: MAC_CSR0 00300100).
+ * Stage 3: the radio's power-up and calibration (docs/WIFI_STAGE3.md), a channel, the TX power, the receiver's
+ * ADC peak. Not run on an FM-1 yet.
  */
 #pragma once
 #include <stdint.h>
@@ -71,3 +73,46 @@ typedef struct {
 } fm1wifi_ramcheck;
 void fm1wifi_pattern_fill(void *p, uint32_t n);
 fm1wifi_ramcheck fm1wifi_pattern_check(const void *p, uint32_t n);
+
+/* ---- stage 3: the radio (docs/WIFI_STAGE3.md) */
+
+/* The calibration the radio starts from. On a stock FM-1 these would sit in M-VAVE's settings store (docs/WIFI.md
+ * "Where the tuning values come from"); fm1wifi_cal_default is the SDK board's / fm1-base's values. */
+typedef struct {
+    uint8_t xosc[2];          /* the crystal's load caps (WLA_CON12): 11, 11 */
+    uint8_t pa[7];            /* PA trim: 1, 7, 4, 7, 11, 1, 7 */
+    uint8_t mcs_gain[20];     /* per-MCS digital gains, 0 = the built-in one; the SDK's cfg_tool.bin values */
+} fm1wifi_cal;
+extern const fm1wifi_cal fm1wifi_cal_default;
+
+/* What the bring-up found, for the diagnostic page. */
+typedef struct {
+    int err;                  /* FM1WIFI_OK or the first error (TIMEOUT: a bounded wait ran out) */
+    const char *stage;        /* where it stopped: "PHY", "PLL", "TRIM", "RF", "TABLE", or "DONE" */
+    uint32_t mac_sys_ctrl;    /* MAC_SYS_CTRL once the MAC and BBP resets are released (0000000C expected) */
+    uint8_t bbp0;             /* BBP register 0 then */
+    uint8_t pll_mid, pll_bank;   /* the PLL scan's middle bank, and the bank it set for the reference divider */
+    uint8_t bw[3];            /* the RX filter tune's codes for 6, 10 and 20 MHz */
+    uint8_t txlo[2];          /* TX trim: LO leakage I, Q (0-127) */
+    int8_t tx_dc[2];          /* TX trim: DC I, Q */
+    int8_t tx_gain;           /* TX trim: gain imbalance (< 0: gain I lowered, else gain Q) */
+    int8_t tx_phase;          /* TX trim: the phase, on Q when tx_gain >= 0, else on I */
+    uint16_t rx_dc[4][2];     /* RX DC trim: the analog DC codes I, Q per gain range (0x200 | value: positive) */
+    int8_t rx_gain, rx_phase; /* RX IQ trim: as tx_gain, tx_phase */
+    uint8_t vga[3];           /* the VGA gain each trim's ADC search settled on (TX LO, TX DC, RX IQ) */
+    uint8_t channel, power;
+} fm1wifi_radio;
+
+/* Power up (stage 2, if not up yet), then the radio: the MAC/PHY reset and tables, the PLL bank scan, a fresh trim
+ * (TX LO and IQ, RX DC, RX IQ), the PA configuration, the RF RAM table, channel 6 and TX power 6, as JieLi's
+ * wfhw_init does them. About a second; the trim part (about half of it) runs from RAM with the port told
+ * (fm1wifi_port_trim) and must have the sound off: the caller stops it first. Every wait is bounded:
+ * FM1WIFI_ETIMEOUT, never a hang. r gets what it found, whatever the result. */
+int fm1wifi_radio_up(const fm1wifi_cal *cal, fm1wifi_radio *r);
+int fm1wifi_radio_is_up(void);
+/* Channel 1-13 (WF_CON7 bits 7-0 = channel + 101), TX power 0-6 (bits 23-16). FM1WIFI_ESTATE before
+ * fm1wifi_radio_up, FM1WIFI_ERANGE outside those. */
+int fm1wifi_set_channel(unsigned ch);
+int fm1wifi_set_power(unsigned level);
+/* The receiver's ADC peak (0-255, 1 ms): what rd_adc_peak reads, a relative level, not dBm. */
+int fm1wifi_adc_peak(uint8_t *peak);

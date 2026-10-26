@@ -9,7 +9,7 @@ driver has to replace, then splits the work into stages small enough for one tas
 Read on 2026-10-24. Corrected on 2026-10-25 after docs/WIFI_REVIEW.md: the WEXT count, the `wl_rf_common.a`
 provenance (new section "What `wl_rf_common.a` carries"), the source of the MAC defaults, a symbol total and the
 GPL source wording. "[unchecked]" marks what nobody has verified yet. This is evidence, not a legal opinion.
-Nothing below was run on an FM-1.
+Stage 2 ran on xero's FM-1 on 2026-10-26 (its values are in "Stage 2" below); nothing else here has run on one.
 
 | Source | Commit read |
 | --- | --- |
@@ -211,6 +211,27 @@ What stage 1's `tools/wifi_ir.py` may extract:
 
 Verdict for the plan: stages 1 and 3 may go ahead on `wl_rf_common.a` as a source of facts within the limits above.
 Neither needs the archive's code.
+
+**Built (stage 3, 2026-10-26).** `tools/wifi_ir.py` turns the eight clean members back into IR (the JieLi
+toolchain's clang 4.0.1, or a system `llvm-dis`), checks the archive's SHA-256, and runs the IR in a small
+interpreter against a register model, with the stage 3 sequence of "Power-up and calibration sequence" below as the
+order of the calls (that order is a fact read here earlier; `wfhw_init` itself is in a member the tool does not
+read). Where the IR calls into the five other members, the interpreter does what stage 2's facts say:
+`wl30_mmc_io_rw_extended` is a plain access of the core's window at 0x30000. External values come from the SDK's C
+source (`wifi_conf.c`'s thresholds and RF RAM table, its compiled branch) and fm1-base's calibration defaults; no
+stored trim. What it writes:
+
+- `firmware/wifi/fm1wifi_tables.h`: the straight-line parts of the sequence as tables of register steps (one
+  read-modify-write, register write, MAC, BBP or BBP-window write, or delay per step, each with a comment naming
+  it), the constant arrays the hand-written steps use (`dagc_ram_set`, `rapp_ram_data`, `rx_flt_vga_gain`, the MCS
+  gains) and `wifi_conf.c`'s numbers. Unlike the plan above, which named three members for tables and the rest for the
+  trace, the tables are the trace's straight-line segments from all eight clean members (`wf_rf_init`'s analog
+  set-up, `set_pll_rn_en`, `wf_rf_bsb_auto_ctl`, ...); still register values only, and still nothing from the five.
+- `tests/wifi/radio_trace.txt.gz`: every write of the whole sequence against the model (CPU and MAC registers, BBP
+  writes, BBP window writes, delays; 35,821 records), the host test's reference.
+
+Neither holds control flow or IR text. The steps with loops or read-dependent values are written by hand from the
+plain description in docs/WIFI_STAGE3.md.
 
 ### What this means
 
@@ -563,6 +584,12 @@ From `docs/BASE.md` and a build of this tree (f36fe5d, `./build.sh` on this mach
   (`fm1wifi.c`, its port and the page), `.data`+`.bss` by 48 B to 39,152 of 98,304 B; the pool (257,744 B) and the
   RAM code (6,840 B) are unchanged. Against the driver's budget (under 120 KB of code, under 48 KB of RAM): about 3 KB
   and 48 B so far.
+- **Stage 3's cost** (against main 55f53ad, the same size as c1fc5e8): the image grows by 15,648 B to 370,228 B
+  (the tables are about 6.9 KB of it), `.data`+`.bss` by 200 B to 39,352 B, the RAM code by 7,504 B to 14,344 of
+  24,576 B (the trim and its helpers 4,006 B, the rest of the bring-up 2,592 B, the trim's tables 668 B, the port's
+  RAM part 238 B); the pool is unchanged. The bring-up outside the trim is in RAM only because the FM-1's flash code
+  cannot call RAM code directly (it is out of the 23-bit call range); later stages' code stays in the flash, so the
+  RAM code should not grow much past this.
 
 ## Standalone library
 
@@ -611,7 +638,7 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   indirect windows.
 - `tools/wifi_ir.py`: reads the user's SDK (`$AC79_SDK/cpu/wl82/liba/wl_rf_common.a`), runs `llvm-dis` and writes
   the constant register sequences (`wf_phy_init`'s CCA and front-end tables, `wf_sifs_reset`, `rapp_init`) as C
-  tables with a provenance comment. Only from `wl_rf_common.a`: the MAC defaults (`MACRegTable`) come from rt2x00
+  tables with a provenance comment. (Built with stage 3: "What stages 1 and 3 may take", Built.) Only from `wl_rf_common.a`: the MAC defaults (`MACRegTable`) come from rt2x00
   or Ralink's staging driver, not from `wl_wifi*.a`. What it may read and write is listed in "What stages 1 and 3
   may take from `wl_rf_common.a`". Generated output is committed (register values as facts, noted in
   `LICENSING.md`), and a host test re-runs the extraction and checks the tables still match.
@@ -632,8 +659,14 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   nothing touches the radio until **PLAY** there, which stops the sound, fills the free pool (from the end of the
   last `.pool` buffer to the end of the pool region, about 84 KB), powers the core up and shows `RESULT`,
   `MAC_CSR0`, `MAC_SYS_CTRL`, `BBP 0` and `RAM CHECK` (bytes changed, and the first one's address), checking the
-  pool again every half second. **SAVE** leaves: the core is powered down, the sound comes back. Host-tested;
-  not run on an FM-1.
+  pool again every half second. **SAVE** leaves: the core is powered down, the sound comes back.
+- **Run on xero's FM-1** (2026-10-26 02:20 UTC, main c1fc5e8): `RESULT: OK`, `MAC_CSR0` 00300100, `MAC_SYS_CTRL`
+  00000003, `BBP 0` 00, `RAM CHECK: 0 CHANGED`, no hang. Read: chipset 0x0030 ("WL30", JieLi's name for the core)
+  revision 0x0100, so the window at 0x30000 answers right after `wf_clk_rst_init` and `wdma_init`, before
+  `wfhw_init`; `MAC_SYS_CTRL` = 3 is `RESET_CSR | RESET_BBP`: the MAC and baseband held in reset, as expected
+  without `wfhw_init`; the `BBP_CSR_CFG` handshake completes (no TIMEOUT), and BBP 0 = 0x00 is what rt2800 reads as
+  "BBP not ready", which fits the baseband being in reset; nothing wrote the free pool, but no DMA has run yet, so
+  the RAM check is to be repeated once the frame FIFOs run (stages 4-5).
 - What could go wrong on the FM-1: the page's first read of the core's window after power-up. If the core's clock
   or bus is not running, that load might never complete and the FM-1 would hang on the page until it is powered
   off; nothing is written to flash, and the boot, the boot guard and the OCT− USB rescue are untouched (the page
@@ -650,6 +683,17 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   (`tools/wifi_ir.py --trace`). **FM-1**: the diagnostic page shows the PLL bank, trim results and the RSSI of the
   noise floor per channel 1-13. Optional cross-check: a diagnostic build of fm1-base's WiFi example (never
   shipped) dumps `WLA_CON*`/`WF_CON*` after its own start, for comparison with ours on the same FM-1.
+- **Built** (TODO.md 7f; the steps in docs/WIFI_STAGE3.md): `fm1wifi_radio_up` runs the generated tables and the
+  hand-written steps in `wfhw_init`'s order: MAC/PHY reset and tables, the AGC table, the RF analog set-up with the
+  crystal caps, the PLL bank scan, a fresh trim (RX filter tune, TX LO/DC/gain/phase, RX DC per gain range, RX
+  gain/phase), the PA configuration, RAPP, the RF RAM table, channel 6 and TX power 6, the per-MCS gains. Every wait
+  is bounded (1000 reads). The trim and everything it calls run from RAM (section `.ram_code.fm1wifi`; `tools/build.py`
+  fails the build if that section refers to anything outside RAM) with interrupts masked by the port; the page stops
+  the sound first. Power-down also restores the 35 registers stage 3 changes. On the host the library's writes equal
+  JieLi's code's against the same register model, record for record, and a swapped write, a dropped delay and a
+  wait without its bound are each caught (8 deliberate bugs). There is no RSSI register in the clean members: the
+  page shows the receiver's ADC peak per channel (`rd_adc_peak`), a relative level, not dBm; a calibrated RSSI comes
+  with the RX descriptors (stage 4). Not run on an FM-1.
 
 ### Stage 4: receive raw frames, passive scan (needs FM-1)
 
@@ -711,10 +755,11 @@ register model and fixture format that stages 2 to 5 test against can be built.
 
 ### Open questions
 
-- What the bits power-up sets mean (`WF_CON0`, `WF_CON7`, the WL30 host block, `CLK_CON1` bits 15-14), and whether
-  the core's window reads anything before `wfhw_init` (stage 2's page answers the second).
-
-- Which RAM address the hardware writes (stage 2's pattern check).
+- What the bits power-up sets mean (`WF_CON0`, `WF_CON7`, the WL30 host block, `CLK_CON1` bits 15-14). (Whether the
+  core's window reads anything before `wfhw_init`: it does, stage 2 on the FM-1 read `MAC_CSR0` 00300100.)
+- Which RAM address the hardware writes: none so far (stage 2's check, 0 bytes), but no DMA has run; stages 4-5 check
+  again.
+- Whether stage 3's bring-up works on the FM-1 at all, and what the trim lands on there (the page's two screens).
 - What the JieLi registers 0x0300-0x032C in the WiFi core do beyond interrupts (stage 2-4).
 - Whether the factory left per-device calibration on stock FM-1s, and where (compare a stock firmware dump).
 - Whether the RX descriptor matches rt2800's RXWI exactly or JieLi changed it (stage 4, from real frames).
@@ -748,6 +793,10 @@ grep '@MACRegTable = ' $S/wl_wifi_sta_sfc/rtmp_init.c.ll                      # 
 
 The pairs were then matched by address against Ralink's `MACRegTable` (names resolved through `rt2800.h` v6.6, with
 Ralink's `RX_FILTR_CFG` as `RX_FILTER_CFG`) and against the literal `rt2800_register_write` calls in `rt2800lib.c`.
+
+Stage 3's facts (2026-10-26): `python3 tools/wifi_ir.py` writes `firmware/wifi/fm1wifi_tables.h`, `--trace` the
+trace, `--check` compares both with the SDK and `--segments` prints how the sequence splits into tables and
+hand-written steps.
 
 The link closure: build fm1-base's `examples/wifi` (`JIELI_TOOLCHAIN=~/.jieli/toolchain
 AC79_SDK=~/fw-AC79_AIoT_SDK python3 tools/build.py examples/wifi`), `nm -S` its `build/wifi.elf`, and look up

@@ -30,7 +30,7 @@ below). It stands on the work of the people and projects named here. Licences an
 - **Nuked-OPL3**, Alexey Khokholov (LGPL-2.1): `firmware/src/opl3.c`, the cycle-exact core.
 - **Terminus** font 8x16 (SIL OFL 1.1).
 - **Thomas Detert** (Stone Age, Eclipse 1992) and **Michael Tschögl** (LINEL 1990-92): the 18 built-in songs.
-- **JieLi AC79 SDK** (Apache-2.0): the boot files read from your SDK checkout at build time.
+- **JieLi AC79 SDK** (Apache-2.0): the boot files read from your SDK checkout at build time; `apps/common/net/wifi_conf.c`'s receive thresholds and RF RAM table, copied as numbers into `firmware/wifi/fm1wifi_tables.h`; and the WiFi radio's register facts (values, order, delays) that `tools/wifi_ir.py` reads out of `wl_rf_common.a` (no code taken; docs/WIFI.md).
 - **Linux rt2x00** `rt2800.h`, Ivo van Doorn and the rt2x00 authors (GPL-2.0-or-later), with the SDK's `WL82.h`/`hwi.h`: the WiFi register map in `firmware/wifi/fm1wifi_regs.h`.
 - **Linux** `include/linux/mmc/sdio.h` (v6.6): the SDIO CCCR addresses of the stage 1 header were cross-checked against it (facts only; nothing copied); they left with the SD command enumeration in stage 2, when it turned out the WiFi core is not enumerated (docs/WIFI.md).
 - **BearSSL**, Thomas Pornin (MIT): SHA-1, HMAC and AES decryption under the WPA2 key code (`firmware/wifi/bearssl/`).

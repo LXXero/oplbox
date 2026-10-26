@@ -379,7 +379,7 @@ two bars).
 - No sign of USB power: on USB the count is the charging battery's. Felucca shows a bolt when a USB host is
   configured (`usb.config && !usb.suspended`); OPLBOX could do the same.
 
-## 7. WiFi on our own driver — stage 2 built (the first hardware test), waiting for the FM-1
+## 7. WiFi on our own driver — stage 2 run on the FM-1, stage 3 built, waiting for the FM-1
 
 xero: "i would rather keep it gpl and just build our own wifi firmware". OPLBOX stays GPL-3.0-only and does not
 link JieLi's binary WiFi archives.
@@ -394,8 +394,9 @@ RT2800 family (Linux `rt2800.h`, GPL-2.0-or-later); the radio and internal bus (
 Linux header lineage in five of thirteen members (see 7c), and the archives are LLVM bitcode, readable as LLVM IR. JieLi's stack (about 330 KB of code) would not fit beside
 OPLBOX (238 KB free) anyway.
 
-**Next.** Stage 2 is built (7e): xero flashes it, opens the WiFi test page (SAVE, then PLAY) and reads four values
-and the RAM check off the screen (README "WiFi test page"). Stage 3 (radio power-up and calibration) waits for that.
+**Next.** Stage 2 ran on xero's FM-1 (7e: the core's window answers, `MAC_CSR0` 00300100). Stage 3 is built (7f):
+xero flashes it, opens the WiFi test page (SAVE, then PLAY), and reads both of its pages off the screen (README "WiFi
+test page"). Stage 4 (receiving raw frames) waits for that.
 
 ### 7a. Stage 1, register header — built, host-tested, not yet tried on hardware
 
@@ -564,7 +565,7 @@ from the address-literal rule only, because AES's round constant 0x02000000 look
 keys into the MAC's tables at 0x4000-0x7000), caching the PMK per SSID in the WiFi settings sector, and the replay
 of a recorded handshake on the host are the rest of stage 8. Timing on the FM-1 is stage 8's too.
 
-### 7e. Stage 2, first contact, as a standalone library — built, host-tested, waiting for hardware
+### 7e. Stage 2, first contact, as a standalone library — built, run on xero's FM-1
 
 xero (2026-10-25): "i'd love if we could do wifi firmware updates and wifi song exports", and the WiFi support
 should be generic enough to share by itself: a friend's webcam / video-out firmware on the same FM-1 (GPL too)
@@ -623,9 +624,79 @@ read could stall the bus and hang the FM-1 on the page until it is powered off. 
 the boot guard and the OCT− USB rescue are untouched (no change to `platform.c`), so it still boots and can be
 rescued.
 
-**Waiting for xero.** Flash, open the page, read RESULT, `MAC_CSR0`, `MAC_SYS_CTRL`, BBP 0 and the RAM check. Then:
-what the bits power-up sets mean, whether the window answers before `wfhw_init` (stage 3), and which RAM the hardware
-writes, if any.
+**On the FM-1** (xero, 2026-10-26 02:20 UTC, main c1fc5e8 flashed, the page after PLAY): `RESULT: OK`, `MAC_CSR0`
+00300100, `MAC_SYS_CTRL` 00000003, `BBP 0` 00, `RAM CHECK: 0 CHANGED`, no hang. Read:
+- `MAC_CSR0` 00300100: chipset 0x0030 (WL30) revision 0x0100.
+- `MAC_SYS_CTRL` 00000003: `RESET_CSR` and `RESET_BBP` set, the MAC and baseband still held in reset, as expected:
+  stage 2 does not run `wfhw_init`, whose first step releases them.
+- `BBP 0` 00 with no TIMEOUT: the `BBP_CSR_CFG` handshake works; 0x00 is what rt2800 treats as "BBP not ready", which
+  fits the baseband being in reset.
+- `RAM CHECK: 0 CHANGED`: nothing wrote the free pool, but no DMA has run yet.
+
+**Answered.** Whether the window answers before `wfhw_init`: yes (`MAC_CSR0` reads the chip id right after
+`wf_clk_rst_init` and `wdma_init`).
+
+**Still open.** What the bits power-up sets mean (`WF_CON0`, `WF_CON7`, the WL30 host block, `CLK_CON1` bits 15-14).
+Which RAM the hardware writes: none so far, to be checked again once RX/TX DMA runs (stages 4-5).
+
+### 7f. Stage 3, radio power-up and calibration — built, host-tested, waiting for hardware
+
+**Built.**
+- `tools/wifi_ir.py` (the rest of stage 1): turns the eight clean members of `wl_rf_common.a` into LLVM IR and runs it
+  in a small interpreter against a register model, in `wfhw_init`'s order (docs/WIFI.md "Power-up and calibration
+  sequence"), and writes the facts: `firmware/wifi/fm1wifi_tables.h` (15 straight-line tables of register steps plus
+  3 small ones, the constant arrays, `wifi_conf.c`'s thresholds and RF RAM table; generated, committed) and
+  `tests/wifi/radio_trace.txt.gz` (every write of the sequence against the model, 35,821 records). `--check` compares
+  both with the SDK; `tests/run_host.sh` runs it when the SDK is there. No control flow, no IR text, nothing from the
+  five members with lineage, `wl_wifi*.a` or the Bluetooth archives.
+- `docs/WIFI_STAGE3.md`: the plain description of each step that is not a table (the AGC table, the PLL bank scan,
+  the RX filter tune, the ADC/VGA search, the TX, RX DC and RX IQ trims, the PA configuration, RAPP, the RF RAM
+  table, channel and TX power, the per-MCS gains), which the code is written from.
+- In the fm1wifi library: `fm1wifi_radio_up` (with a calibration, `fm1wifi_cal_default` = fm1-base's), and
+  `fm1wifi_set_channel`, `fm1wifi_set_power`, `fm1wifi_adc_peak`. Every hardware wait is bounded (1000 reads, then
+  TIMEOUT and where it stopped). The trim and everything it calls run from RAM (`.ram_code.fm1wifi`, and the tables
+  it reads), with interrupts masked by the port (`fm1wifi_port_trim`, new) and the sound off; `tools/build.py` fails
+  the build if that section refers to anything outside RAM (tried: a constant table in it fails the build). Power-down
+  also restores what stage 3 changed (`WLA_CON0`-`30`, `WL_ANL_CON0`-`3`).
+- The WiFi test page now brings the radio up after stage 2's reads and has two pages (PLAY switches): page 1
+  `MAC_SYS_CTRL` and BBP 0 after the resets are released, the PLL bank, the filter codes, the RAM check; page 2 the
+  trim results and the ADC peak on channels 1-13 (README "WiFi test page", what good values look like).
+- Tests: `tests/wifi_model.c` runs the bring-up against the register model and diffs its writes with the trace record
+  for record (equal), checks the trims' results, that power-down puts all 80 CPU-side registers back, that the
+  calibration bytes reach their registers, and that each of the four waits (filter tune, measurement, RF digital
+  block, BBP BUSY) ends in TIMEOUT after 1000 polls. `tests/wifi_mutants.py` plants 8 bugs (two swapped writes, two
+  dropped delays, four waits without their bound); the test catches all 8, the unbounded ones through the model's
+  guard, which ends a run after 100,000 busy answers in a row instead of hanging. Under ASan/UBSan too.
+- Size (against main 55f53ad): image +15,648 B (370,228 of 581,564), `.data`+`.bss` +200 B, RAM code +7,504 B
+  (14,344 of 24,576), pool unchanged.
+
+**Found.**
+- No RSSI register in the clean members (per-packet RSSI is in `wl_hw_init`'s RX hook, from the RX descriptor): the
+  page shows `rd_adc_peak`'s ADC peak per channel instead, a relative level. A calibrated RSSI comes with stage 4.
+- JieLi's trims carry truncations (a best value kept as a signed byte, the middle bank falling back to a VCO reading
+  when the scan finds no edge); the library keeps them so the writes match, and docs/WIFI_STAGE3.md says where.
+- The FM-1's flash code cannot call RAM code directly (beyond the 23-bit call range), so the library calls across
+  through a pointer, and the rest of the bring-up sits in RAM with the trim (`.ram_code.fm1wifi_init`).
+
+**Decided** (chosen by the colony; xero can change it):
+- Always a fresh trim, never a stored one (fm1-base found a stored trim made WiFi deaf); the receive thresholds and RF
+  RAM table are the SDK's compiled branch (fm1-base's default), not the "moderate" one.
+- The tables are the straight-line segments from all eight clean members, not only the three docs/WIFI.md first named
+  for tables (still register values only); docs/WIFI.md says so.
+- Interrupts masked for the trim (about half a second): no handler may run from the flash then; USB goes quiet and
+  the page waits 15 ms after stopping the sound so both output halves hold silence. The watchdog (8 s) is fed by the
+  port's delay.
+- The register model's answers are made up, so each search lands somewhere particular; the trace and the test use
+  the same model in Python and in C.
+
+**Risk on the FM-1.** Only when the page is opened and PLAY pressed. The radio's calibration draws current and runs
+with interrupts off; if something reads the flash meanwhile, or a wait never ends past its bound, the FM-1 could
+crash or hang on the page until it is powered off. Nothing is written to flash; boot, the boot guard and the OCT−
+USB rescue are untouched.
+
+**Waiting for xero.** Flash, open the page (SAVE, PLAY), read page 1 and page 2 (PLAY switches). Then: whether the
+bring-up completes (`RESULT`), whether BBP 0 comes out of reset, where the PLL and the trims land, what the receiver
+sees per channel, and whether the RAM check stays at 0.
 
 ## 8. Bluetooth LE MIDI on code we can ship — stage 0 done (the map)
 

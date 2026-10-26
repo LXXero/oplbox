@@ -166,7 +166,7 @@ def build_app():
             ("cc", "-c", BSP / "chip" / "fm1_isr.S", "-o", OUT / "fm1_isr.o"),
             ("cc", *flags, "-c", FW / "src" / "oplbox.c", "-o", OUT / "oplbox.o"),
             ("cc", *core, "-c", FW / "src" / "dbopl2.c", "-o", OUT / "dbopl2.o"),
-            # the WiFi library (firmware/wifi/, for the stage 2 page) and its port on felucca-bsp (hal/)
+            # the WiFi library (firmware/wifi/, for the WiFi test page) and its port on felucca-bsp (hal/)
             ("cc", *CFLAGS, "-Ifirmware/wifi", "-c", FW / "wifi" / "fm1wifi.c", "-o", OUT / "fm1wifi.o"),
             ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-c", FW / "hal" / "fm1wifi_port_bsp.c", "-o", OUT / "fm1wifi_port_bsp.o")]
     tc_all(*cmds)
@@ -209,7 +209,7 @@ def build_app():
 
 # ---- the WiFi library (firmware/wifi/, docs/WIFI.md): every file compiled alone with the app's flags and only its
 # own directory on the include path, so a dependency on OPLBOX or the bsp fails here, and its size is known
-# against the budget there. fm1wifi.c is linked (the stage 2 page); the rest (WPA2) not until stage 8 calls it.
+# against the budget there. fm1wifi.c is linked (the WiFi test page); the rest (WPA2) not until stage 8 calls it.
 # Object sizes without --gc-sections: an upper bound.
 
 def build_wifi():
@@ -227,6 +227,60 @@ def build_wifi():
             elif len(p) > 3 and re.match(r"\.(data|bss)", p[1]):
                 data += int(p[2], 16)
     return f"firmware/wifi/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (fm1wifi.c linked, the rest not yet)"
+
+
+# ---- the WiFi trim's RAM code (docs/WIFI_STAGE3.md "What runs from RAM"): the radio's trim must not touch the flash,
+# so the sections it runs from (fm1wifi.c's .ram_code.fm1wifi, the port's .ram_code.fm1wifi_port) may refer only to
+# RAM: other RAM code, .data and .bss. Read from the objects' own relocations (a small ELF32 reader: the toolchain's
+# objdump does not name this target's relocation symbols).
+
+def elf_relocs(path):
+    """[(target section, symbol, the symbol's section or None if undefined)], and {defined symbol: section}"""
+    import struct
+    b = Path(path).read_bytes()
+    shoff, = struct.unpack_from("<I", b, 0x20)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", b, 0x2E)
+    sh = [struct.unpack_from("<IIIIIIIIII", b, shoff + i * shentsize) for i in range(shnum)]
+
+    def cstr(off):
+        return b[off:b.index(b"\0", off)].decode()
+    names = [cstr(sh[shstrndx][4] + h[0]) for h in sh]
+    out, defined = [], {}
+    for i, h in enumerate(sh):
+        if h[1] == 2:                                    # SHT_SYMTAB
+            syms = []
+            for k in range(h[5] // 16):
+                st_name, _, _, _, _, shndx = struct.unpack_from("<IIIBBH", b, h[4] + 16 * k)
+                nm = cstr(sh[h[6]][4] + st_name)
+                sec = names[shndx] if 0 < shndx < len(names) else ("COMMON" if shndx == 0xFFF2 else None)
+                syms.append((nm, sec))
+                if sec and nm:
+                    defined[nm] = sec
+    for h in sh:
+        if h[1] == 4:                                    # SHT_RELA
+            for k in range(h[5] // 12):
+                _, info, _ = struct.unpack_from("<IIi", b, h[4] + 12 * k)
+                nm, sec = syms[info >> 8]
+                out.append((names[h[7]], nm or sec, sec))
+    return out, defined
+
+
+def trim_ram_check(objs):
+    strict = (".ram_code.fm1wifi", ".ram_code.fm1wifi_port")
+    rels, defined = [], {}
+    for o in objs:
+        r, d = elf_relocs(o)
+        rels += r
+        defined.update(d)
+    errors, n = [], 0
+    for target, nm, sec in rels:
+        if target not in strict:
+            continue
+        n += 1
+        sec = sec or defined.get(nm)
+        if not sec or not re.match(r"\.(ram_code|bss|sbss|data|sdata)\b|COMMON$", sec):
+            errors.append(f"WiFi trim RAM code ({target}) refers to {nm} in {sec or 'no object'}: the flash during the trim")
+    return errors, f"WiFi trim RAM code: {n} references, all to RAM"
 
 
 def check(img, syms, dis, rt):
@@ -279,7 +333,8 @@ def check(img, syms, dis, rt):
 # The vendored BearSSL in wifi/bearssl/ skips the address-literal rule only: its constants (AES Rcon 0x02000000)
 # fall in the windows, and the other three rules still hold there. So does wifi/fm1wifi_regs.h, the WiFi register
 # map: its addresses are numbers the library hands to its port (hal/fm1wifi_port_bsp.c makes the access), and
-# the other rules keep any access out of firmware/wifi/.
+# the other rules keep any access out of firmware/wifi/; and wifi/fm1wifi_tables.h, generated register values
+# (tools/wifi_ir.py) some of which look like addresses.
 # Linker symbols (_bss_start[], _rt_load[], ...) are plain C objects and pass.
 MMIO_LIT = re.compile(r"\b0x0*(1[0-3][0-9a-f]{3}|4[0-3][0-9a-f]{3}|5[01][0-9a-f]{3}|1ee[0-9a-f]{4}|"
                       r"1c7f[0-9a-f]{3}|20[0-9a-f]{5})u?l?\b", re.I)
@@ -307,7 +362,8 @@ def mmio_check():
             where = f"{f.relative_to(FW)}:{no}"
             for rx, what in ((MMIO_LIT, "register/window address"), (MMIO_CAST, "volatile pointer cast"),
                              (MMIO_ASM, "inline asm")):
-                if rx is MMIO_LIT and (f.parent == FW / "wifi" / "bearssl" or f == FW / "wifi" / "fm1wifi_regs.h"):
+                if rx is MMIO_LIT and (f.parent == FW / "wifi" / "bearssl" or
+                                       f.name in ("fm1wifi_regs.h", "fm1wifi_tables.h")):
                     continue
                 m = rx.search(ln)
                 if m:
@@ -341,6 +397,10 @@ def main():
     img, syms, dis, rt = build_app()
     errors, notes = check(img, syms, dis, rt)
     notes.append(build_wifi())
+    trim_err, trim_note = trim_ram_check([OUT / "fm1wifi.o", OUT / "fm1wifi_port_bsp.o"])
+    errors += trim_err
+    if not trim_err:
+        notes.append(trim_note)
     hal_err = mmio_check()
     errors += hal_err
     if not hal_err:
