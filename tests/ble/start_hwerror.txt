@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# tests/ble_hci.c: a Hardware Error (code 07) while advertising
+wait adv
+wait ms 10
+hwerror 07

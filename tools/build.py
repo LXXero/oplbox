@@ -235,6 +235,27 @@ def build_wifi():
     return f"firmware/wifi/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (fm1wifi.c and fm1wifi_frame.c linked, the rest not yet)"
 
 
+# ---- the BLE HCI layer (firmware/ble/, docs/BLUETOOTH.md stage 1): compiled alone with the app's flags and only its
+# own directory on the include path, like firmware/wifi/, and sized. Not linked: nothing calls it until a controller
+# runs (stage 4). Object sizes without --gc-sections: an upper bound.
+
+def build_ble():
+    srcs = sorted((FW / "ble").glob("*.c"))
+    out = OUT / "ble"
+    out.mkdir(parents=True, exist_ok=True)
+    objs = [out / f"{s.stem}.o" for s in srcs]
+    tc_all(*[("cc", *CFLAGS, "-Ifirmware/ble", "-c", s, "-o", o) for s, o in zip(srcs, objs)])
+    code = data = 0
+    for o in objs:
+        for ln in tc("common/bin/objdump", "-h", o).splitlines():
+            p = ln.split()
+            if len(p) > 3 and re.match(r"\.(text|rodata)", p[1]):
+                code += int(p[2], 16)
+            elif len(p) > 3 and re.match(r"\.(data|bss)", p[1]):
+                data += int(p[2], 16)
+    return f"firmware/ble/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (not linked yet)"
+
+
 # ---- the WiFi trim's RAM code (docs/WIFI_STAGE3.md "What runs from RAM"): the radio's trim must not touch the flash,
 # so the sections it runs from (fm1wifi.c's .ram_code.fm1wifi, the port's .ram_code.fm1wifi_port) may refer only to
 # RAM: other RAM code, .data, .bss and .noinit (fm1wifi_where). Read from the objects' own relocations (a small ELF32
@@ -364,7 +385,7 @@ def mmio_check():
             break
         regs |= more
     errors = []
-    for f in sorted([*(FW / "src").glob("*.[ch]"), *(FW / "wifi").rglob("*.[ch]")]):
+    for f in sorted([*(FW / "src").glob("*.[ch]"), *(FW / "wifi").rglob("*.[ch]"), *(FW / "ble").rglob("*.[ch]")]):
         for no, ln in enumerate(strip(f.read_text()).splitlines(), 1):
             where = f"{f.relative_to(FW)}:{no}"
             for rx, what in ((MMIO_LIT, "register/window address"), (MMIO_CAST, "volatile pointer cast"),
@@ -404,6 +425,7 @@ def main():
     img, syms, dis, rt = build_app()
     errors, notes = check(img, syms, dis, rt)
     notes.append(build_wifi())
+    notes.append(build_ble())
     trim_err, trim_note = trim_ram_check([OUT / "fm1wifi.o", OUT / "fm1wifi_port_bsp.o"])
     errors += trim_err
     if not trim_err:
@@ -411,7 +433,7 @@ def main():
     hal_err = mmio_check()
     errors += hal_err
     if not hal_err:
-        notes.append("register access: bsp/ and hal/ only (src/, wifi/ clean)")
+        notes.append("register access: bsp/ and hal/ only (src/, wifi/, ble/ clean)")
     for n in notes:
         print("  ok   ", n)
     for e in errors:

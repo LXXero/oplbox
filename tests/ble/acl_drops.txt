@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# tests/ble_hci.c: what the host must throw away on ACL in, and a good PDU after it all
+wait adv
+connect handle=0040 peer=c0:ff:ee:00:00:01 type=1
+wait ms 5
+acl pb=1 01 02 03                       # a continuing fragment with no PDU started
+acl pb=2 handle=0099 02 00 04 00 01 02  # a whole PDU on a handle that is not the connection's
+acl pb=2 00 02 04 00 01 02              # an L2CAP length of 512: longer than the host's 256
+acl pb=2 0a 00 04 00 01 02              # the start of a 10-byte PDU ...
+acl pb=2 02 00 05 00 aa bb              # ... cut off by the next start: a whole PDU on the LE signalling channel
+wait ms 5

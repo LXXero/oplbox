@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# What tests/ble/session.txt must log, packet by packet (format in tests/ble/hci_model.h). Written from the Bluetooth
+# Core Specification v5.4, Vol 4 Part E: 5.4 for the packet layouts, 7 for each command and event. Not recorded.
+
+# the start: one command at a time, each after its Command Complete (ncmd 1, opcode, status 0)
+cmd 0c03   # Reset (7.3.2)
+evt 0e 01 03 0c 00
+cmd 0c01 10 80 00 00 00 00 00 20   # Set Event Mask: Disconnection Complete, Hardware Error, LE Meta (7.3.1)
+evt 0e 01 01 0c 00
+cmd 2001 05 00 00 00 00 00 00 00   # LE Set Event Mask: Connection Complete, Connection Update Complete (7.8.1)
+evt 0e 01 01 20 00
+cmd 2002   # LE Read Buffer Size (7.8.2)
+evt 0e 01 02 20 00 1b 00 02   # 27-byte payloads, 2 buffers
+cmd 1009   # Read BD_ADDR (7.4.6)
+evt 0e 01 09 10 00 01 00 31 4d 46 02   # 02:46:4d:31:00:01, least significant byte first
+cmd 2006 30 00 30 00 00 00 00 00 00 00 00 00 00 07 00   # LE Set Advertising Parameters: 30 ms, ADV_IND, public, channels 37-39 (7.8.5)
+evt 0e 01 06 20 00
+cmd 2008 0b 02 01 06 07 09 4f 50 4c 42 4f 58 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00   # LE Set Advertising Data: Flags 06, Complete Local Name "OPLBOX", 31 bytes (7.8.7)
+evt 0e 01 08 20 00
+cmd 2009 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00   # LE Set Scan Response Data: none (7.8.8)
+evt 0e 01 09 20 00
+cmd 200a 01   # LE Set Advertising Enable (7.8.9)
+evt 0e 01 0a 20 00
+
+# a central connects: LE Connection Complete (7.7.65.1): handle 0x040, peripheral, random c0:ff:ee:00:00:01, 30 ms, 720 ms
+evt 3e 01 00 40 00 01 01 01 00 00 ee ff c0 18 00 00 00 48 00 00
+acl< 0040 2 03 00 04 00 02 f7 00   # an L2CAP PDU on the ATT channel: Exchange MTU Request 247 (Vol 3 Part F 3.4.2.1)
+acl> 0040 0 03 00 04 00 03 17 00   # the reply, first fragment flag 00: Exchange MTU Response 23
+evt 13 01 40 00 01 00   # Number Of Completed Packets: one buffer back (7.7.19)
+
+# a 64-byte PDU (Write Command, 57 bytes to handle 0x0010) in fragments of 27, 27 and 10; the controller holds its buffers
+acl< 0040 2 3c 00 04 00 52 10 00 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13
+acl< 0040 1 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 20 21 22 23 24 25 26 27 28 29 2a 2b 2c 2d 2e
+acl< 0040 1 2f 30 31 32 33 34 35 36 37 38
+# the test answers with a 74-byte PDU (Handle Value Notification, 67 bytes on handle 0x0012): two buffers, then wait
+acl> 0040 0 46 00 04 00 1b 12 00 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13
+acl> 0040 1 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 20 21 22 23 24 25 26 27 28 29 2a 2b 2c 2d 2e
+evt 13 01 40 00 02 00   # both buffers back
+acl> 0040 1 2f 30 31 32 33 34 35 36 37 38 39 3a 3b 3c 3d 3e 3f 40 41 42
+evt 13 01 40 00 01 00
+
+evt 3e 03 00 40 00 0c 00 00 00 48 00   # LE Connection Update Complete: 15 ms (7.7.65.3)
+evt 05 00 40 00 13   # Disconnection Complete: Remote User Terminated Connection (7.7.5)
+cmd 200a 01   # the host advertises again
+evt 0e 01 0a 20 00
+
+# a second central; the host ends it: Disconnect (7.1.6), Command Status (7.7.15), then Disconnection Complete
+evt 3e 01 00 41 00 01 01 02 00 00 ee ff c0 0c 00 00 00 48 00 00
+cmd 0406 41 00 13
+evt 0f 00 01 06 04
+evt 05 00 41 00 16   # Connection Terminated By Local Host
+cmd 200a 01
+evt 0e 01 0a 20 00

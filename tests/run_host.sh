@@ -189,6 +189,21 @@ done
 cc -std=c11 -O2 -Wall -Wextra -Werror -DFM1WIFI_NET_DEBUG -Ifirmware/wifi $LWIP_INC -o build/host/wifi_net \
    tests/wifi_net.c firmware/wifi/fm1wifi_net.c build/host/lwip/*.o
 build/host/wifi_net
+# the BLE HCI layer (firmware/ble/hci.c, docs/BLUETOOTH.md stage 1) stands alone like firmware/wifi/: warning-free with
+# only its own directory, and it includes nothing from outside it. Then against the fake controller
+# (tests/ble/hci_model.c): the packets byte for byte, H4, a whole session diffed against tests/ble/session_expect.txt
+# (reset, event masks, buffer size, advertising, LE Connection Complete, ACL in and out with flow control, a
+# connection update, a disconnection either way), the same with answers inside the send call, and how a start fails;
+# and the test must catch 17 deliberate bugs in hci.c
+for f in firmware/ble/*.c firmware/ble/*.h; do
+  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v '"hci\.h"'; then
+    echo "FAIL: $f includes a file from outside firmware/ble/" >&2; exit 1; fi
+done
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/ble_hci.o firmware/ble/hci.c
+cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -Ifirmware/ble -Itests/ble -o build/host/ble_hci \
+   tests/ble_hci.c tests/ble/hci_model.c firmware/ble/hci.c
+build/host/ble_hci tests/ble
+python3 tests/ble_mutants.py build/host
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c

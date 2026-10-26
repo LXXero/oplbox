@@ -1,5 +1,14 @@
 # Unreleased
 
+- Bluetooth stage 1, host only (docs/BLUETOOTH.md): `firmware/ble/hci.c`, the host side of HCI for a BLE peripheral,
+  our own code from the Bluetooth Core Specification. It packs and decodes command, event and ACL packets, reads H4
+  framing from a byte stream, starts a controller (Reset, both event masks, the buffer size, the address, the
+  advertising parameters and data, advertising on), takes one connection, moves L2CAP PDUs over ACL in fragments with
+  the controller's flow control, and advertises again after a disconnection. `tests/ble_hci.c` runs it against a fake
+  controller (`tests/ble/hci_model.c`) and diffs a whole session with a hand-written trace; 17 deliberate bugs are
+  caught. 3 KB of code, no static RAM; compiled by `./build.sh`, not linked, untested on an FM-1 (no controller runs
+  yet).
+
 - IP over WiFi for stage 7, host part: lwIP 2.1.3 (BSD-3-Clause, the release's files unchanged, IPv4/ARP/DHCP/ICMP/UDP
   only, in `firmware/wifi/lwip/`) and `firmware/wifi/fm1wifi_net.c`, a network interface that turns 802.11 data frames
   into Ethernet frames for lwIP and back and hands EAPOL frames to the WPA2 code. `tests/wifi_net.c` plays an AP, a
