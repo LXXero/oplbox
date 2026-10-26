@@ -1,5 +1,10 @@
 # Unreleased
 
+- Bluetooth HCI host: a transport that refuses every send no longer keeps a start waiting forever. A refused command
+  send now counts towards the 2 s command timeout, so the start fails at that command with TIMEOUT. Before, each
+  refusal set the wait back to 0. `tests/ble_hci.c` has the case, and `tests/ble_mutants.py` puts the old behaviour
+  back as an 18th mutant. Host only, untested on an FM-1.
+
 - Bluetooth stage 2, host only (docs/BLUETOOTH.md): `firmware/ble/ble_midi.c`, the BLE-MIDI profile, our own code
   from the MIDI Association's BLE-MIDI 1.0 specification (read this time). The service and characteristic UUIDs, the
   advertising data, an encoder (13-bit timestamps and their wrap, running status, SysEx split over packets) and a

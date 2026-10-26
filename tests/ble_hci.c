@@ -278,6 +278,12 @@ static void session(int sync)
     }
 }
 
+static int refuse_send(void *ctx, uint8_t type, const uint8_t *p, uint16_t n)
+{
+    (void)ctx; (void)type; (void)p; (void)n;
+    return 1;
+}
+
 /* A start that fails, or ends somewhere other than advertising: the script, what the host must say. */
 static void start_case(const char *script, uint32_t ms, uint8_t state, uint8_t why, uint16_t op, uint8_t status,
                        const char *what)
@@ -315,6 +321,14 @@ static void failures(void)
     check(r->h.state == HCI_ST_FAILED && r->h.fail == HCI_FAIL_TIMEOUT && r->h.fail_op == HCI_OP_RESET,
           "a silent controller: the start fails at Reset after 2 s");
     check(hci_host_start(&r->h, &a) == HCI_OK && r->h.state == HCI_ST_STARTING, "a failed start can be started again");
+    rig_init(r, "start_silent.txt", 0);              /* a transport that refuses every send times out like silence */
+    r->t.send = refuse_send;
+    hci_host_start(&r->h, &a);
+    run(r, HCI_CMD_TIMEOUT_MS - 2);
+    check(r->h.state == HCI_ST_STARTING && r->h.cmds == 0, "a transport that refuses every send: still trying just before the timeout");
+    run(r, 10);
+    check(r->h.state == HCI_ST_FAILED && r->h.fail == HCI_FAIL_TIMEOUT && r->h.fail_op == HCI_OP_RESET && r->m.cmds == 0,
+          "a transport that refuses every send: the start fails at Reset after 2 s");
     start_case("start_shared.txt", 3000, HCI_ST_ADVERTISING, HCI_FAIL_NONE, HCI_OP_NOP, 0,
                "no LE buffers of its own: the start asks Read Buffer Size and advertises");
     check(r->h.acl_len == 64 && r->h.acl_total == 5 && r->m.nlog == 20 && !strncmp(r->m.log[8], "cmd 1005", 8),
