@@ -66,7 +66,7 @@ const char *fm1wifi_step_name(uint32_t step)
         "TX LO I", "TX LO Q", "TX DC I", "TX DC Q", "TX GAIN", "TX PHASE", "TRIM_RXDC", "RX DC TRIM", "TRIM_RXIQ",
         "RX IQ START", "RX GAIN", "RX PHASE", "RF_DONE", "PA CONFIG", "RF_GAIN", "VGA GAIN 0", "PHY_INIT_A 2",
         "AGC TABLE 2", "PHY_INIT_B 2", "CFR1", "RAPP", "RF RAM TABLE", "BSB_AUTO", "POWER 6 CH 6", "MCS GAINS",
-        "SET CHANNEL", "SET POWER", "ADC PEAK",
+        "SET CHANNEL", "SET POWER", "ADC PEAK", "RX PROBE",
     };
     return step < FM1WIFI_STEP_N ? NAME[step] : "?";
 }
@@ -476,7 +476,8 @@ TRIMFN static void vga(unsigned g)   /* VGA gain g, 0-41: FM1WIFI_VGA's row g in
     fld(WLA(5), 5, 3, b[3]);
 }
 
-TRIMFN static uint8_t vga_search(void)   /* adc_pp_tune, mode 0: the lowest gain whose ADC peak passes 47 */
+/* adc_pp_tune, mode 0: the lowest gain whose ADC peak passes 47; kept as search k with the peak it last read */
+TRIMFN static void vga_search(fm1wifi_radio *r, unsigned k)
 {
     unsigned g = 0;
     uint8_t p;
@@ -490,7 +491,9 @@ TRIMFN static uint8_t vga_search(void)   /* adc_pp_tune, mode 0: the lowest gain
         p = adc_peak();
     }
     vga(g);
-    return (uint8_t)g;
+    r->vga[k] = (uint8_t)g;
+    r->vga_peak[k] = p;
+    if (!e3) r->got |= FM1WIFI_GOT_VGA(k);
 }
 
 /* ---- the trim's setters */
@@ -597,7 +600,7 @@ TRIMFN static void tx_trim(fm1wifi_radio *r, const uint8_t *par)
     tx_dc_q(0);
     txlo_i(64);
     txlo_q(64);
-    r->vga[0] = vga_search();
+    vga_search(r, 0);
     AT(FM1WIFI_STEP_TX_LO_I);
     txlo_i(64);
     best = measure(0);                                 /* LO I */
@@ -623,7 +626,7 @@ TRIMFN static void tx_trim(fm1wifi_radio *r, const uint8_t *par)
     AT(FM1WIFI_STEP_TX_DC_I);
     tx_dc_i(0);                                        /* DC I: n wraps to a signed byte, as JieLi's does */
     tx_dc_q(0);
-    r->vga[1] = vga_search();
+    vga_search(r, 1);
     tx_dc_i(0);
     best = measure(0);
     b = 0;
@@ -731,7 +734,7 @@ TRIMFN static void rxiq_trim(fm1wifi_radio *r, const uint8_t *par)
     win_w(W_RXFE, 20, 56);
     win_w(W_RXFE, 20, 4);
     win_w(W_RXFE, 19, 30);
-    r->vga[2] = vga_search();
+    vga_search(r, 2);
     win_w(W_RXFE, 9, 255);
     win_w(W_RXFE, 11, 255);
     AT(FM1WIFI_STEP_RX_GAIN);
@@ -1006,6 +1009,30 @@ RAMFN static int read_peak(uint8_t *peak)
     return e3;
 }
 
+RAMFN static int rx_probe(fm1wifi_rxprobe *p)
+{
+    if (!radio) return FM1WIFI_ESTATE;
+    e3 = 0;
+    BEGIN(FM1WIFI_STEP_RX_PROBE);
+    p->rxfe0 = win_r(W_RXFE, 0);
+    p->rxfe19 = win_r(W_RXFE, 19);
+    p->rxfe20 = win_r(W_RXFE, 20);
+    p->bbp25 = bbp_r(25);
+    p->idle80 = win_r(W_RXFE, 0x80);
+    win_w(W_RXFE, 23, 0x82);                           /* the peak as adc_peak starts it, its control read back */
+    p->rxfe23 = win_r(W_RXFE, 23);
+    DELAY(1000);
+    win_r(W_RXFE, 0x80);
+    win_w(W_RXFE, 23, 2);
+    p->peak = adc_peak();                              /* the second reading counts, as in adc_pp_tune */
+    vga(41);
+    adc_peak();
+    p->peak_vga41 = adc_peak();
+    vga(0);                                            /* back where the bring-up left it */
+    END();
+    return e3;
+}
+
 RAMFN static int radio_up(const fm1wifi_cal *cal, fm1wifi_radio *r)
 {
     uint8_t par[2], *z = (uint8_t *)r;
@@ -1083,4 +1110,5 @@ RAMFN static int radio_up(const fm1wifi_cal *cal, fm1wifi_radio *r)
 int fm1wifi_set_channel(unsigned ch) { return FAR(set_channel)(ch); }
 int fm1wifi_set_power(unsigned level) { return FAR(set_power)(level); }
 int fm1wifi_adc_peak(uint8_t *peak) { return FAR(read_peak)(peak); }
+int fm1wifi_rx_probe(fm1wifi_rxprobe *p) { return FAR(rx_probe)(p); }
 int fm1wifi_radio_up(const fm1wifi_cal *cal, fm1wifi_radio *r) { return FAR(radio_up)(cal, r); }

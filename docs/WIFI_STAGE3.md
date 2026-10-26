@@ -224,8 +224,9 @@ the bring-up is in `.ram_code.fm1wifi_init` only because the FM-1's flash code c
 somewhere particular (none is measured): the filter tune is done at once with code (bits 9-1 of `WLA_CON26`) × 5 / 9;
 the VCO result is 2 below 250 - 2 × cap, 0 for the next five dividers, 1 above; the measurement is a linear function
 of the trim settings in force (TX: LO, DC, gain and phase imbalance; RX IQ: gain and phase imbalance; otherwise the
-analog DC against a target per gain range); the ADC peak grows with the VGA fields and varies with the channel; every
-wait ends at once. With the defaults the trims land on TX LO 57/41, TX DC -1/0, TX gain imbalance 5 (gain Q 1018),
+analog DC against a target per gain range); the ADC peak grows with the VGA fields and varies with the channel, but
+only with the PHY in loopback (BBP 25 = 0x18, the trim) and is 0 otherwise, as the FM-1 read it ("ADC peak 0 on every
+channel" below; which the hardware really does is not known); every wait ends at once. With the defaults the trims land on TX LO 57/41, TX DC -1/0, TX gain imbalance 5 (gain Q 1018),
 TX phase Q 2, RX gain I 235, RX phase I 7, RX DC I 123 and Q -77 in range 0, PLL bank 64.
 
 ## First run on an FM-1 (2026-10-26): the crash in `rmw()`
@@ -275,3 +276,38 @@ and the last write (README.md "If it crashes"). `tests/wifi_model.c` checks the 
 bring-up: magic set, the address and value the write's, the steps in the order above each with writes of their own,
 `WLA_CON12` first written in `RF_INIT`, `WL_ANL_CON0` only in the RF RAM table, magic clear after every call (a
 TIMEOUT too). Not run on an FM-1 yet.
+
+## ADC peak 0 on every channel (2026-10-26): not settled by the code, a diagnostic added
+
+OPLBOX main d03636c ran stage 3 cleanly on xero's FM-1 (page 1 RESULT OK, MAC_SYS_CTRL 0000000C, BBP 0 = 60, PLL BANK 51
+MID 63, FILTER 251 127 55; page 2 TX LO 49 60, TX DC -13 2, TX GAIN +19 PHASE -15 Q, RX GAIN +6 PHASE -7 Q, RX DC I
++202 +212 +178 +154, Q -324 -340 -208 -96). The ADC peak read exactly 0 on all 13 channels, with access points near
+the board.
+
+**What the code shows.** The read itself is JieLi's: in `wl_rf_common.a`'s IR, `rd_adc_peak` is RXFE 23 = 0x82,
+`delay_us(1000)`, the byte `rx_frontend_rd(0x80)`, RXFE 23 = 2, the same 8-bit read `adc_peak()` makes (and the host
+test diffs its writes against the archive). But JieLi reads it in one place only: `rd_adc_peak` is in section
+`.rf.text.cache.L2.rf_trim`, its one caller is `adc_pp_tune` (the VGA search), whose callers are `txiq_tune_soft`
+and `rxiq_tune_soft`; no other member of the archive, and no other SDK archive, reads RXFE 0x80 (`rx_frontend_rd` is
+used by `wf_rf_cal.c.o` only). So JieLi reads the peak only inside the trim: the PHY in loopback (table
+`PHY_LOOPBACK`, BBP 25 = 0x18), the transmitter making the test signal, the RX front end set for the trim (RXFE 0 =
+62, 19 = 30, 20 = 52 or 4). The page's scan reads it after the bring-up, where `PHY_INIT_B` has put the receive state
+back (BBP 25 = 0, RXFE 0 = 0x3A, 19 = 0, 20 = 0, 23 = 0), the VGA gain is 0 (`wfrf_flt_vga_gain(0)`, the lowest)
+and `BSB_AUTO` has handed the baseband gains to the hardware's automatic control. That is a state JieLi never reads
+the detector in. Whether the detector only runs in loopback, or runs but reads below 1 at VGA gain 0 without the
+trim's tone (WiFi frames come in bursts, and a 1 ms window between beacons may hold none), the code cannot tell. So
+nothing in the read was changed; a diagnostic was added instead.
+
+**The diagnostic** (page 3 of the WiFi page, README.md): the VGA gain each of the trim's three VGA searches settled on
+and the last peak it read (`fm1wifi_radio.vga`, `vga_peak`), and `fm1wifi_rx_probe` on channel 6 after the scan: BBP
+25, RXFE 0, 19, 20, RXFE 0x80 before the peak starts, RXFE 23 read back after 0x82 is written, and the peak at VGA gain
+0 and at 41 (the table's highest; the gain is set back to 0). How to read it:
+- VGA GAIN below 36 with VGA PEAK above 47: the peak reads fine in the trim's loopback, so 0 is the receive state's
+  answer (the detector off outside loopback, or the signal below it); then PEAK AT VGA 41 says which.
+- VGA GAIN 36 36 36 with peaks of 0: the peak reads 0 in the trim too (the read or the loopback is wrong), and the
+  three VGA searches ran to their limit.
+- RXFE 23 not 82: the RX front end window did not take the write.
+
+The host model answers the peak only in loopback (`tests/wifi/sdio_model.c`), so the simulated page shows the
+all-zero scan and the page 3 lines; `tests/wifi_model.c` checks the probe's values, that it leaves the VGA gain where
+it was, and its `fm1wifi_where` step (RX PROBE). Not run on an FM-1 yet.
