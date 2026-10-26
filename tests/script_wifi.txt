@@ -1,7 +1,7 @@
 # t(ms) what ...   : the WiFi test page (docs/WIFI.md stages 2-3), against the host's WiFi core (tests/wifi/core_model.txt,
 # or HOST_WIFI_MODEL). tests/run_host.sh checks the page's text from the output ("wifi page N: ..."). Row 88 of
 # host_cell (oplbox.c): col 0 the core powered up, 1 the song's rows ticking, 2 the chip sounding, 3 the radio up
-# (stage 3). The checks run
+# (stage 3), 4 the supply rails raised (1: before the core came up), 5 a WiFi note on the crash screen. The checks run
 # inside the page's own loop too (platform_poll).
 # The jukebox plays song 0 from the start.
 200 is 0 88 0 0
@@ -10,12 +10,16 @@
 300 btn 9
 500 is 0 88 0 0
 500 is 0 88 1 1
+500 is 0 88 4 0
 # PLAY: the sound stops, the core comes up and is read, then the radio (stage 3; run_host.sh checks the result
 # from the page's text, since the stuck and silent cores never get it up)
 600 btn 12
 800 is 0 88 0 1
 800 is 0 88 1 0
 800 is 0 88 2 0
+# the rails raised first (platform_supply_full, before the core came up); the bring-up over, no WiFi note for a crash
+800 is 0 88 4 1
+800 is 0 88 5 0
 # PLAY again: page 2 (the trim and the channels), and again: page 1
 1000 btn 12
 1200 btn 12

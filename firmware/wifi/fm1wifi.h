@@ -6,7 +6,7 @@
  * Stage 2: power the core up and down, read and write its MAC registers and its baseband (BBP) registers, a
  * diagnostic snapshot, and a RAM pattern check (run on xero's FM-1 on 2026-10-26: MAC_CSR0 00300100).
  * Stage 3: the radio's power-up and calibration (docs/WIFI_STAGE3.md), a channel, the TX power, the receiver's
- * ADC peak. Not run on an FM-1 yet.
+ * ADC peak. Its first run on an FM-1 (2026-10-26) crashed (docs/WIFI_STAGE3.md "First run on an FM-1").
  */
 #pragma once
 #include <stdint.h>
@@ -129,3 +129,39 @@ int fm1wifi_set_channel(unsigned ch);
 int fm1wifi_set_power(unsigned level);
 /* The receiver's ADC peak (0-255, 1 ms): what rd_adc_peak reads, a relative level, not dBm. */
 int fm1wifi_adc_peak(uint8_t *peak);
+
+/* ---- where a crash happened: the step the library is in and its last register write
+ *
+ * fm1wifi_power_up, _power_down, _diag_read, _radio_up, _set_channel, _set_power and _adc_peak set fm1wifi_where
+ * before each of their steps (step, then magic) and clear magic when they return; every CPU-side register write
+ * the library makes (the radio's analog controls, JL_WL, the core's window) records its address and value just
+ * before it is made. So a crash handler that finds magic ==
+ * FM1WIFI_WHERE_MAGIC knows the crash happened inside the library, in that step, after (or at) that write.
+ * It lives in section .noinit (FM1WIFI_NOINIT): the linker script must place that in RAM and leave it out of the
+ * start-up zeroing; it then also survives the reboot after the crash. So it holds what the last run left: call
+ * fm1wifi_where_clear() once at start, before the first crash that could read it; otherwise only read it. */
+#ifndef FM1WIFI_NOINIT
+#define FM1WIFI_NOINIT __attribute__((section(".noinit")))
+#endif
+#define FM1WIFI_WHERE_MAGIC 0x57494649u   /* "WIFI" */
+typedef struct {
+    uint32_t magic;           /* FM1WIFI_WHERE_MAGIC while a call is running */
+    uint32_t step;            /* FM1WIFI_STEP_* */
+    uint32_t addr, val;       /* the last CPU-side register write: address and value (0, 0: none yet in this call) */
+} fm1wifi_where_t;
+extern volatile fm1wifi_where_t fm1wifi_where;
+void fm1wifi_where_clear(void);
+/* The steps, in fm1wifi_radio_up's order (docs/WIFI_STAGE3.md "The sequence"); stage 2's and the later calls first. */
+enum {
+    FM1WIFI_STEP_NONE, FM1WIFI_STEP_POWER_UP, FM1WIFI_STEP_DIAG, FM1WIFI_STEP_POWER_DOWN, FM1WIFI_STEP_PHY_MAC_RST,
+    FM1WIFI_STEP_SIFS, FM1WIFI_STEP_MAC_0308, FM1WIFI_STEP_CFR0, FM1WIFI_STEP_PHY_INIT_A, FM1WIFI_STEP_AGC,
+    FM1WIFI_STEP_PHY_INIT_B, FM1WIFI_STEP_RF_INIT, FM1WIFI_STEP_PLL_SCAN, FM1WIFI_STEP_RF_PLL,
+    FM1WIFI_STEP_FILTER_TUNE, FM1WIFI_STEP_TRIM_TX, FM1WIFI_STEP_TX_START, FM1WIFI_STEP_TX_LO_I, FM1WIFI_STEP_TX_LO_Q,
+    FM1WIFI_STEP_TX_DC_I, FM1WIFI_STEP_TX_DC_Q, FM1WIFI_STEP_TX_GAIN, FM1WIFI_STEP_TX_PHASE, FM1WIFI_STEP_TRIM_RXDC,
+    FM1WIFI_STEP_RXDC, FM1WIFI_STEP_TRIM_RXIQ, FM1WIFI_STEP_RXIQ_START, FM1WIFI_STEP_RX_GAIN, FM1WIFI_STEP_RX_PHASE,
+    FM1WIFI_STEP_RF_DONE, FM1WIFI_STEP_PA, FM1WIFI_STEP_RF_GAIN, FM1WIFI_STEP_VGA0, FM1WIFI_STEP_PHY_INIT_A2,
+    FM1WIFI_STEP_AGC2, FM1WIFI_STEP_PHY_INIT_B2, FM1WIFI_STEP_CFR1, FM1WIFI_STEP_RAPP, FM1WIFI_STEP_RAM_TABLE,
+    FM1WIFI_STEP_BSB_AUTO, FM1WIFI_STEP_CHANNEL6, FM1WIFI_STEP_MCS_GAIN, FM1WIFI_STEP_SET_CHANNEL,
+    FM1WIFI_STEP_SET_POWER, FM1WIFI_STEP_ADC_PEAK, FM1WIFI_STEP_N
+};
+const char *fm1wifi_step_name(uint32_t step);   /* "RF_INIT", "TX LO I", ...: at most 18 characters; "?" past the list */

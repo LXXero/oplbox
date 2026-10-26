@@ -1,5 +1,15 @@
 # Unreleased
 
+- WiFi stage 3's first run on xero's FM-1 (2026-10-26, main 80a6917) crashed: CPU exception, PC 01C02674 in `rmw()`,
+  right after a register write returned. No register-side cause was found (the library's writes equal JieLi's code's
+  and stay inside the WiFi blocks); the likely cause is the supply: OPLBOX ran the WiFi load at the boot loader's VDC14
+  and SYSVDD, at which felucca-bsp notes some units misread flash and SRAM. The WiFi page now raises the rails to
+  M-VAVE's levels (VDC14 1.60 V, SYSVDD 1.38 V, the DC-DC, the WiFi 1.2 V regulator on automatic) before the core
+  comes up. The library records the step it is in and its last register write in `.noinit` (`fm1wifi_where`), and the
+  crash screen now also shows EMU_MSG, DBG_MSG, sp, the four ETM trace PCs, whether the RAM code still equals its flash
+  copy, and the WiFi step and last write for a crash inside the bring-up (README "If it crashes", docs/WIFI_STAGE3.md
+  "First run on an FM-1"). Host-tested; not run on an FM-1.
+
 - WiFi stage 3, the radio's power-up and calibration, in the fm1wifi library: `fm1wifi_radio_up` resets the MAC and
   baseband, loads their tables, sets up the radio (crystal caps from a calibration), scans the PLL's banks, makes a
   fresh trim (RX filter, TX LO/DC/gain/phase, RX DC per gain range, RX gain/phase), configures the PA, loads the RF

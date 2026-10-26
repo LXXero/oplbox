@@ -12,13 +12,15 @@
  *   keys, knobs, LEDs   fm1_in.notes / buttons, fm1_input_edges, fm1_enc_take, fm1_led_key (bsp/boards/fm1/fm1_input.h)
  *   screen              240 x 240, lcd_fill, draw_text_box with FONT_S (16 px) / FONT_L (32 px) (gfx.c)
  *   settings            one 4 KiB flash sector with a CRC (settings_load / settings_save)
- *   crash screen        the PC of a fault, then a reboot
+ *   crash screen        the fault's registers (and the app's note), then a reboot
  *
  * The app (dinghy.c) includes this file first and supplies:
  *   static void app_audio(int32_t *out, uint32_t n)   audio ISR: n stereo frames, L R L R, Q15 (+-32767), out is zero
  *   static void app_main(void)                        never returns; calls platform_poll() often (every few ms)
  *   static void app_usb_cmd(const uint8_t *d, uint32_t n)   main loop: a SysEx frame in the updater's framing that is
  *                                                     not the updater's (d decoded, cmd d[2], body from d + 6)
+ *   static const char *app_crash_note(uint32_t i)     the crash screen: line i (0, 1) of what the app was doing, or 0
+ *                                                     for none; called from the fault handler, so it only reads memory
  */
 /* the panel by name: buttons (fm1_in.buttons, fm1_input_edges, fm1_led_key: bit / id), the encoders
  * (fm1_enc_take); the 27 note keys are fm1_in.notes bit 0 (F3) .. 26 (G5), LED id 14 + key */
@@ -233,6 +235,7 @@ static volatile int32_t master_q12 = 2048;
 static void app_audio(int32_t *out, uint32_t n);
 static void app_main(void);
 static void app_usb_cmd(const uint8_t *d, uint32_t n);
+static const char *app_crash_note(uint32_t i);
 
 void fm1_alnk0_irq(void)                       /* via isr_alnk0 (bsp/chip/fm1_isr.S) */
 {
@@ -296,19 +299,65 @@ static void platform_poll(void)
     }
 }
 
+/* ---- the supply rails at M-VAVE's levels, for loads the boot loader's levels do not carry (fm1_sys.h: under the WiFi
+ * radio's load some units read the flash and SRAM wrong): VDC14 7 (1.60 V), SYSVDD 15 (1.38 V), then the 1.3 V supply
+ * on its DC-DC and the WiFi 1.2 V regulator on automatic (fm1_power_stock). Up only, a step per 100 us; the P33 keeps
+ * them until power-off. Main loop only, about 4 ms. */
+static void platform_supply_full(void)
+{
+    fm1_vdc14_raise(7);
+    fm1_sysvdd_raise(15);
+    (void)fm1_power_stock();
+}
+
+/* ---- the crash screen: 240 x 240, FONT_S (8 x 16 px), one line of up to 28 characters every 20 px */
+static char *crash_hex(char *p, uint32_t v)
+{
+    uint32_t k;
+    for (k = 0; k < 8u; k++) *p++ = "0123456789ABCDEF"[(v >> (28u - 4u * k)) & 15u];
+    *p = 0;
+    return p;
+}
+static char *crash_cat(char *p, const char *s)
+{
+    while (*s) *p++ = *s++;
+    *p = 0;
+    return p;
+}
+/* one line: "AAA xxxxxxxx  BBB xxxxxxxx" */
+static void crash_pair(uint32_t y, const char *a, uint32_t va, const char *b, uint32_t vb)
+{
+    char s[32], *p = crash_hex(crash_cat(s, a), va);
+    crash_hex(crash_cat(crash_cat(p, "  "), b), vb);
+    draw_text_box(8, y, 232, &FONT_S, s, C_WHITE, 0);
+}
+
 static void fm1_fault(const fm1_crash_t *c)
 {
-    char b[12];
-    uint32_t i, t0, v[3] = {c->vec, c->pc, c->rets};
+    extern uint32_t _rt_load[];
+    char s[32], *p;
+    const char *n;
+    const uint32_t *ram = _rt_start, *rom = _rt_load, *end = _rt_end;
+    uint32_t i, t0;
     fm1_audio_stop();
     lcd_fill(0, 0, 240, 240, RGB(160, 0, 0));
-    draw_text_box(0, 20, 240, &FONT_S, APP_NAME " CRASH", C_WHITE, 1);
-    for (i = 0; i < 3u; i++) {
-        uint32_t k;
-        for (k = 0; k < 8u; k++) b[k] = "0123456789ABCDEF"[(v[i] >> (28u - 4u * k)) & 15u];
-        b[8] = 0;
-        draw_text_box(10, 60 + i * 20, 220, &FONT_S, b, C_WHITE, 0);
-    }
+    draw_text_box(0, 4, 240, &FONT_S, APP_NAME " CRASH", C_WHITE, 1);
+    crash_pair(28, "VEC ", c->vec, "EMU ", c->emu);       /* EMU_MSG: stack limit, illegal instruction, ... */
+    crash_pair(48, "PC  ", c->pc, "DBG ", c->dbg);        /* DBG_MSG: bus error, write limit, PC limit */
+    crash_pair(68, "RET ", c->rets, "SP  ", c->sp);
+    crash_pair(88, "ETM ", c->etm[0], "    ", c->etm[1]);  /* the last branches, as the trace unit keeps them */
+    crash_pair(108, "    ", c->etm[2], "    ", c->etm[3]);
+    /* the RAM code (.ram_text, .ram_code) against its copy in the flash: a changed word is memory overwritten (DMA,
+     * a stray store); all equal with an illegal instruction reported points at a misread instead */
+    for (i = 0; ram + i < end && ram[i] == rom[i]; i++)
+        ;
+    p = crash_cat(s, "RAM CODE ");
+    if (ram + i < end) crash_hex(crash_cat(p, "CHANGED AT "), (uint32_t)(uintptr_t)(ram + i));
+    else crash_cat(p, "SAME AS FLASH");
+    draw_text_box(8, 132, 232, &FONT_S, s, C_WHITE, 0);
+    for (i = 0; i < 2u; i++)                                /* the app's note: what it was doing */
+        if ((n = app_crash_note(i)) != 0)
+            draw_text_box(8, 156 + i * 20, 232, &FONT_S, n, C_WHITE, 0);
     t0 = fm1_ticks();
     while ((uint32_t)(fm1_ticks() - t0) < 8000u * 1000u * FM1_TICKS_PER_US)
         fm1_wdt_feed();

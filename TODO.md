@@ -83,10 +83,12 @@ below).** The Felucca-derived files listed under "Today" were swapped for felucc
     erased by mistake. `tests/loader_test.c` checks it.
   - The USB audio ring band 96..160 for 256-frame halves, a half higher with `FELUCCA_UAC_DEEP` (352..416 in a
     1024-frame ring; +5.8 ms of latency on the recording).
-  - The supply-rail raises (`fm1_vdc14_raise`, `fm1_sysvdd_raise`, `fm1_power_stock` in `fm1_sys.h`): there, not
-    called. They are opt-in, and BASE.md gives no reason to turn them on.
+  - The supply-rail raises (`fm1_vdc14_raise`, `fm1_sysvdd_raise`, `fm1_power_stock` in `fm1_sys.h`): there, and
+    since 2026-10-26 called by the WiFi page before the core comes up (`platform_supply_full`; docs/WIFI_STAGE3.md
+    "First run on an FM-1"), not at boot.
   - The crash register dump: `fm1_crash_ctx` keeps r0..r15, usp, ssp and pc of the last four crashes in
-    `.noinit`. OPLBOX's crash screen still shows vec, pc and rets; nothing reads the dump yet.
+    `.noinit`. OPLBOX's crash screen shows vec, pc, rets, EMU_MSG, DBG_MSG, sp and the ETM PCs (2026-10-26); nothing
+    reads the r0..r15 dump yet.
 - Also new from the bsp: the update loader's screen ("UPDATING", "DO NOT UNPLUG", a bar). The key scan debounce is
   unchanged; the bsp's analog key rows, LED glow levels and power-on sweep stay off unless the app calls them.
 - Size: app image 346,708 B (main 9ef2a93: 342,792 B, +3,916), RAM .data+.bss 38,832 B (+2,056: the deeper USB

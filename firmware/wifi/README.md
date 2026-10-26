@@ -73,6 +73,11 @@ is never touched before `fm1wifi_power_up()`.
    pointer itself, and your calls into it go to its public functions, which stay in the flash.
 4. Stop the sound (or whatever else is timing-critical) before `fm1wifi_radio_up`; OPLBOX's test page stops its audio
    and waits until its output buffers hold silence.
+5. `fm1wifi_where` (the step the library is in and its last register write, for a crash handler; `fm1wifi.h`) is in
+   section `.noinit`: place it in RAM outside the start-up zeroing (felucca's `app.ld` has `.noinit`), call
+   `fm1wifi_where_clear()` once at start, and have your fault handler show it when its magic is set. On the FM-1 the
+   supply rails at M-VAVE's levels are worth raising before the radio comes up (OPLBOX: `platform_supply_full`,
+   docs/WIFI_STAGE3.md "First run on an FM-1").
 
 Interrupts (IRQ 52) join the port at stage 4. Each later stage keeps this directory's rule: no dependency on
 OPLBOX, everything board-specific through the port.
