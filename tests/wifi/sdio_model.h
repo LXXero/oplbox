@@ -49,6 +49,21 @@
  *   hang tune|measure|anl             that wait never ends: the filter tune is never done, the measurement
  *                                     never ready, the RF digital block always busy
  *   hang measure after N              the first N measurements answer, then none is ever ready
+ *   hang rxdma|txdma                  that frame FIFO's DMA never finishes (stages 4-5)
+ *   rxbad                             the first received frame's length word reads 0
+ *   ap ch=6 bssid=02:00:00:00:00:06 ssid=OPLBOX [sec=open|wep|wpa|wpa2] [rssi=-40] [hidden]
+ *      [auth=accept|refuse|silent] [assoc=accept|refuse|silent] [kick=MS] [gone=MS]
+ *                                     an access point (8 at most): a beacon every 100 TU on its channel while the
+ *                                     library listens there, a probe response to a probe request for any network
+ *                                     (not when hidden) or for its SSID, open-system authentication and association
+ *                                     (AID 1) answered as given, and kick / gone: a deauthentication, or no more
+ *                                     beacons, that many ms after the association
+ *
+ * Stages 4-6 (docs/WIFI_STAGE4.md): the WL30 host block's DMA moves frames between the model's RX FIFO or its
+ * access points and the library's buffers (fm1wifi_port_bus hands out the addresses), 0x04's bits 17, 20 and 21
+ * answer as the core's (frame waiting, TX done, RX done; bits 10 and 11 clear the done bits), and frames reach the
+ * library only once the link is up (MAC_SYS_CTRL's RX on, RX_FILTER_CFG written) and pass its filter (not to our
+ * address: dropped). The model's clock is the library's delays added up. PBF_DBG reads what the script gives it.
  *
  * A poll that gets the same busy answer SDIO_MODEL_POLL_MAX times in a row ends the program (exit 3, "unbounded
  * wait"): a test of a wait that lost its bound fails instead of hanging.
@@ -109,3 +124,5 @@ int sdio_model_in_trim(const sdio_model *m);
 unsigned sdio_model_polls(const sdio_model *m);   /* the longest run of busy answers to one wait */
 /* fn(ctx, addr, v) at every fm1wifi_port_wr32, before the model takes the write (NULL: none) */
 void sdio_model_on_wr(sdio_model *m, void (*fn)(void *ctx, uint32_t addr, uint32_t v), void *ctx);
+const wifi_fix *sdio_model_frames(const sdio_model *m);   /* frames sent (tx) and handed to the library (rx) */
+uint64_t sdio_model_now_us(const sdio_model *m);          /* the model's clock */

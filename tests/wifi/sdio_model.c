@@ -332,6 +332,18 @@ int wifi_fix_diff(FILE *out, const wifi_fix *want, const wifi_fix *got)
 /* ---- the model ---- */
 
 typedef struct { uint32_t addr; uint32_t *v; unsigned n, pos; int stuck; } mqueue;
+#define AP_MAX 8
+typedef struct {
+    uint8_t bssid[6], ch, sec, hidden;
+    char ssid[33];
+    int8_t rssi;
+    int auth, assoc;            /* how it answers: 0 accept, 1 refuse, 2 silent */
+    int kick_ms, gone_ms;       /* after association: a deauthentication / no more beacons, that many ms later (0: never) */
+    int authed, joined;
+    uint64_t next_beacon, joined_at;
+    uint16_t seq;
+    uint8_t sta[6];
+} model_ap;
 enum { POLL_TUNE, POLL_MEASURE, POLL_ANL, POLL_STUCK, N_POLL };
 
 struct sdio_model {
@@ -347,9 +359,23 @@ struct sdio_model {
     void (*on_wr)(void *ctx, uint32_t addr, uint32_t v);
     void *on_wr_ctx;
     uint64_t us_cca, us_busy;   /* microseconds of delay since RX_STA_CNT1 / CH_BUSY_STA were last read */
+    /* stages 4-6: the frame FIFOs and the access points around (sdio_model.h "ap") */
+    uint64_t now_us;            /* the model's clock: the library's delays added up */
+    model_ap ap[AP_MAX];
+    int nap;
+    uint8_t *fifo;              /* the RX FIFO: frames in the core's format, back to back */
+    size_t fifo_n, fifo_cap;
+    int rx_done, tx_done, hang_rxdma, hang_txdma, rx_bad;
+    uint32_t tx_ok, rx_dropped;
+    void *bus[16];              /* fm1wifi_port_bus's buffers: number k is 0x10000000 + k << 20 */
+    int nbus;
+    wifi_fix frames;            /* every frame sent (tx) and queued for the library (rx), with its channel */
 };
 
 static sdio_model *cur;
+static void rx_dma(sdio_model *m, uint32_t len);
+static void tx_dma(sdio_model *m, uint32_t len);
+static void air(sdio_model *m);
 
 sdio_model *sdio_model_new(void)
 {
@@ -366,6 +392,8 @@ void sdio_model_free(sdio_model *m)
     free(m->q);
     wifi_fix_free(&m->log);
     wifi_fix_free(&m->wlog);
+    wifi_fix_free(&m->frames);
+    free(m->fifo);
     free(m);
 }
 
@@ -384,6 +412,9 @@ void sdio_model_zero(sdio_model *m)
     memset(m->win, 0, sizeof m->win);
 }
 uint32_t sdio_model_clk(const sdio_model *m) { return m->clk; }
+const wifi_fix *sdio_model_frames(const sdio_model *m) { return &m->frames; }
+uint64_t sdio_model_now_us(const sdio_model *m) { return m->now_us; }
+static int ap_line(sdio_model *m, char *p);
 uint8_t sdio_model_bbp(const sdio_model *m, uint8_t reg) { return m->bbp[reg]; }
 uint8_t sdio_model_win(const sdio_model *m, unsigned w, uint8_t a) { return m->win[w & 3u][a]; }
 int sdio_model_bad(const sdio_model *m) { return m->bad; }
@@ -468,10 +499,17 @@ int sdio_model_script(sdio_model *m, const char *text, const char *name, FILE *e
                 continue;
             }
             else if (t && !strcmp(t, "anl")) m->hang_anl = 1;
-            else { rc = perr(err, name, line, "hang needs tune, measure or anl"); break; }
+            else if (t && !strcmp(t, "rxdma")) m->hang_rxdma = 1;
+            else if (t && !strcmp(t, "txdma")) m->hang_txdma = 1;
+            else { rc = perr(err, name, line, "hang needs tune, measure, anl, rxdma or txdma"); break; }
             if (tok(&p)) { rc = perr(err, name, line, "one word after hang"); break; }
             continue;
         }
+        if (!strcmp(t, "ap")) {
+            if (m->nap >= AP_MAX || ap_line(m, p)) { rc = perr(err, name, line, "ap: ch=1-13 bssid=xx:..:xx ssid=NAME [sec=open|wep|wpa|wpa2] [rssi=-N] [hidden] [auth=accept|refuse|silent] [assoc=...] [kick=MS] [gone=MS], 8 at most"); break; }
+            continue;
+        }
+        if (!strcmp(t, "rxbad")) { m->rx_bad = 1; continue; }   /* the first frame's length word reads 0 */
         if (strcmp(t, "reg") && strcmp(t, "next") && strcmp(t, "stuck")) { rc = perr(err, name, line, "unknown script line"); break; }
         int kind = t[0] == 'r' ? 0 : t[0] == 'n' ? 1 : 2;
         if (!(t = tok(&p)) || hex_u32(t, &a) || (a & 3u)) { rc = perr(err, name, line, "a word-aligned address expected"); break; }
@@ -656,6 +694,233 @@ static void bbp_write(sdio_model *m, uint8_t r, uint8_t v)
     wlog_rec(m, WIFI_REC_BBP, r, v);
 }
 
+/* ---- stages 4-6: the frame FIFOs and the access points (sdio_model.h "ap") */
+
+static void put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void put32le(uint8_t *p, uint32_t v) { put16(p, v); put16(p + 2, v >> 16); }
+static void put32be(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+static uint32_t rd32le(const uint8_t *p) { return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+
+static int hex_mac(const char *t, uint8_t *a)
+{
+    unsigned v[6];
+    if (sscanf(t, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6) return -1;
+    for (int i = 0; i < 6; i++) { if (v[i] > 255u) return -1; a[i] = (uint8_t)v[i]; }
+    return 0;
+}
+
+static int answer(const char *v)
+{
+    return !strcmp(v, "accept") ? 0 : !strcmp(v, "refuse") ? 1 : !strcmp(v, "silent") ? 2 : -1;
+}
+
+static int ap_line(sdio_model *m, char *p)
+{
+    model_ap *a = &m->ap[m->nap];
+    char *t;
+    int have = 0;
+    memset(a, 0, sizeof *a);
+    a->rssi = -50;
+    while ((t = tok(&p))) {
+        char *v = strchr(t, '=');
+        if (v) *v++ = 0;
+        if (!strcmp(t, "hidden") && !v) { a->hidden = 1; continue; }
+        if (!v) return -1;
+        if (!strcmp(t, "ch")) { a->ch = (uint8_t)atoi(v); if (a->ch < 1 || a->ch > 13) return -1; have |= 1; }
+        else if (!strcmp(t, "bssid")) { if (hex_mac(v, a->bssid)) return -1; have |= 2; }
+        else if (!strcmp(t, "ssid")) { if (strlen(v) > 32) return -1; strcpy(a->ssid, v); have |= 4; }
+        else if (!strcmp(t, "sec")) {
+            a->sec = !strcmp(v, "open") ? 0 : !strcmp(v, "wep") ? 1 : !strcmp(v, "wpa") ? 2 : !strcmp(v, "wpa2") ? 3 : 9;
+            if (a->sec > 3) return -1;
+        }
+        else if (!strcmp(t, "rssi")) a->rssi = (int8_t)atoi(v);
+        else if (!strcmp(t, "auth")) { if ((a->auth = answer(v)) < 0) return -1; }
+        else if (!strcmp(t, "assoc")) { if ((a->assoc = answer(v)) < 0) return -1; }
+        else if (!strcmp(t, "kick")) a->kick_ms = atoi(v);
+        else if (!strcmp(t, "gone")) a->gone_ms = atoi(v);
+        else return -1;
+    }
+    if (have != 7) return -1;
+    a->next_beacon = (uint64_t)(m->nap + 1) * 7000u;            /* each its own phase */
+    m->nap++;
+    return 0;
+}
+
+static unsigned channel_now(const sdio_model *m)
+{
+    uint32_t v = (m->wl[(FM1_WF_CON(7) - FM1_JL_WL_BASE) / 4u] & 0xFFu) - 101u;
+    return v >= 1u && v <= 13u ? v : 0u;
+}
+
+static void frame_rec(sdio_model *m, int tx, unsigned ch, const uint8_t *f, unsigned n)
+{
+    wifi_rec *r = fix_add(&m->frames);
+    r->kind = WIFI_REC_FRAME;
+    r->write = tx;
+    snprintf(r->attr, sizeof r->attr, "ch=%u", ch);
+    for (unsigned i = 0; i < n; i++) rec_byte(r, f[i], 0);
+}
+
+/* A frame on the air to the library: kept when the receiver is on (MAC_SYS_CTRL RX, a filter written: the link is
+ * up) and the filter lets it through, then into the FIFO as length word (big-endian), RXWI, frame, pad, trailer. */
+static void deliver(sdio_model *m, const uint8_t *f, unsigned n, int8_t rssi)
+{
+    uint32_t filt = m->core[RX_FILTER_CFG / 4u], N = 16u + ((n + 3u) & ~3u), info = 0;
+    const uint32_t *ad = &m->core[MAC_ADDR_DW0 / 4u];
+    uint8_t me[6] = { (uint8_t)ad[0], (uint8_t)(ad[0] >> 8), (uint8_t)(ad[0] >> 16), (uint8_t)(ad[0] >> 24),
+                      (uint8_t)ad[1], (uint8_t)(ad[1] >> 8) };
+    if (!(m->core[MAC_SYS_CTRL / 4u] & MAC_SYS_CTRL_ENABLE_RX) || !filt) return;
+    if (f[4] & 1u) info |= f[4] == 0xFF ? 1u << 6 : 1u << 5;                 /* broadcast / multicast */
+    else if (!memcmp(f + 4, me, 6)) info |= 1u << 4;                          /* unicast to me */
+    else if (filt & RX_FILTER_CFG_DROP_NOT_TO_ME) return;
+    if (m->fifo_n + N + 8u > 65536u) { m->rx_dropped++; return; }
+    if (m->fifo_n + N + 8u > m->fifo_cap) { m->fifo_cap = 65536u; m->fifo = xrealloc(m->fifo, m->fifo_cap); }
+    uint8_t *p = m->fifo + m->fifo_n;
+    memset(p, 0, N + 8u);
+    put32be(p, m->rx_bad ? 0u : N);
+    m->rx_bad = 0;
+    put32le(p + 4, (uint32_t)n << 16 | 0xFFu);                              /* RXWI: MPDU byte count, WCID */
+    put32le(p + 12, (uint8_t)rssi);                                          /* RSSI0 */
+    memcpy(p + 20, f, n);
+    put32be(p + 4 + N, info);
+    m->fifo_n += N + 8u;
+    frame_rec(m, 0, channel_now(m), f, n);
+}
+
+static unsigned mgmt_hdr(uint8_t *f, uint8_t kind, const uint8_t *da, const uint8_t *sa, const uint8_t *bssid, uint16_t *seq)
+{
+    memset(f, 0, 24);
+    f[0] = kind;
+    memcpy(f + 4, da, 6); memcpy(f + 10, sa, 6); memcpy(f + 16, bssid, 6);
+    put16(f + 22, (uint32_t)((*seq)++ & 0xFFFu) << 4);
+    return 24;
+}
+
+static unsigned ap_body(const sdio_model *m, const model_ap *a, uint8_t *f, int show_ssid)
+{
+    static const uint8_t rates[] = { 1, 8, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24 };
+    static const uint8_t rsn[] = { 48, 20, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 2, 0, 0 };
+    static const uint8_t wpa[] = { 221, 22, 0x00, 0x50, 0xF2, 1, 1, 0, 0x00, 0x50, 0xF2, 2, 1, 0, 0x00, 0x50, 0xF2, 2, 1, 0, 0x00, 0x50, 0xF2, 2 };
+    unsigned n = 0, k = show_ssid ? (unsigned)strlen(a->ssid) : 0;
+    put32le(f, (uint32_t)m->now_us); put32le(f + 4, (uint32_t)(m->now_us >> 32));   /* timestamp */
+    put16(f + 8, 100);                                                       /* beacon interval, TU */
+    put16(f + 10, 0x0001u | 0x0400u | (a->sec ? 0x0010u : 0u));             /* ESS, short slot, privacy */
+    n = 12;
+    f[n++] = 0; f[n++] = (uint8_t)k; memcpy(f + n, a->ssid, k); n += k;
+    memcpy(f + n, rates, sizeof rates); n += sizeof rates;
+    f[n++] = 3; f[n++] = 1; f[n++] = a->ch;
+    if (a->sec == 3) { memcpy(f + n, rsn, sizeof rsn); n += sizeof rsn; }
+    if (a->sec == 2) { memcpy(f + n, wpa, sizeof wpa); n += sizeof wpa; }
+    return n;
+}
+
+static void ap_send(sdio_model *m, model_ap *a, const uint8_t *f, unsigned n)
+{
+    if (channel_now(m) == a->ch) deliver(m, f, n, a->rssi);
+}
+
+static void ap_mgmt(sdio_model *m, model_ap *a, uint8_t kind, const uint8_t *body, unsigned nb)
+{
+    uint8_t f[64];
+    unsigned n = mgmt_hdr(f, kind, a->sta, a->bssid, a->bssid, &a->seq);
+    memcpy(f + n, body, nb);
+    ap_send(m, a, f, n + nb);
+}
+
+/* Beacons, a planned deauthentication: whatever is due by the model's clock. */
+static void air(sdio_model *m)
+{
+    static const uint8_t bcast[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    for (int i = 0; i < m->nap; i++) {
+        model_ap *a = &m->ap[i];
+        int gone = a->joined && a->gone_ms && m->now_us >= a->joined_at + (uint64_t)a->gone_ms * 1000u;
+        if (a->joined && a->kick_ms && m->now_us >= a->joined_at + (uint64_t)a->kick_ms * 1000u) {
+            uint8_t b[2] = { 2, 0 };                                         /* reason 2: no longer valid */
+            ap_mgmt(m, a, 0xC0, b, 2);
+            a->joined = a->authed = 0;
+        }
+        while (a->next_beacon <= m->now_us) {
+            if (!gone) {
+                uint8_t f[160];
+                unsigned n = mgmt_hdr(f, 0x80, bcast, a->bssid, a->bssid, &a->seq);
+                n += ap_body(m, a, f + n, !a->hidden);
+                ap_send(m, a, f, n);
+            }
+            a->next_beacon += 102400u;                                       /* 100 TU */
+        }
+    }
+}
+
+/* A frame the library sent, on the current channel: the access points there answer as IEEE 802.11 says. */
+static void ap_hear(sdio_model *m, const uint8_t *f, unsigned n)
+{
+    unsigned ch = channel_now(m);
+    uint8_t kind = f[0] & 0xFC;
+    if (n < 24) return;
+    for (int i = 0; i < m->nap; i++) {
+        model_ap *a = &m->ap[i];
+        uint8_t r[160];
+        if (a->ch != ch) continue;
+        if (kind == 0x40) {                                                  /* probe request: SSID element first */
+            unsigned k = n >= 26 && f[24] == 0 ? f[25] : 0;
+            if (k ? k != strlen(a->ssid) || memcmp(f + 26, a->ssid, k) : a->hidden) continue;
+            memcpy(a->sta, f + 10, 6);
+            unsigned m2 = mgmt_hdr(r, 0x50, a->sta, a->bssid, a->bssid, &a->seq);
+            m2 += ap_body(m, a, r + m2, 1);
+            ap_send(m, a, r, m2);
+            continue;
+        }
+        if (memcmp(f + 4, a->bssid, 6)) continue;
+        memcpy(a->sta, f + 10, 6);
+        if (kind == 0xB0 && a->auth != 2) {                                  /* authentication */
+            uint8_t b[6] = { 0, 0, 2, 0, (uint8_t)(a->auth ? 1 : 0), 0 };
+            a->authed = !a->auth;
+            ap_mgmt(m, a, 0xB0, b, 6);
+        } else if (kind == 0x00 && a->assoc != 2) {                          /* association request */
+            if (!a->authed) { uint8_t b[2] = { 6, 0 }; ap_mgmt(m, a, 0xC0, b, 2); continue; }
+            uint8_t b[16] = { 0x01, 0x04, (uint8_t)(a->assoc ? 17 : 0), 0, 1, 0xC0, 1, 8, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24 };
+            ap_mgmt(m, a, 0x10, b, 16);
+            if (!a->assoc) { a->joined = 1; a->joined_at = m->now_us; }
+        } else if (kind == 0xC0) {                                           /* the station leaves */
+            a->joined = a->authed = 0;
+        }
+    }
+}
+
+/* A DMA address the port handed out, or 0 (a length written with any other address in place: no transfer, the done
+ * bit stays clear, as a DMA to nowhere would leave it) */
+static uint8_t *bus_ptr(sdio_model *m, uint32_t h)
+{
+    uint32_t k = (h - 0x10000000u) >> 20;
+    if (h < 0x10000000u || k >= (uint32_t)m->nbus) return NULL;
+    return (uint8_t *)m->bus[k] + (h & 0xFFFFFu);
+}
+
+static void rx_dma(sdio_model *m, uint32_t len)
+{
+    uint8_t *d = bus_ptr(m, m->core[(FM1_WL30_HOST_18 - FM1_WIFI_CORE_BASE) / 4u]);
+    size_t k = len < m->fifo_n ? len : m->fifo_n;
+    if (m->hang_rxdma || !d || len > 0xFFFFu) return;
+    memcpy(d, m->fifo, k);
+    memset(d + k, 0, len - k);
+    memmove(m->fifo, m->fifo + k, m->fifo_n - k);
+    m->fifo_n -= k;
+    m->rx_done = 1;
+}
+
+static void tx_dma(sdio_model *m, uint32_t len)
+{
+    const uint8_t *s = bus_ptr(m, m->core[(FM1_WL30_HOST_10 - FM1_WIFI_CORE_BASE) / 4u]);
+    uint32_t n;
+    if (m->hang_txdma || !s) return;
+    n = (rd32le(s + 8) >> 16) & 0xFFFu;                                      /* TXWI word 1: MPDU byte count */
+    if (len < 26u || n + 26u != len) { fprintf(stderr, "sdio_model: TX DMA of %u bytes for a %u-byte frame\n", len, n); exit(2); }
+    frame_rec(m, 1, channel_now(m), s + 20, n);
+    m->tx_done = 1;
+    m->tx_ok++;
+    ap_hear(m, s + 20, n);
+}
+
 /* ---- the port */
 
 uint32_t fm1wifi_port_rd32(uint32_t addr)
@@ -669,6 +934,12 @@ uint32_t fm1wifi_port_rd32(uint32_t addr)
         else if (q && q->pos < q->n) v = q->v[q->pos++];
         else if (addr == FM1_WLA_CON(30)) v = status(m);
         else if (addr == FM1_WIFI_CORE(RX_STA_CNT1) || addr == FM1_WIFI_CORE(CH_BUSY_STA)) v = survey_read(m, addr - FM1_WIFI_CORE_BASE);
+        else if (addr == FM1_WL30_HOST_04)
+            v = (*r & ~(FM1_WL30_04_RX_READY | FM1_WL30_04_TX_DONE | FM1_WL30_04_RX_DONE)) |
+                (m->fifo_n ? FM1_WL30_04_RX_READY : 0u) | (m->rx_done ? FM1_WL30_04_RX_DONE : 0u) |
+                (m->tx_done ? FM1_WL30_04_TX_DONE : 0u);
+        else if (addr == FM1_WIFI_CORE(TX_STA_CNT1)) { v = m->tx_ok > 0xFFFFu ? 0xFFFFu : m->tx_ok; m->tx_ok = 0; }
+        else if (addr == FM1_WIFI_CORE(RX_STA_CNT2)) { v = (m->rx_dropped > 0xFFFFu ? 0xFFFFu : m->rx_dropped) << 16; m->rx_dropped = 0; }
         else if (addr == FM1_WL_ANL_CON(0)) {
             v = (*r & ~0x700000u) | (m->hang_anl ? 0x100000u : 0u);
             poll(m, POLL_ANL, m->hang_anl);
@@ -698,7 +969,14 @@ void fm1wifi_port_wr32(uint32_t addr, uint32_t v)
     } else {
         wlog_rec(m, WIFI_REC_WR, addr, v);
     }
+    if (addr == FM1_WL30_HOST_04) {                           /* the done bits are the model's; 10 and 11 clear them */
+        if (v & FM1_WL30_04_TX_CLR) m->tx_done = 0;
+        if (v & FM1_WL30_04_RX_CLR) m->rx_done = 0;
+        v &= ~(FM1_WL30_04_RX_READY | FM1_WL30_04_TX_DONE | FM1_WL30_04_RX_DONE);
+    }
     *r = v;
+    if (addr == FM1_WL30_HOST_1C) rx_dma(m, v);
+    if (addr == FM1_WL30_HOST_14) tx_dma(m, v);
 }
 
 uint32_t fm1wifi_port_clk(uint32_t bits)
@@ -717,6 +995,20 @@ void fm1wifi_port_delay_us(uint32_t us)
     wlog_rec(m, WIFI_REC_DELAY, 0, us);
     m->us_cca += us;
     m->us_busy += us;
+    m->now_us += us;
+    air(m);
+}
+
+uint32_t fm1wifi_port_bus(const void *p)
+{
+    sdio_model *m = model();
+    int k;
+    for (k = 0; k < m->nbus && m->bus[k] != p; k++) {}
+    if (k == m->nbus) {
+        if (m->nbus == 16) { fputs("sdio_model: more than 16 DMA buffers\n", stderr); exit(2); }
+        m->bus[m->nbus++] = (void *)p;
+    }
+    return 0x10000000u + ((uint32_t)k << 20);
 }
 
 void fm1wifi_port_trim(int on)

@@ -15,6 +15,7 @@ void fm1wifi_port_wr32(uint32_t addr, uint32_t v) { last_addr = addr; last_val =
 uint32_t fm1wifi_port_clk(uint32_t bits) { (void)bits; return 0; }
 void fm1wifi_port_delay_us(uint32_t us) { (void)us; }
 void fm1wifi_port_trim(int on) { (void)on; }
+uint32_t fm1wifi_port_bus(const void *p) { (void)p; return 0; }
 
 static int bad;
 static void check(int ok, const char *what) { if (!ok) { fprintf(stderr, "FAIL: %s\n", what); bad = 1; } }
@@ -109,7 +110,8 @@ static const struct { const char *name; uint32_t v; } regs[] = {
     R(RX_FILTER_CFG) R(AUTO_RSP_CFG) R(LEGACY_BASIC_RATE) R(HT_BASIC_RATE)
     R(TX_SEC_CNT0) R(RX_SEC_CNT0) R(TXOP_HLDR_ET)
     R(CH_BUSY_STA) R(TX_PIN_CFG) R(TX_BAND_CFG) R(TX_BAND_CFG_A) R(TX_BAND_CFG_BG) R(RX_STA_CNT1)
-    R(RX_STA_CNT1_FALSE_CCA)
+    R(RX_STA_CNT1_FALSE_CCA) R(MAC_BSSID_DW0) R(MAC_BSSID_DW1) R(RX_STA_CNT0) R(RX_STA_CNT2) R(TX_STA_CNT0)
+    R(TX_STA_CNT1) R(TX_STA_CNT2)
     R(PAIRWISE_KEY_TABLE_BASE) R(MAC_IVEIV_TABLE_BASE) R(MAC_WCID_ATTRIBUTE_BASE) R(SHARED_KEY_TABLE_BASE)
     R(SHARED_KEY_MODE_BASE)
     R(FM1_WF_REG_0308) R(FM1_WF_REG_030C) R(FM1_WF_REG_0324) R(FM1_WF_REG_0328) R(FM1_WF_REG_0434)

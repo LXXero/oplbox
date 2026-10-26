@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 mkdir -p build/host
 rm -f build/host/oplbox-*.ppm build/host/oplbox-*.png build/host/oplbox.wav
 cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -DDBOPL2_SCOPE_N=512 -Ifirmware/src -Ifirmware/gen \
-   -Ifirmware/wifi -Itests/wifi -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c firmware/wifi/fm1wifi.c tests/wifi/sdio_model.c
+   -Ifirmware/wifi -Itests/wifi -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c tests/wifi/sdio_model.c
 build/host/oplbox build/host/oplbox
 # the editor's undo and live recording, checked against the song in memory: each script exits 1 when a check fails
 build/host/oplbox build/host/undo tests/script_undo.txt
@@ -55,7 +55,7 @@ for f in firmware/wifi/*.c firmware/wifi/*.h; do
 done
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -c -o build/host/fm1wifi.o firmware/wifi/fm1wifi.c
 # the register header: the accessors hit their addresses, and every address matches docs/WIFI.md
-cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_regs tests/wifi_regs.c firmware/wifi/fm1wifi.c
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_regs tests/wifi_regs.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c
 build/host/wifi_regs > build/host/wifi_regs.txt
 python3 tests/wifi_regs.py build/host/wifi_regs.txt
 # fm1wifi against the register model (tests/wifi/sdio_model.c, the library's port on the host): the power-up and
@@ -65,7 +65,7 @@ python3 tests/wifi_regs.py build/host/wifi_regs.txt
 # model, record for record (tests/wifi/radio_trace.txt.gz, from tools/wifi_ir.py --trace), its four kinds of wait
 # must end in TIMEOUT when the model never answers, and power-down must put every register back
 gzip -dc tests/wifi/radio_trace.txt.gz > build/host/radio_trace.txt
-cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/wifi/fm1wifi.c
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c
 build/host/wifi_model tests/wifi build/host
 # ... and that test catches a swapped write, a dropped delay and a wait without its bound (8 deliberate bugs)
 python3 tests/wifi_mutants.py build/host
