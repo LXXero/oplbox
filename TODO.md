@@ -381,7 +381,7 @@ two bars).
 - No sign of USB power: on USB the count is the charging battery's. Felucca shows a bolt when a USB host is
   configured (`usb.config && !usb.suspended`); OPLBOX could do the same.
 
-## 7. WiFi on our own driver — stage 2 run on the FM-1, stage 3 built, waiting for the FM-1
+## 7. WiFi on our own driver — stages 2-3 run on the FM-1, stages 4-6 built, waiting for the FM-1
 
 xero: "i would rather keep it gpl and just build our own wifi firmware". OPLBOX stays GPL-3.0-only and does not
 link JieLi's binary WiFi archives.
@@ -396,9 +396,10 @@ RT2800 family (Linux `rt2800.h`, GPL-2.0-or-later); the radio and internal bus (
 Linux header lineage in five of thirteen members (see 7c), and the archives are LLVM bitcode, readable as LLVM IR. JieLi's stack (about 330 KB of code) would not fit beside
 OPLBOX (238 KB free) anyway.
 
-**Next.** Stage 2 ran on xero's FM-1 (7e: the core's window answers, `MAC_CSR0` 00300100). Stage 3 is built (7f):
-xero flashes it, opens the WiFi test page (SAVE, then PLAY), and reads both of its pages off the screen (README "WiFi
-test page"). Stage 4 (receiving raw frames) waits for that.
+**Next.** Stages 2 and 3 ran on xero's FM-1 (7e, 7f: the bring-up, the trims, a survey that counts on every
+channel). Stages 4-6 are built in one go (7h): xero makes an open hotspot named OPLBOX, flashes, opens the WiFi test
+page (SAVE, then PLAY) and photographs all ten pages (README "WiFi test page", docs/WIFI_STAGE4.md "Reading pages
+5-10"). Page 5 says where the run stopped; pages 7-9 hold the raw evidence for the next fix.
 
 ### 7a. Stage 1, register header — built, host-tested, not yet tried on hardware
 
@@ -703,6 +704,31 @@ USB rescue are untouched.
 **Waiting for xero.** Flash, open the page (SAVE, PLAY), read page 1 and page 2 (PLAY switches). Then: whether the
 bring-up completes (`RESULT`), whether BBP 0 comes out of reset, where the PLL and the trims land, what the receiver
 sees per channel, and whether the RAM check stays at 0.
+
+### 7h. Stages 4-6, frames, scans and joining an open network — built, host-tested, waiting for the FM-1
+
+xero (2026-10-26): "can you get a few steps going here? i'm tired of doing this one by one". Stages 4, 5 and 6 are
+built together so one FM-1 run tests all of them (docs/WIFI_STAGE4.md).
+
+- **Built.** `fm1wifi.c`: the MAC's 22 defaults and the address, the RX FIFO read and the TX FIFO write through the
+  WL30 host block's DMA (registers, bits and limits read from `wl_sdio`/`wl_usb_to_sdio` as facts), bounded waits,
+  a per-channel scan driver and the station's driver. `fm1wifi_frame.c` (new, pure): the RX descriptor and
+  beacon/probe-response parser, the scan list, the TX image, probe request / authentication / association /
+  deauthentication frames, and the station's state machine (timeouts, beacon loss, deauthentication, leaving,
+  rejoining). The WiFi page runs the link, a passive and an active scan, joins the open network OPLBOX, stays 2 s,
+  leaves and rejoins; pages 5-10 show each step, the scan list, the first four frames' bytes, the core's counters and
+  the join. The address comes from the flash part's unique ID (no settings sector needed). The crash record names
+  the new steps (`WIFI AT RX READ`, `TX SEND`, ...).
+- **Tests.** `tests/wifi_frame.c` (65 checks: parser, scan list, TX image, frames byte for byte, station) and
+  `tests/wifi_link.c` (92 checks: the DMA register by register, passive and active scans against scripted access
+  points in the register model, a join and what ends it, every wait bounded, the crash record during a DMA). The
+  page runs on the host against the made-up core, an RX DMA that never finishes and a refused association.
+- **Untested on hardware**: all of it. In particular whether frames reach the FIFO with the receive path as set up
+  (no IRQ, no 0x0328), whether the RXWI and the trailer are rt2800's, what RSSI0 means, whether `PBF_DBG` lets the TX
+  gate open, whether a frame goes out at CCK 1 Mbit/s, and whether an AP answers. Page 5's first FAIL and pages 7-9
+  are for that.
+- **Not on the page yet**: stage 7 (IP over lwIP) and stage 8 (the WPA2 handshakes), both host-built; they join once
+  an open join works on the FM-1.
 
 ## 8. Bluetooth LE MIDI on code we can ship — stage 0 done (the map)
 

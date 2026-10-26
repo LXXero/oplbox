@@ -706,6 +706,12 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   SSID/BSSID/RSSI/security list.
 - **Host**: the parser on recorded frames (the FM-1 dumps a few raw frames over USB SysEx or onto the screen in
   hex; they become fixtures). **FM-1**: the page lists the networks around, the first visible milestone.
+- **Built, with stages 5 and 6** (TODO.md 7h; docs/WIFI_STAGE4.md): no IRQ yet, the main loop polls the RX FIFO's
+  ready bit (WL30 host 0x04 bit 17), as JieLi's receive thread does without the interrupt; the FIFO read is
+  `sdio_recv_int_hdl`'s (0x0324 = 2, a 4-byte DMA for the big-endian length word N, then N + 4 bytes); the RXWI and
+  the trailer by rt2800.h's fields; `RX_FILTER_CFG` from the MAC's defaults (written in stage 4, not 5: receiving
+  needs them); a passive scan per channel into a list of 16. The fixtures are hand-written from IEEE 802.11 until the
+  page's raw frames (pages 7-8) come back from the FM-1. Not run on an FM-1.
 
 ### Stage 5: transmit raw frames, active scan (needs FM-1)
 
@@ -715,6 +721,11 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   (`TX_RTY_CFG`). Send probe requests.
 - **Host**: descriptor encoding tests. **FM-1**: probe responses arrive (hidden networks too); optionally xero
   checks with a phone's WiFi analyser that the FM-1's MAC address shows up.
+- **Built** (docs/WIFI_STAGE4.md "The TX FIFO", "The link"): the FIFO image as `usb_submit_urb` lays it out
+  (JieLi's two words, the TXWI, the frame; frame + 26 bytes by DMA) behind the same queue checks; the 22 defaults
+  with JieLi's `TX_RTY_CFG` (retry limits 31 and 15: what ran on this core, and joining at 1 Mbit/s wants the
+  retries); the address made from the flash part's unique ID on every start instead of kept in a settings sector (the
+  same every time without a flash write). Not run on an FM-1.
 
 ### Stage 6: 802.11 station, open networks (needs FM-1)
 
@@ -722,6 +733,10 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   disconnect and rejoin. A small state machine written from IEEE 802.11-2020 (clauses 11.3, 9.3.3), taking MAC
   programming from rt2x00 and Ralink's staging driver where needed (both GPL-2.0-or-later).
 - **Host**: the state machine with frame fixtures and timeouts. **FM-1**: joins an open hotspot (a phone).
+- **Built** (`fm1wifi_frame.c`; docs/WIFI_STAGE4.md "Scanning and joining"): open-system authentication and
+  association, 3 tries 300 ms apart each, beacon loss after 10 intervals (at least 1 s), deauthentication and
+  disassociation, leaving and rejoining; the BSSID into `MAC_BSSID_DW0/1`. The page joins the open network OPLBOX.
+  Not run on an FM-1.
 
 ### Stage 7: IP over WiFi (parallel with stage 8 after stage 6; needs FM-1)
 
