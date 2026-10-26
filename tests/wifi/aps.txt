@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Stages 4-6 (docs/WIFI_STAGE4.md), loaded after core_model.txt: PBF_DBG with bits 7-5 set, which JieLi's TX path waits for (made up: the FM-1's
+# value is not known), and the access points the page's scans and join find (tests/wifi/sdio_model.h "ap").
+reg 0x3043c 0x000000e0
+ap ch=6 bssid=02:00:00:00:00:06 ssid=OPLBOX sec=open rssi=-40
+ap ch=1 bssid=02:00:00:00:00:01 ssid=HOME sec=wpa2 rssi=-61
+ap ch=11 bssid=02:00:00:00:00:0b ssid=OLDROUTER sec=wpa rssi=-75
+ap ch=11 bssid=02:00:00:00:00:0c ssid=SECRET sec=open rssi=-55 hidden

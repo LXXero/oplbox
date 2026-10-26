@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Loaded after core_model.txt: OPLBOX answers the authentication but refuses the association (status 17).
+reg 0x3043c 0x000000e0
+ap ch=6 bssid=02:00:00:00:00:06 ssid=OPLBOX sec=open rssi=-40 assoc=refuse

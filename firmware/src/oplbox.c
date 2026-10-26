@@ -1524,15 +1524,298 @@ static uint32_t wifi_reached(const fm1wifi_radio *r)   /* 0 not started .. 6 don
     return 0;
 }
 
+/* ---- stages 4-6 on the page (docs/WIFI_STAGE4.md): after the survey, the link up with the FM-1's address, a passive
+ * scan (120 ms per channel), an active one (40 ms per channel, probe requests for any network and for OPLBOX), then
+ * joining the open network OPLBOX (a phone's hotspot), 2 s joined, leaving and joining again. What each step found
+ * is kept here for pages 5-10. */
+enum { WL_LINK = 1, WL_PASSIVE = 2, WL_ACTIVE = 4, WL_JOIN = 8, WL_STAY = 16, WL_REJOIN = 32 };
+enum { WL_NO_OPLBOX = 1, WL_NOT_OPEN = 2 };
+static struct {
+    uint32_t reached;             /* WL_*: the steps that ran */
+    int link, ep, ea, ej;         /* fm1wifi_link_up's, the passive and active scans', fm1wifi_join's results */
+    uint32_t no_join;             /* WL_NO_OPLBOX, WL_NOT_OPEN: why the join did not run */
+    uint8_t mac[6], mac_uid;      /* the FM-1's address; 1: made from the flash's unique ID */
+    fm1wifi_scan_list list;
+    uint32_t n_passive;           /* networks the passive scan found */
+    fm1wifi_frames fp, fa, fj;    /* what the passive scan, the active scan and the join saw */
+    fm1wifi_counters c;           /* the core's counters from the link up to the end */
+    uint32_t q0, w0;              /* TXRXQ_PCNT and the WL30 host block's 0x04 before the scans */
+    fm1wifi_bss target;
+    fm1wifi_sta sta;
+    uint8_t j_state, j_why, s_state, s_why, r_state, r_why;   /* the join, after 2 s, the rejoin */
+    uint16_t j_status, j_aid, s_reason;
+    uint32_t s_beacons;
+} wl;
+
+/* The FM-1's WiFi address, the same on every start: the flash part's factory unique ID hashed (FNV-1a) into a
+ * locally administered unicast address. No flash write is needed to keep it. Without an ID, 02:4F:50:4C:42:58. */
+static uint32_t wifi_mac(uint8_t *mac)
+{
+    uint8_t id[16];
+    uint32_t h = 2166136261u, g = 0x811C9DC5u ^ 0x5A5A5A5Au, i;
+    if (platform_uid(id)) {
+        static const uint8_t FIXED[6] = { 0x02, 0x4F, 0x50, 0x4C, 0x42, 0x58 };   /* "OPLBX" */
+        for (i = 0; i < 6u; i++) mac[i] = FIXED[i];
+        return 0;
+    }
+    for (i = 0; i < 16u; i++) { h = (h ^ id[i]) * 16777619u; g = (g ^ id[15u - i]) * 16777619u; }
+    mac[0] = (uint8_t)((h & 0xFCu) | 0x02u);
+    mac[1] = (uint8_t)(h >> 8); mac[2] = (uint8_t)(h >> 16); mac[3] = (uint8_t)(h >> 24);
+    mac[4] = (uint8_t)g; mac[5] = (uint8_t)(g >> 8);
+    return 1;
+}
+
+static void wifi_frames_run(void)
+{
+    const fm1wifi_bss *b;
+    uint32_t ch, i;
+    for (i = 0; i < sizeof wl; i++) ((uint8_t *)&wl)[i] = 0;
+    wl.mac_uid = (uint8_t)wifi_mac(wl.mac);
+    wl.link = fm1wifi_link_up(wl.mac, 1);
+    wl.reached = WL_LINK;
+    if (wl.link != FM1WIFI_OK) return;
+    fm1wifi_counters_clear(&wl.c);
+    wl.q0 = wl.c.txrxq; wl.w0 = wl.c.host04;
+    wl.reached |= WL_PASSIVE;
+    for (ch = 1; ch <= 13u && wl.ep == FM1WIFI_OK; ch++) { wl.ep = fm1wifi_scan_channel(ch, 120, 0, 0, &wl.list, &wl.fp); platform_poll(); }
+    wl.n_passive = wl.list.n;
+    if (wl.ep == FM1WIFI_OK) {
+        wl.reached |= WL_ACTIVE;
+        for (ch = 1; ch <= 13u && wl.ea == FM1WIFI_OK; ch++) { wl.ea = fm1wifi_scan_channel(ch, 40, 1, "OPLBOX", &wl.list, &wl.fa); platform_poll(); }
+    }
+    fm1wifi_counters_add(&wl.c);
+    b = fm1wifi_scan_find(&wl.list, "OPLBOX");
+    if (wl.ep != FM1WIFI_OK || wl.ea != FM1WIFI_OK) return;
+    if (!b) { wl.no_join = WL_NO_OPLBOX; return; }
+    wl.target = *b;
+    if (b->sec != FM1WIFI_SEC_OPEN) { wl.no_join = WL_NOT_OPEN; return; }
+    wl.reached |= WL_JOIN;
+    wl.ej = fm1wifi_join(&wl.sta, &wl.target, 2000, &wl.fj);
+    platform_poll();
+    wl.j_state = wl.sta.state; wl.j_why = wl.sta.why; wl.j_status = wl.sta.status; wl.j_aid = wl.sta.aid;
+    if (wl.ej == FM1WIFI_OK && wl.sta.state == FM1WIFI_STA_UP) {
+        wl.reached |= WL_STAY;
+        for (i = 0; i < 4u && wl.sta.state == FM1WIFI_STA_UP; i++) { fm1wifi_listen(&wl.sta, 500, &wl.fj); platform_poll(); }
+        wl.s_state = wl.sta.state; wl.s_why = wl.sta.why; wl.s_reason = wl.sta.reason; wl.s_beacons = wl.sta.beacons;
+        if (wl.s_state == FM1WIFI_STA_UP) {
+            wl.reached |= WL_REJOIN;
+            fm1wifi_leave(&wl.sta, &wl.fj);
+            fm1wifi_join(&wl.sta, &wl.target, 2000, &wl.fj);
+            wl.r_state = wl.sta.state; wl.r_why = wl.sta.why;
+            fm1wifi_leave(&wl.sta, &wl.fj);
+            platform_poll();
+        }
+    }
+    fm1wifi_counters_add(&wl.c);
+}
+
+static char *catu(char *d, uint32_t v) { return cati(d, (int32_t)v, 1, 0); }
+
+static char *cat_mac(char *d, const uint8_t *m)
+{
+    for (uint32_t i = 0; i < 6u; i++) { if (i) *d++ = ':'; d = hexn(d, m[i], 2); }
+    return d;
+}
+
+static char *cat_err(char *d, const char *what, int err)   /* "FAIL <what> <error>" */
+{
+    d = cat(d, "FAIL ");
+    if (what) d = cat(cat(d, what), " ");
+    return cat(d, fm1wifi_strerror(err));
+}
+
+static void wifi_step(uint32_t i, const char *name, char *s)   /* a STEPS line: OK green, the rest plain */
+{
+    char t[40], *p = cat(t, name);
+    while (p < t + 8) *p++ = ' ';
+    cat(p, s);
+    wifi_line(i, t, s[0] == 'O' && s[1] == 'K' ? C_ACC : C_TXT);
+}
+
+static const fm1wifi_frames *wl_raw(uint32_t k, uint32_t *idx)   /* the k-th raw frame kept: passive first */
+{
+    const fm1wifi_frames *f[3] = { &wl.fp, &wl.fa, &wl.fj };
+    for (uint32_t i = 0; i < 3u; i++) {
+        if (k < f[i]->n_raw) { *idx = k; return f[i]; }
+        k -= f[i]->n_raw;
+    }
+    return 0;
+}
+
+static void wifi_more(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio *r, uint32_t sv_got)
+{
+    static const char *const FOOT[6] = { "PLAY: PAGE 6   SAVE: LEAVE", "PLAY: PAGE 7   SAVE: LEAVE", "PLAY: PAGE 8   SAVE: LEAVE",
+                                         "PLAY: PAGE 9   SAVE: LEAVE", "PLAY: PAGE 10  SAVE: LEAVE", "PLAY: PAGE 1   SAVE: LEAVE" };
+    char s[40], *p;
+    uint32_t i, k, n;
+    wifi_line(9, FOOT[page - 4u], C_MUTE);
+    if (page == 4u) {                                 /* each step's result: where the run stopped */
+        wifi_line(0, "STEPS                 5/10", C_ACC);
+        if (d->err != FM1WIFI_OK) cat_err(s, "POWER UP", d->err);
+        else if (r->err != FM1WIFI_OK) { p = cat_err(s, 0, r->err); cat(cat(p, " AT "), r->stage); }
+        else cat(s, "OK");
+        wifi_step(1, "RADIO", s);
+        for (i = 0, n = 0; i < 13u; i++) n += sv_got >> i & 1u;
+        if (r->err != FM1WIFI_OK || d->err != FM1WIFI_OK) cat(s, "NOT REACHED");
+        else { p = cat(s, n == 13u ? "OK " : "FAIL "); cat(catu(p, n), " OF 13 CH"); }
+        wifi_step(2, "SURVEY", s);
+        if (!(wl.reached & WL_LINK)) cat(s, "NOT REACHED");
+        else if (wl.link != FM1WIFI_OK) cat_err(s, 0, wl.link);
+        else cat(s, "OK");
+        wifi_step(3, "LINK", s);
+        if (!(wl.reached & WL_PASSIVE)) cat(s, "NOT REACHED");
+        else if (wl.ep != FM1WIFI_OK) cat_err(s, "RX", wl.ep);
+        else if (!wl.fp.frames) cat(s, "FAIL NO FRAMES");
+        else if (!wl.n_passive) cat(s, "FAIL NO NETWORKS");
+        else cat(catu(cat(s, "OK "), wl.n_passive), wl.n_passive == 1u ? " NETWORK" : " NETWORKS");
+        wifi_step(4, "PASSIVE", s);
+        if (!(wl.reached & WL_ACTIVE)) cat(s, "NOT REACHED");
+        else if (wl.ea != FM1WIFI_OK) cat_err(s, "RX", wl.ea);
+        else if (wl.fa.tx_errno != FM1WIFI_OK) cat_err(s, "TX", wl.fa.tx_errno);
+        else if (!wl.fa.probe_resps) cat(s, "FAIL NO ANSWER");
+        else cat(catu(cat(s, "OK "), wl.fa.probe_resps), wl.fa.probe_resps == 1u ? " ANSWER" : " ANSWERS");
+        wifi_step(5, "ACTIVE", s);
+        if (wl.no_join == WL_NO_OPLBOX) cat(s, "FAIL NO OPLBOX");
+        else if (wl.no_join == WL_NOT_OPEN) cat(cat(s, "FAIL OPLBOX IS "), fm1wifi_sec_name(wl.target.sec));
+        else if (!(wl.reached & WL_JOIN)) cat(s, "NOT REACHED");
+        else if (wl.ej != FM1WIFI_OK) cat_err(s, 0, wl.ej);
+        else if (wl.j_state == FM1WIFI_STA_UP) catu(cat(s, "OK AID "), wl.j_aid);
+        else if (wl.j_state == FM1WIFI_STA_DOWN) cat(cat(s, "FAIL "), fm1wifi_why_name(wl.j_why));
+        else cat(cat(s, "FAIL STILL "), fm1wifi_sta_state_name(wl.j_state));
+        wifi_step(6, "JOIN", s);
+        if (!(wl.reached & WL_STAY)) cat(s, "NOT REACHED");
+        else if (wl.s_state == FM1WIFI_STA_UP) cat(catu(cat(s, "OK "), wl.s_beacons), " BEACONS");
+        else cat(cat(s, "FAIL "), fm1wifi_why_name(wl.s_why));
+        wifi_step(7, "STAY 2S", s);
+        if (!(wl.reached & WL_REJOIN)) cat(s, "NOT REACHED");
+        else if (wl.r_state == FM1WIFI_STA_UP) cat(s, "OK");
+        else if (wl.r_state == FM1WIFI_STA_DOWN) cat(cat(s, "FAIL "), fm1wifi_why_name(wl.r_why));
+        else cat(cat(s, "FAIL STILL "), fm1wifi_sta_state_name(wl.r_state));
+        wifi_step(8, "REJOIN", s);
+        return;
+    }
+    if (page == 5u) {                                 /* the networks: SSID, channel, RSSI, security, P: probed */
+        p = cat(s, "SCAN LIST "); p = cati(p, wl.list.n, 3, 0); cat(p, " NETS   6/10");
+        wifi_line(0, s, C_ACC);
+        if (!(wl.reached & WL_PASSIVE)) { wifi_line(1, "NOT REACHED: SEE PAGE 5", C_TXT); return; }
+        if (!wl.list.n) { wifi_line(1, "NO NETWORK HEARD", C_TXT); return; }
+        n = wl.list.n > 8u ? 7u : wl.list.n;
+        for (i = 0; i < n; i++) {
+            const fm1wifi_bss *b = &wl.list.e[i];
+            const char *id = b->ssid_len ? b->ssid : "(HIDDEN)";
+            for (k = 0, p = s; k < 10u && id[k]; k++) *p++ = (char)(id[k] >= 'a' && id[k] <= 'z' ? id[k] - 32 : id[k] < ' ' || id[k] > '~' ? '?' : id[k]);
+            while (p < s + 10) *p++ = ' ';
+            p = cati(p, b->channel, 3, 0); p = cati(p, b->rssi, 5, 0); *p++ = ' ';
+            p = cat(p, fm1wifi_sec_name(b->sec));
+            cat(p, b->probed ? " P" : "");
+            wifi_line(1u + i, s, C_ACC);
+        }
+        if (n < wl.list.n || wl.list.full) {
+            p = cat(catu(cat(s, "+"), wl.list.n - n), " MORE");
+            if (wl.list.full) cat(catu(cat(p, ", "), wl.list.full), " NOT KEPT");
+            wifi_line(8, s, C_TXT);
+        }
+        return;
+    }
+    if (page == 6u || page == 7u) {                   /* the first four frames as the FIFO gave them, 36 bytes each */
+        uint32_t base = page == 6u ? 0u : 2u, idx;
+        cat(cat(cat(cat(s, "RAW FRAMES "), page == 6u ? "1-2" : "3-4"), "       "), page == 6u ? "7/10" : "8/10");
+        wifi_line(0, s, C_ACC);
+        for (k = 0; k < 2u; k++) {
+            const fm1wifi_frames *f = wl_raw(base + k, &idx);
+            if (!f) { if (!k) wifi_line(1, (wl.reached & WL_PASSIVE) ? "NO FRAME RECEIVED" : "NOT REACHED: SEE PAGE 5", C_TXT); break; }
+            p = cat(catu(s, base + k + 1u), " CH "); p = cati(p, f->raw_ch[idx], 2, 0);
+            p = cat(p, "  BYTES "); catu(p, f->raw_n[idx]);
+            wifi_line(1u + 4u * k, s, C_TXT);
+            for (i = 0; i < 3u; i++) {                /* 3 lines of 3 groups of 4 bytes, in memory order */
+                p = s;
+                for (n = 0; n < 3u; n++) {
+                    const uint8_t *g = &f->raw[idx][12u * i + 4u * n];
+                    if (n) *p++ = ' ';
+                    for (uint32_t b = 0; b < 4u; b++) p = hexn(p, g[b], 2);
+                }
+                wifi_line(2u + 4u * k + i, s, C_ACC);
+            }
+        }
+        return;
+    }
+    if (page == 8u) {                                 /* the core's side: FIFO state, queue counts, counters */
+        const fm1wifi_frames *f[3] = { &wl.fp, &wl.fa, &wl.fj };
+        uint32_t fr = 0, bad = 0, me = 0, tx = 0, txe = 0;
+        int e = FM1WIFI_OK;
+        for (i = 0; i < 3u; i++) {
+            fr += f[i]->frames; bad += f[i]->bad; me += f[i]->to_us; tx += f[i]->tx; txe += f[i]->tx_err;
+            if (e == FM1WIFI_OK) e = f[i]->tx_errno;
+        }
+        wifi_line(0, "RX/TX COUNTS          9/10", C_ACC);
+        if (!(wl.reached & WL_PASSIVE)) { wifi_line(1, "NOT REACHED: SEE PAGE 5", C_TXT); return; }
+        p = cat(s, "WL30 04 "); p = hexn(p, wl.w0, 8); *p++ = '>'; hexn(p, wl.c.host04, 8);
+        wifi_line(1, s, C_ACC);
+        p = cat(s, "TXRXQ "); p = hexn(p, wl.q0, 8); *p++ = '>'; hexn(p, wl.c.txrxq, 8);
+        wifi_line(2, s, C_ACC);
+        p = cat(catu(cat(s, "FRAMES "), fr), " BAD "); p = catu(p, bad); catu(cat(p, " TO ME "), me);
+        wifi_line(3, s, C_ACC);
+        p = cat(catu(cat(s, "CRC ERR "), wl.c.crc_err), "  PHY ERR "); catu(p, wl.c.phy_err);
+        wifi_line(4, s, C_ACC);
+        p = cat(catu(cat(s, "DUP "), wl.c.rx_dup), "  OVERFLOW "); catu(p, wl.c.rx_overflow);
+        wifi_line(5, s, C_ACC);
+        p = cat(catu(cat(s, "SENT "), tx), " ERR "); p = catu(p, txe);
+        if (e != FM1WIFI_OK) cat(cat(p, " "), fm1wifi_strerror(e));
+        wifi_line(6, s, C_ACC);
+        p = cat(catu(cat(s, "TX OK "), wl.c.tx_ok), " FAIL "); p = catu(p, wl.c.tx_fail); catu(cat(p, " RETRY "), wl.c.tx_retry);
+        wifi_line(7, s, C_ACC);
+        cat(cat_mac(cat(s, "MAC "), wl.mac), wl.mac_uid ? " UID" : " FIX");
+        wifi_line(8, s, C_ACC);
+        return;
+    }
+    wifi_line(0, "JOIN OPLBOX          10/10", C_ACC);   /* page 10: the join in detail */
+    if (!(wl.reached & WL_ACTIVE) || wl.ep != FM1WIFI_OK || wl.ea != FM1WIFI_OK) { wifi_line(1, "NOT REACHED: SEE PAGE 5", C_TXT); return; }
+    if (wl.no_join == WL_NO_OPLBOX) { wifi_line(1, "NO OPLBOX IN THE SCAN", C_TXT); wifi_line(2, "(AN OPEN HOTSPOT NAMED", C_MUTE); wifi_line(3, "OPLBOX, 2.4 GHZ)", C_MUTE); return; }
+    cat_mac(cat(s, "BSSID "), wl.target.bssid);
+    wifi_line(1, s, C_ACC);
+    p = cat(s, "CH "); p = cati(p, wl.target.channel, 2, 0); p = cat(p, "  RSSI "); p = cati(p, wl.target.rssi, 4, 0);
+    cat(cat(p, "  "), fm1wifi_sec_name(wl.target.sec));
+    wifi_line(2, s, C_ACC);
+    if (wl.no_join == WL_NOT_OPEN) { wifi_line(3, "NOT OPEN: NOT JOINED", C_TXT); return; }
+    p = cat(s, "AUTH  ");
+    if (wl.j_why == FM1WIFI_WHY_AUTH_TIMEOUT) cat(p, "NO ANSWER (3 TRIES)");
+    else if (wl.j_why == FM1WIFI_WHY_AUTH_REFUSED) catu(cat(p, "REFUSED, STATUS "), wl.j_status);
+    else if (wl.j_state == FM1WIFI_STA_AUTH) cat(p, "STILL WAITING");
+    else cat(p, "OK");
+    wifi_line(3, s, C_ACC);
+    p = cat(s, "ASSOC ");
+    if (wl.j_why == FM1WIFI_WHY_ASSOC_TIMEOUT) cat(p, "NO ANSWER (3 TRIES)");
+    else if (wl.j_why == FM1WIFI_WHY_ASSOC_REFUSED) catu(cat(p, "REFUSED, STATUS "), wl.j_status);
+    else if (wl.j_state == FM1WIFI_STA_UP) catu(cat(p, "OK  AID "), wl.j_aid);
+    else if (wl.j_state == FM1WIFI_STA_DOWN && wl.j_why >= FM1WIFI_WHY_DEAUTH) cat(p, fm1wifi_why_name(wl.j_why));
+    else cat(p, "--");
+    wifi_line(4, s, C_ACC);
+    p = cat(s, "2 S: ");
+    if (!(wl.reached & WL_STAY)) cat(p, "--");
+    else if (wl.s_state == FM1WIFI_STA_UP) cat(catu(cat(p, "UP, "), wl.s_beacons), " BEACONS");
+    else { p = cat(p, fm1wifi_why_name(wl.s_why)); if (wl.s_why == FM1WIFI_WHY_DEAUTH || wl.s_why == FM1WIFI_WHY_DISASSOC) catu(cat(p, " "), wl.s_reason); }
+    wifi_line(5, s, C_ACC);
+    p = cat(s, "LEFT, REJOIN ");
+    if (!(wl.reached & WL_REJOIN)) cat(p, "--");
+    else if (wl.r_state == FM1WIFI_STA_UP) cat(p, "UP");
+    else cat(p, fm1wifi_why_name(wl.r_why));
+    wifi_line(6, s, C_ACC);
+    p = cat(catu(cat(s, "SENT "), wl.fj.tx), " ERR "); catu(p, wl.fj.tx_err);
+    wifi_line(7, s, C_ACC);
+    p = cat(catu(cat(s, "FRAMES "), wl.fj.frames), " TO ME "); catu(p, wl.fj.to_us);
+    wifi_line(8, s, C_ACC);
+}
+
 static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio *r, const fm1wifi_survey *sv, uint32_t sv_got,
                       const fm1wifi_rxprobe *rx, int rx_ok, fm1wifi_ramcheck rc)
 {
     char s[40], *p;
     uint32_t i, k;
     lcd_fill(0, 0, 240, 240, C_BLACK);
+    if (page >= 4u) { wifi_more(page, d, r, sv_got); return; }
     if (page == 0u) {
         int ok = d->err == FM1WIFI_OK && r->err == FM1WIFI_OK;
-        wifi_line(0, "WIFI TEST (STAGE 3)    1/4", C_ACC);
+        wifi_line(0, "WIFI TEST (STAGE 6)   1/10", C_ACC);
         p = cat(s, "RESULT: ");
         if (d->err != FM1WIFI_OK) cat(p, fm1wifi_strerror(d->err));
         else if (r->err != FM1WIFI_OK) { p = cat(p, fm1wifi_strerror(r->err)); p = cat(p, " AT "); cat(p, r->stage); }
@@ -1559,17 +1842,17 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         return;
     }
     if (wifi_reached(r) < 3u) {                       /* stopped before the trim began: nothing to show */
-        static const char *const HEAD[3] = { "TRIM                   2/4", "RX CHECK               3/4",
-                                             "SURVEY                 4/4" };
+        static const char *const HEAD[3] = { "TRIM                  2/10", "RX CHECK              3/10",
+                                             "SURVEY                4/10" };
         static const char *const FOOT[3] = { "PLAY: PAGE 3   SAVE: LEAVE", "PLAY: PAGE 4   SAVE: LEAVE",
-                                             "PLAY: PAGE 1   SAVE: LEAVE" };
+                                             "PLAY: PAGE 5   SAVE: LEAVE" };
         wifi_line(0, HEAD[page - 1u], C_ACC);
         wifi_line(1, "NOT REACHED", C_TXT);
         wifi_line(9, FOOT[page - 1u], C_MUTE);
         return;
     }
     if (page == 3u) {                                 /* the survey: channels 1-7 on the left, 8-13 on the right */
-        wifi_line(0, "SURVEY  200 MS EACH    4/4", C_ACC);
+        wifi_line(0, "SURVEY  200 MS EACH   4/10", C_ACC);
         wifi_line(1, "    CCA   BUSY     CCA   BUSY", C_MUTE);
         for (k = 0; k < 7u; k++) {                    /* 30 places: "1 65535 200000 13 65535 200000" at most */
             p = s;
@@ -1580,13 +1863,13 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
             }
             wifi_line(2u + k, s, C_ACC);
         }
-        wifi_line(9, "PLAY: PAGE 1   SAVE: LEAVE", C_MUTE);
+        wifi_line(9, "PLAY: PAGE 5   SAVE: LEAVE", C_MUTE);
         return;
     }
     if (page == 2u) {                                 /* the VGA searches, and the receive state on channel 6 */
         static const char *const RXL[3] = { "RXFE 0  ", "  19 ", "  20 " };
         const uint8_t rxv[3] = { rx->rxfe0, rx->rxfe19, rx->rxfe20 };
-        wifi_line(0, "RX CHECK  CH  6        3/4", C_ACC);
+        wifi_line(0, "RX CHECK  CH  6       3/10", C_ACC);
         p = cat(s, "VGA GAIN ");
         for (i = 0; i < 3u; i++) p = wifi_val(p, r->got, FM1WIFI_GOT_VGA(i), r->vga[i], 4, 0);
         wifi_line(1, s, C_ACC);
@@ -1609,7 +1892,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         return;
     }
     p = cat(s, wifi_reached(r) == 3u ? "TRIM FAILED  CH " : "TRIM  CH "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->channel, 2, 0);
-    p = cat(p, "  PWR "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->power, 1, 0); cat(p, "    2/4");
+    p = cat(p, "  PWR "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->power, 1, 0); cat(p, "   2/10");
     wifi_line(0, s, C_ACC);
     p = cat(s, "TX LO "); p = wifi_val(p, r->got, FM1WIFI_GOT_TXLO_I, r->txlo[0], 3, 0);
     p = wifi_val(p, r->got, FM1WIFI_GOT_TXLO_Q, r->txlo[1], 4, 0);
@@ -1664,16 +1947,22 @@ static void wifi_page(void)
     fm1wifi_survey sv[13] = { { 0 } };
 #ifdef DINGHY_HOST
     static sdio_model *core;
-    if (!core) {                              /* the core the host simulator talks to: HOST_WIFI_MODEL, or the made-up one */
+    if (!core) {                              /* the core the host simulator talks to: HOST_WIFI_MODEL (scripts, ':' between
+                                               * them, loaded in order), or the made-up one with its access points */
         const char *path = getenv("HOST_WIFI_MODEL");
+        char list[1024], *one, *rest;
+        snprintf(list, sizeof list, "%s", path ? path : "tests/wifi/core_model.txt:tests/wifi/aps.txt");
         core = sdio_model_new();
-        if (sdio_model_load(core, path ? path : "tests/wifi/core_model.txt", stderr)) exit(1);
+        for (one = list; one; one = rest) {
+            if ((rest = strchr(one, ':'))) *rest++ = 0;
+            if (sdio_model_load(core, one, stderr)) exit(1);
+        }
         sdio_model_raw_log(core, 0);
         sdio_model_use(core);
     }
 #endif
     lcd_fill(0, 0, 240, 240, C_BLACK);
-    wifi_line(0, "WIFI TEST (STAGE 3)", C_ACC);
+    wifi_line(0, "WIFI TEST (STAGE 6)", C_ACC);
     wifi_line(1, "PLAY: POWER UP, TRIM, READ", C_TXT);
     wifi_line(2, "SAVE: LEAVE", C_TXT);
     wifi_line(3, "THE SOUND STOPS MEANWHILE", C_MUTE);
@@ -1682,13 +1971,13 @@ static void wifi_page(void)
         platform_poll();
         b = fm1_input_edges(&rel);
         if (b & (1u << BTN_SAVE)) break;
-        if ((b & (1u << BTN_PLAY)) && started) { page = (page + 1u) % 4u; wifi_show(page, &d, &r, sv, sv_got, &rx, rx_ok, rc); }
+        if ((b & (1u << BTN_PLAY)) && started) { page = (page + 1u) % 10u; wifi_show(page, &d, &r, sv, sv_got, &rx, rx_ok, rc); }
         if ((b & (1u << BTN_PLAY)) && !started) {
             started = 1;
             chip_off();                       /* no sound while the core comes up: */
             fm1_delay_ms(15);                 /* both output halves rendered silent, so a masked trim stays quiet */
             platform_supply_full();           /* the rails at M-VAVE's levels before the radio's load (platform.c) */
-            wifi_line(1, "WORKING (ABOUT 5 S)", C_TXT);
+            wifi_line(1, "WORKING (ABOUT 15 S)", C_TXT);
             fm1wifi_pattern_fill(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             fm1wifi_diag_read(&d);
             for (i = 0; i < sizeof r; i++) ((uint8_t *)&r)[i] = 0;
@@ -1700,7 +1989,8 @@ static void wifi_page(void)
                 }
                 fm1wifi_set_channel(6);
                 rx_ok = fm1wifi_rx_probe(&rx) == FM1WIFI_OK;   /* the ADC peak outside the trim (page 3) */
-            }
+                wifi_frames_run();            /* stages 4-6: scans and the join (pages 5-10) */
+            } else wl.reached = 0;
             rc = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             t_check = fm1_ms;
             wifi_show(page, &d, &r, sv, sv_got, &rx, rx_ok, rc);

@@ -1,4 +1,4 @@
-# t(ms) what ...   : the WiFi test page (docs/WIFI.md stages 2-3), against the host's WiFi core (tests/wifi/core_model.txt,
+# t(ms) what ...   : the WiFi test page (docs/WIFI.md stages 2-6), against the host's WiFi core (tests/wifi/core_model.txt,
 # or HOST_WIFI_MODEL). tests/run_host.sh checks the page's text from the output ("wifi page N: ..."). Row 88 of
 # host_cell (oplbox.c): col 0 the core powered up, 1 the song's rows ticking, 2 the chip sounding, 3 the radio up
 # (stage 3), 4 the supply rails raised (1: before the core came up), 5 a WiFi note on the crash screen. The checks run
@@ -21,20 +21,27 @@
 800 is 0 88 4 1
 800 is 0 88 5 0
 # PLAY again: page 2 (the trim and the false CCA counts), again: page 3 (the VGA searches, the receive state), again:
-# page 4 (the channel survey), again: page 1
+# page 4 (the channel survey), then pages 5-10 (stages 4-6: the steps, the scan list, the raw frames 1-2 and 3-4, the
+# RX/TX counts, the join), again: page 1
 1000 btn 12
 1200 btn 12
 1400 btn 12
 1600 btn 12
+1800 btn 12
+2000 btn 12
+2200 btn 12
+2400 btn 12
+2600 btn 12
+2800 btn 12
 # SAVE leaves: the core down again, the song where it was
-1800 btn 9
-2000 is 0 88 0 0
-2000 is 0 88 1 1
-2000 is 0 88 2 1
-2000 is 0 88 3 0
+3000 btn 9
+3200 is 0 88 0 0
+3200 is 0 88 1 1
+3200 is 0 88 2 1
+3200 is 0 88 3 0
 # SAVE again opens it, and SAVE leaves without PLAY: the core never powered
-2200 btn 9
-2400 btn 9
-2600 is 0 88 0 0
-2600 is 0 88 1 1
-2800 end
+3400 btn 9
+3600 btn 9
+3800 is 0 88 0 0
+3800 is 0 88 1 1
+4000 end
