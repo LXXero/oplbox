@@ -54,8 +54,8 @@ right; then EDIT, cursor to the row it should start on, and **ARP** writes what 
 **WiFi test page** (stages 2 and 3 of docs/WIFI.md; for xero to read back off a real FM-1). Outside EDIT press
 **SAVE**: the page opens and says `PLAY: POWER UP, TRIM, READ`. Nothing touches the radio yet. Press **PLAY**: the
 sound stops, the WiFi core is powered up and read (stage 2), then the radio is brought up and calibrated (stage 3:
-the PLL, a fresh trim, channel 6), the receiver's level is read on channels 1-13, and the receive state on channel 6. It takes a second or two
-(`WORKING`). Page 1:
+the PLL, a fresh trim, channel 6), each of channels 1-13 is surveyed for 200 ms as JieLi's own channel select does,
+and the receive state is read on channel 6. It takes about five seconds (`WORKING`). Page 1:
 
 ```
 RESULT: OK                    OK, or what went wrong and where: TIMEOUT AT TRIM, NO ANSWER, ...
@@ -68,7 +68,7 @@ RAM CHECK: n CHANGED          bytes of free RAM the hardware wrote (0 is the goo
 FIRST AT xxxxxxxx             the first changed byte's address (only when n is not 0)
 ```
 
-Press **PLAY** again for page 2, again for page 3, and again to go back to page 1. Page 2:
+Press **PLAY** again for page 2, again for page 3, again for page 4, and again to go back to page 1. Page 2:
 
 ```
 TRIM  CH  6  PWR 6            the channel and TX power the radio was left on
@@ -77,16 +77,16 @@ TX GAIN   +g  PHASE   +p Q    TX trim: gain imbalance, and the phase on the side
 RX GAIN   +g  PHASE   +p I    RX trim: the same
 RX DC I   +a   +b   +c   +d   RX DC trim: the analog DC per gain range, I then Q
 RX DC Q   +a   +b   +c   +d
-ADC  1- 5   nn  nn  nn  nn  nn    the receiver's ADC peak on channels 1-5, 6-10, 11-13 (0-255, not dBm)
-ADC  6-10 ...
-ADC 11-13 ...
+CCA  1- 5   nn  nn  nn  nn  nn    the false CCA count on channels 1-5, 6-10, 11-13 over 200 ms (1000 and
+CCA  6-10 ...                     over in thousands: 6K; page 4 has the exact counts)
+CCA 11-13 ...
 ```
 
-Page 3, why the ADC peaks read what they do (the first clean run read 0 on all 13 channels; docs/WIFI_STAGE3.md
-"ADC peak 0 on every channel"):
+Page 3, the receiver's ADC peak outside the trim (main c4aa202's run: it reads only inside the trim's loopback, so the
+page no longer scans with it; docs/WIFI_STAGE3.md "ADC peak 0 on every channel"):
 
 ```
-RX CHECK  CH  6        3/3
+RX CHECK  CH  6        3/4
 VGA GAIN   nn  nn  nn         the VGA gain each trim search settled on (TX LO, TX DC, RX IQ); 36 = it ran to its limit
 VGA PEAK  nnn nnn nnn         the ADC peak each search read last; above 47 ends a search early
 PEAK AT VGA  0  nnn           the ADC peak on channel 6 at VGA gain 0 (where the bring-up leaves it)
@@ -100,12 +100,28 @@ Reading page 3: VGA GAIN below 36 with VGA PEAK above 47 means the peak reads fi
 scan is the receive state; 36 36 36 with peaks of 0 means the peak reads 0 everywhere. A nonzero PEAK AT VGA 41 means
 the receive state reads too, only below 1 at VGA gain 0. A `--` means the step was never reached.
 
-Read back everything on all three pages. What would look wrong: `RESULT` other than OK (the word after `AT` says which
+Page 4, the channel survey (docs/WIFI_STAGE3.md "Receive level per channel"): per channel, what JieLi's AP channel
+select reads after 200 ms on it, channels 1-7 on the left, 8-13 on the right:
+
+```
+SURVEY  200 MS EACH    4/4
+    CCA   BUSY     CCA   BUSY
+1  nnnn  nnnnn  8  nnnn  nnnnn    channel, false CCA count, busy time (rt2800: microseconds, at most 200000)
+...
+7  nnnn  nnnnn
+```
+
+Reading page 4: both are counts, not dBm. An empty, quiet channel counts little of either; channels with an access
+point on them or next to them count more (JieLi's channel select picks the lowest false CCA count), so access points on
+1, 6 and 11 should show as higher counts on and around those channels than in the gaps. `BUSY` 0 everywhere while
+`CCA` is not: the busy-time accounting is off on this chip. Both 0 everywhere with access points near: these counters
+do not count either, and a level waits for received frames (stage 4).
+
+Read back everything on all four pages. What would look wrong: `RESULT` other than OK (the word after `AT` says which
 step stopped: PHY, PLL, TRIM, RF, TABLE), `BBP 0` still `00`, a PLL bank of 0 or 127, a middle bank of 15 (the scan
 found no edge), trim values sitting at the end of their range (TX LO 0 or 127, TX DC ±127, an RX DC near ±510) or a
-filter code of 0 or 255: each means a search ran to its limit. The ADC peaks are a relative level; the same numbers
-on every channel is the noise floor, a higher one may be a busy channel, and if the receiver's automatic gain holds
-them all level that is worth knowing too. The trim runs from RAM with interrupts off for about half a second, so USB
+filter code of 0 or 255: each means a search ran to its limit (a VGA GAIN of 36 on page 3 too, though JieLi's
+trim goes on after one). The trim runs from RAM with interrupts off for about half a second, so USB
 goes quiet meanwhile. **SAVE** leaves: the core is powered down (every register back to how it was) and the sound
 comes back. If the FM-1 hangs on the page, power it off and on: nothing was written to flash, and it boots as before.
 Before the core is powered up, PLAY also raises the chip's supply rails to the levels M-VAVE's own firmware uses

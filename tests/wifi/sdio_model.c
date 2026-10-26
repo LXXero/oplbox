@@ -346,6 +346,7 @@ struct sdio_model {
     wifi_fix log, wlog;
     void (*on_wr)(void *ctx, uint32_t addr, uint32_t v);
     void *on_wr_ctx;
+    uint64_t us_cca, us_busy;   /* microseconds of delay since RX_STA_CNT1 / CH_BUSY_STA were last read */
 };
 
 static sdio_model *cur;
@@ -588,6 +589,35 @@ static uint8_t adc_peak(const sdio_model *m)
     return (uint8_t)(p > 255u ? 255u : p);
 }
 
+/* The channel survey's counters (fm1wifi_channel_survey): made-up access points on channels 1, 6 and 11 (weights 4, 10
+ * and 3, each reaching two channels either side, less with distance) give, per millisecond of delay with the MAC's
+ * receiver on (MAC_SYS_CTRL bit 3), 2 + the sum of weight * (3 - distance) false CCAs and 20 + 10 times that sum per
+ * mille of busy time. Both clear when read, as rt2800's do. None of it is measured. */
+static uint32_t survey_level(const sdio_model *m)
+{
+    static const uint32_t AP[3][2] = { { 1, 4 }, { 6, 10 }, { 11, 3 } };
+    uint32_t ch = (m->wl[(FM1_WF_CON(7) - FM1_JL_WL_BASE) / 4u] & 0xFFu) - 101u, sum = 0, i;
+    for (i = 0; i < 3u; i++) {
+        uint32_t d = ch > AP[i][0] ? ch - AP[i][0] : AP[i][0] - ch;
+        if (d < 3u) sum += AP[i][1] * (3u - d);
+    }
+    return sum;
+}
+
+static uint32_t survey_read(sdio_model *m, uint32_t addr)
+{
+    int rx = m->core[MAC_SYS_CTRL / 4u] & MAC_SYS_CTRL_ENABLE_RX;
+    uint64_t v;
+    if (addr == RX_STA_CNT1) {
+        v = rx ? (2u + survey_level(m)) * m->us_cca / 1000u : 0u;
+        m->us_cca = 0;
+        return v > 0xFFFFu ? 0xFFFFu : (uint32_t)v;
+    }
+    v = rx ? (20u + 10u * survey_level(m)) * m->us_busy / 1000u : 0u;
+    m->us_busy = 0;
+    return (uint32_t)v;
+}
+
 static uint8_t win_read(sdio_model *m, unsigned w, uint8_t a)
 {
     if (w == 3u) {
@@ -638,6 +668,7 @@ uint32_t fm1wifi_port_rd32(uint32_t addr)
         if (q && q->stuck) { v = q->v[0]; poll(m, POLL_STUCK, 1); }
         else if (q && q->pos < q->n) v = q->v[q->pos++];
         else if (addr == FM1_WLA_CON(30)) v = status(m);
+        else if (addr == FM1_WIFI_CORE(RX_STA_CNT1) || addr == FM1_WIFI_CORE(CH_BUSY_STA)) v = survey_read(m, addr - FM1_WIFI_CORE_BASE);
         else if (addr == FM1_WL_ANL_CON(0)) {
             v = (*r & ~0x700000u) | (m->hang_anl ? 0x100000u : 0u);
             poll(m, POLL_ANL, m->hang_anl);
@@ -684,6 +715,8 @@ void fm1wifi_port_delay_us(uint32_t us)
     sdio_model *m = model();
     log_rec(m, WIFI_REC_DELAY, 0, us);
     wlog_rec(m, WIFI_REC_DELAY, 0, us);
+    m->us_cca += us;
+    m->us_busy += us;
 }
 
 void fm1wifi_port_trim(int on)

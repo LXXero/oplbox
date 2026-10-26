@@ -6,7 +6,7 @@
  * Stage 2: power the core up and down, read and write its MAC registers and its baseband (BBP) registers, a
  * diagnostic snapshot, and a RAM pattern check (run on xero's FM-1 on 2026-10-26: MAC_CSR0 00300100).
  * Stage 3: the radio's power-up and calibration (docs/WIFI_STAGE3.md), a channel, the TX power, the receiver's
- * ADC peak. Its first run on an FM-1 (2026-10-26) crashed (docs/WIFI_STAGE3.md "First run on an FM-1").
+ * ADC peak, a channel survey (the false CCA count and busy time JieLi's channel select reads). Its first run on an FM-1 (2026-10-26) crashed (docs/WIFI_STAGE3.md "First run on an FM-1").
  */
 #pragma once
 #include <stdint.h>
@@ -146,9 +146,24 @@ typedef struct {
 } fm1wifi_rxprobe;
 int fm1wifi_rx_probe(fm1wifi_rxprobe *p);
 
+/* The receive level on channel ch (1-13) as JieLi's own channel survey measures it: the channel select of its AP
+ * code (wl_wifi.a: APAutoSelectChannel, then UpdateChannelInfo; docs/WIFI_STAGE3.md "Receive level per channel").
+ * Sets the channel as RT30xx_ChipSwitchChannel does (WF_CON7 bits 7-0 = ch + 101, TX_BAND_CFG to 2.4 GHz,
+ * TX_PIN_CFG = 0x00050302: one PA, the LNAs, the RF and T/R switch controls on), reads both counters once to clear
+ * them, waits ms milliseconds (1-1000; JieLi waits FM1WIFI_SURVEY_MS) and reads them again. Counts, not dBm: more
+ * means more energy on the channel. Leaves the radio on ch. FM1WIFI_ESTATE before fm1wifi_radio_up, FM1WIFI_ERANGE
+ * for ch or ms out of range. */
+#define FM1WIFI_SURVEY_MS 200u    /* wifi_ap_auto_channel_wait_time() */
+typedef struct {
+    uint32_t false_cca;       /* RX_STA_CNT1 bits 15-0: the false CCA count, what JieLi's channel select ranks by */
+    uint32_t busy;            /* CH_BUSY_STA: the channel busy time (rt2800: microseconds); JieLi reads it, uses no value */
+} fm1wifi_survey;
+int fm1wifi_channel_survey(unsigned ch, unsigned ms, fm1wifi_survey *s);
+
 /* ---- where a crash happened: the step the library is in and its last register write
  *
- * fm1wifi_power_up, _power_down, _diag_read, _radio_up, _set_channel, _set_power, _adc_peak and _rx_probe set fm1wifi_where
+ * fm1wifi_power_up, _power_down, _diag_read, _radio_up, _set_channel, _set_power, _adc_peak, _rx_probe and
+ * _channel_survey set fm1wifi_where
  * before each of their steps (step, then magic) and clear magic when they return; every CPU-side register write
  * the library makes (the radio's analog controls, JL_WL, the core's window) records its address and value just
  * before it is made. So a crash handler that finds magic ==
@@ -178,6 +193,6 @@ enum {
     FM1WIFI_STEP_RF_DONE, FM1WIFI_STEP_PA, FM1WIFI_STEP_RF_GAIN, FM1WIFI_STEP_VGA0, FM1WIFI_STEP_PHY_INIT_A2,
     FM1WIFI_STEP_AGC2, FM1WIFI_STEP_PHY_INIT_B2, FM1WIFI_STEP_CFR1, FM1WIFI_STEP_RAPP, FM1WIFI_STEP_RAM_TABLE,
     FM1WIFI_STEP_BSB_AUTO, FM1WIFI_STEP_CHANNEL6, FM1WIFI_STEP_MCS_GAIN, FM1WIFI_STEP_SET_CHANNEL,
-    FM1WIFI_STEP_SET_POWER, FM1WIFI_STEP_ADC_PEAK, FM1WIFI_STEP_RX_PROBE, FM1WIFI_STEP_N
+    FM1WIFI_STEP_SET_POWER, FM1WIFI_STEP_ADC_PEAK, FM1WIFI_STEP_RX_PROBE, FM1WIFI_STEP_SURVEY, FM1WIFI_STEP_N
 };
 const char *fm1wifi_step_name(uint32_t step);   /* "RF_INIT", "TX LO I", ...: at most 18 characters; "?" past the list */

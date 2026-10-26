@@ -1,5 +1,14 @@
 # Unreleased
 
+- WiFi page: the 13-channel scan now surveys each channel as JieLi's AP channel select does (`wl_wifi.a`:
+  `APAutoSelectChannel`, `RT30xx_ChipSwitchChannel`, `UpdateChannelInfo`): the channel set with `TX_BAND_CFG` on
+  2.4 GHz and `TX_PIN_CFG` = 0x00050302, 200 ms, then the false CCA count (`RX_STA_CNT1`) and the busy time
+  (`CH_BUSY_STA`), in the new `fm1wifi_channel_survey`. Page 2 shows the false CCA counts in place of the ADC peaks,
+  a new page 4 both counts per channel. The ADC peak stays on page 3: the FM-1 run of main c4aa202 showed it reads
+  only in the trim's loopback (49 and 53 there, 0 in the receive state even at the highest VGA gain), so it could not
+  measure the antenna (docs/WIFI_STAGE3.md "Receive level per channel"). Host-tested against made-up counts;
+  untested on an FM-1.
+
 - WiFi stage 3's first run on xero's FM-1 (2026-10-26, main 80a6917) crashed: CPU exception, PC 01C02674 in `rmw()`,
   right after a register write returned. No register-side cause was found (the library's writes equal JieLi's code's
   and stay inside the WiFi blocks); the likely cause is the supply: OPLBOX ran the WiFi load at the boot loader's VDC14

@@ -16,7 +16,9 @@
  * (WLA_CON30, selector 1: the filter tune done at once with code (WLA_CON26 bits 9-1) * 5 / 9, the VCO result 2
  * below 250 - 2 * cap, 0 for the next five dividers, 1 above), the measurement (RX front end 0x81-0x8C, a linear
  * function of the trim settings in force, ready at once), the ADC peak (RX front end 0x80) and the RF digital
- * block, never busy. None of it is measured. Besides the full log, the model keeps a write log at window level
+ * block, never busy, and the channel survey's counters (RX_STA_CNT1, CH_BUSY_STA: made-up access points on
+ * channels 1, 6 and 11, counted per millisecond of delay, cleared when read; host only, the trace never reads them).
+ * None of it is measured. Besides the full log, the model keeps a write log at window level
  * (sdio_model_wlog): CPU and MAC register writes (not BBP_CSR_CFG), BBP writes other than the windows' own
  * registers, window writes and delays; reads left out. tools/wifi_ir.py --trace writes the same records for
  * JieLi's code, and tests/wifi_model.c diffs the two.

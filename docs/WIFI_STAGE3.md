@@ -226,7 +226,9 @@ the VCO result is 2 below 250 - 2 × cap, 0 for the next five dividers, 1 above;
 of the trim settings in force (TX: LO, DC, gain and phase imbalance; RX IQ: gain and phase imbalance; otherwise the
 analog DC against a target per gain range); the ADC peak grows with the VGA fields and varies with the channel, but
 only with the PHY in loopback (BBP 25 = 0x18, the trim) and is 0 otherwise, as the FM-1 read it ("ADC peak 0 on every
-channel" below; which the hardware really does is not known); every wait ends at once. With the defaults the trims land on TX LO 57/41, TX DC -1/0, TX gain imbalance 5 (gain Q 1018),
+channel" below; the FM-1 read the same, "The result" below); the channel survey's counters come from made-up access
+points on channels 1, 6 and 11, per millisecond of delay with the MAC's receiver on, cleared when read ("Receive
+level per channel"); every wait ends at once. With the defaults the trims land on TX LO 57/41, TX DC -1/0, TX gain imbalance 5 (gain Q 1018),
 TX phase Q 2, RX gain I 235, RX phase I 7, RX DC I 123 and Q -77 in range 0, PLL bank 64.
 
 ## First run on an FM-1 (2026-10-26): the crash in `rmw()`
@@ -310,4 +312,72 @@ and the last peak it read (`fm1wifi_radio.vga`, `vga_peak`), and `fm1wifi_rx_pro
 
 The host model answers the peak only in loopback (`tests/wifi/sdio_model.c`), so the simulated page shows the
 all-zero scan and the page 3 lines; `tests/wifi_model.c` checks the probe's values, that it leaves the VGA gain where
-it was, and its `fm1wifi_where` step (RX PROBE). Not run on an FM-1 yet.
+it was, and its `fm1wifi_where` step (RX PROBE).
+
+**The result** (main c4aa202 on xero's FM-1, 2026-10-26, two clean runs): page 1 RESULT OK, MAC_SYS_CTRL 0000000C,
+BBP 0 = 60, PLL 51/63, FILTER 251 127 55, RAM CHECK 0 CHANGED; page 2 TX LO 48 60, TX DC 5 0, TX GAIN +21 PHASE -14
+Q, RX GAIN +4 PHASE -5 Q, RX DC I +202 +210 +178 +154, Q -328 -340 -208 -96, the ADC peak 0 on channels 1-13; page 3
+VGA GAIN 17 36 13, VGA PEAK 49 18 53, PEAK AT VGA 0 = 0 and AT VGA 41 = 0, RXFE 80 = 00, 23 = 82, RXFE 0 = 3A, 19 =
+00, 20 = 00, BBP 25 = 00. So the peak reads in the trim's loopback (two searches ended on 49 and 53, above 47), RX
+front end 23 took the start, and in the receive state the peak is 0 even at the highest VGA gain: RX front end 0x80
+measures the trim's looped-back tone, not the antenna. The page's scan therefore uses the channel survey below. The
+second search (the TX trim's, before DC I) ran to its limit, 36, on a peak of 18. JieLi's code has no failure for
+that: `adc_pp_tune` returns the gain it ended on and both callers (`txiq_tune_soft`, `rxiq_tune_soft`) discard it,
+so the trim goes on at that gain, as the library's does; the TX DC results that followed (5, 0) were in range.
+
+## Receive level per channel (2026-10-26): the channel survey
+
+**Where JieLi gets a signal level.** None of `wl_rf_common.a`'s members reads one outside the trim. Two places in
+JieLi's WiFi stack do:
+- Per frame, from the RX descriptor: `WifiRecvPkgHook` (`wl_hw_init`) takes the RSSI byte of a received frame's
+  `RXWI_STRUC` (byte 8 of the descriptor, rt2800's RSSI0) and passes it to `adj_agc_max_gain` (`wf_soft_adj`), which
+  limits the AGC's maximum gain by it (thresholds -36, -46, -60, -76 dBm). That needs the receive FIFO and the RX
+  descriptors: stage 4.
+- Per channel, without frames: the channel select of JieLi's AP code (`wl_wifi.a`, `ap_autoChSel.c`).
+  `APAutoSelectChannel` switches to each channel (`AsicSwitchChannel`, which is `RT30xx_ChipSwitchChannel`;
+  `AsicLockChannel` is empty), sleeps `wifi_ap_auto_channel_wait_time()` (a weak function returning 200: ms), then
+  `UpdateChannelInfo` reads MAC `RX_STA_CNT1` (0x1704; bits 15-0, rt2800's false CCA count, kept per channel and
+  ranked by `SelectBestChannel`) and `CH_BUSY_STA` (0x1134, rt2800's channel busy time; read, the value not kept).
+  `APAutoChannelInit` reads `CH_BUSY_STA` once before the first channel. Nothing in the SDK's WiFi archives writes
+  `CH_TIME_CFG` (0x110C, rt2800's enable for the busy-time accounting) or reads `CH_IDLE_STA` (0x1130).
+
+`RT30xx_ChipSwitchChannel` (`rt30xx.c`), what a channel switch writes: `wifi_set_channel(ch)` (`wf_soft_adj`:
+`WF_CON7` bits 7-0 = ch + 101, the same write as the library's `fm1wifi_set_channel`); `TX_BAND_CFG` (0x132C) =
+read & ~6 | 4 (rt2800: `BG` on, `A` off) for a channel below 15; `TX_PIN_CFG` (0x1328) = 0x00050F0A, with bit 3
+cleared when the antenna word's TX path count is 1 and bits 11-10 cleared when its RX path count is 1. JieLi's
+`rtmp_init.c` sets the antenna word to 0x511 (RX path 1, TX path 1), so the value is 0x00050302: rt2800's
+`PA_PE_G0_EN`, `LNA_PE_A0_EN`, `LNA_PE_G0_EN`, `RFTR_EN`, `TRSW_EN`. Then `RTMPSetAGCInitValue`, which is empty in
+JieLi's build. The bring-up (`wfhw_init`) writes neither `TX_BAND_CFG` nor `TX_PIN_CFG` (the trace has no write to
+them), so before the first channel switch they hold whatever the core resets them to. The counters clear when read
+(rt2800; JieLi's `NICInitializeAsic` reads `RX_STA_CNT0`-`2` once without using them, the "clear" idiom).
+
+These are addresses and values from `wl_wifi.a` (`ap_autoChSel.c.o`, `rt30xx.c.o`, `cmm_asic.c.o`, `mlme.c.o`,
+`rtmp_init.c.o`), members with Ralink lineage, and `wl_rf_common.a` (`wl_hw_init`, `wf_soft_adj`), read as IR with
+the toolchain's clang (docs/WIFI.md "What stages 1 and 3 may take": facts only); the register names are Linux's
+`rt2800.h`.
+
+**The survey** (`fm1wifi_channel_survey(ch, ms, &s)`): `WF_CON7` bits 7-0 = ch + 101; `TX_BAND_CFG` = read & ~6 |
+4; `TX_PIN_CFG` = 0x00050302; read `RX_STA_CNT1` and `CH_BUSY_STA` (to clear them); ms waits of 1 ms (the page: 200,
+JieLi's); `false_cca` = read `RX_STA_CNT1` & 0xFFFF, `busy` = read `CH_BUSY_STA`. One difference from JieLi: its
+first channel's false CCA count also holds whatever accumulated since the counter was last read; the survey clears
+both counters on every channel, so each count covers that channel's wait only. The radio is left on ch; the page
+goes back to 6 for the RX check. Page 2 shows the false CCA counts (1000 and over in thousands, "6K"), page 4 both
+counts exactly.
+
+**How to read it.** Counts over 200 ms, not dBm; the receiver's automatic gain is on (`BSB_AUTO`) as in normal
+reception.
+- False CCA (`RX_STA_CNT1`): the receiver saw energy that started a reception but did not decode (rt2800). An empty,
+  quiet channel counts few; a channel with access points on it or near it (2.4 GHz channels are 5 MHz apart and about 20 MHz
+  wide, so neighbours overlap) counts more; JieLi's channel select picks the lowest. With access points near the board on 1, 6 and 11,
+  expect higher counts on and around them than in the gaps.
+- Busy time (`CH_BUSY_STA`): in rt2800 microseconds the channel was busy, at most 200000 in 200 ms. An access point
+  on the channel sends a beacon about every 100 ms and traffic on top, so expect thousands of microseconds or more
+  there and little on an empty channel. Values above 200000 mean the unit is not microseconds on this chip.
+- `BUSY` 0 on every channel while `CCA` is not: the busy-time accounting is off (`CH_TIME_CFG` is never written, by
+  JieLi either). Both 0 on every channel with access points near: these counters do not count in this receive state
+  either; the next source is the RX descriptor's RSSI (stage 4). `--`: the read failed or was never reached.
+
+Host only so far: the register model answers made-up counts (access points on 1, 6 and 11), and
+`tests/wifi_model.c` checks the survey's writes in order (`WF_CON7`, `TX_BAND_CFG` keeping its other bits,
+`TX_PIN_CFG`, 200 waits of 1 ms), its counts, that the counters are cleared before the wait, its range checks and its
+`fm1wifi_where` step (CHANNEL SURVEY). Untested on an FM-1.

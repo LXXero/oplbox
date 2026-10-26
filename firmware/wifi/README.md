@@ -43,7 +43,8 @@ const char *fm1wifi_strerror(int err);
 int  fm1wifi_radio_up(const fm1wifi_cal *cal, fm1wifi_radio *r);   /* the radio up and calibrated (about 1-2 s) */
 int  fm1wifi_set_channel(unsigned ch);             /* 1-13 */
 int  fm1wifi_set_power(unsigned level);            /* 0-6 */
-int  fm1wifi_adc_peak(uint8_t *peak);              /* the receiver's ADC peak, a relative level */
+int  fm1wifi_adc_peak(uint8_t *peak);              /* the receiver's ADC peak: reads only in the trim's loopback */
+int  fm1wifi_channel_survey(unsigned ch, unsigned ms, fm1wifi_survey *s);   /* false CCA count, busy time over ms */
 ```
 
 `fm1wifi_radio_up` takes a calibration (`fm1wifi_cal_default`, or the FM-1's own crystal caps, PA trim and MCS gains

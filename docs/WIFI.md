@@ -394,6 +394,7 @@ The addresses, checked against Linux's `rt2800.h`:
 | 0x101C | `BBP_CSR_CFG` | `bbp_set`/`bbp_rd`: polls bit 17 (`BUSY`), writes `reg<<8 \| val \| 0x80000` (`BBP_RW_MODE`) then `\| 0xA0000` (`\| BUSY`); a read uses `0x90000`/`0xB0000` (`READ_CONTROL`). Exactly rt2800's field layout |
 | 0x0408, 0x040C, 0x0438, 0x043C | `PBF_CFG`, `PBF_MAX_PCNT`, `TXRXQ_PCNT`, `PBF_DBG` | `PBF_CFG` and `PBF_MAX_PCNT` set from `MACRegTable`; the queue counts read in `usb_submit_urb` and `get_txrxq_pcnt` (with 0x0434, not in rt2800.h) |
 | 0x1500, 0x1504 | `TX_SEC_CNT0`, `RX_SEC_CNT0` | read in the TX path |
+| 0x1134, 0x1328, 0x132C, 0x1704 | `CH_BUSY_STA`, `TX_PIN_CFG`, `TX_BAND_CFG`, `RX_STA_CNT1` | the channel select: `RT30xx_ChipSwitchChannel` (`rt30xx.c`) sets `TX_BAND_CFG` bits 2-1 to 2 (`BG`) and writes `TX_PIN_CFG` = 0x00050302 on every channel switch; `UpdateChannelInfo` (`ap_autoChSel.c`) reads `RX_STA_CNT1` (bits 15-0, the false CCA count) and `CH_BUSY_STA` after 200 ms on each channel (docs/WIFI_STAGE3.md "Receive level per channel") |
 | 22 registers of `MACRegTable` | `BCN_OFFSET0/1`, `LEGACY_BASIC_RATE` (0x13F), `HT_BASIC_RATE`, `RX_FILTER_CFG` (0x17F97), `TX_LINK_CFG`, `MAX_LEN_CFG`, `TX_RTY_CFG` (0x47D01F0F), `AUTO_RSP_CFG`, the six `*_PROT_CFG`, `TXOP_CTRL_CFG`, `TX_RTS_CFG`, `EXP_ACK_TIME`, `TXOP_HLDR_ET`, `PWR_PIN_CFG` | `NICInitializeAsic` (`rtmp_init.c`): all 22 addresses are named in rt2800.h. The values are not from rt2800.h (which has none); they are below |
 | 0x4000, 0x6000, 0x6800, 0x6C00, 0x7000 | `PAIRWISE_KEY_TABLE_BASE`, `MAC_IVEIV_TABLE_BASE`, `MAC_WCID_ATTRIBUTE_BASE`, `SHARED_KEY_TABLE_BASE`, `SHARED_KEY_MODE_BASE` | `AsicAddPairwiseKeyEntry`, `AsicUpdateWCIDIVEIV`, `AsicUpdateWcidAttributeEntry`, `AsicAddSharedKeyEntry`: the MAC encrypts and decrypts in hardware |
 | 0x1100, 0x1104, 0x1330, 0x1334, 0x1338, 0x1348 | `XIFS_TIME_CFG`, `BKOFF_SLOT_CFG`, `TX_SW_CFG0/1/2`, `TX_TIMEOUT_CFG` | `wf_sifs_reset` (JieLi's values) |
@@ -691,9 +692,12 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   fails the build if that section refers to anything outside RAM) with interrupts masked by the port; the page stops
   the sound first. Power-down also restores the 35 registers stage 3 changes. On the host the library's writes equal
   JieLi's code's against the same register model, record for record, and a swapped write, a dropped delay and a
-  wait without its bound are each caught (8 deliberate bugs). There is no RSSI register in the clean members: the
-  page shows the receiver's ADC peak per channel (`rd_adc_peak`), a relative level, not dBm; a calibrated RSSI comes
-  with the RX descriptors (stage 4). Not run on an FM-1.
+  wait without its bound are each caught (8 deliberate bugs). There is no RSSI register in the clean members. The
+  ADC peak (`rd_adc_peak`) the page first showed per channel reads only in the trim's loopback (0 everywhere else on
+  the FM-1); the page now surveys each channel as JieLi's AP channel select does: the false CCA count
+  (`RX_STA_CNT1`) and busy time (`CH_BUSY_STA`) over 200 ms (docs/WIFI_STAGE3.md "Receive level per channel"). A
+  calibrated RSSI comes with the RX descriptors (stage 4). Stage 3 ran on xero's FM-1 (2026-10-26, main c4aa202);
+  the survey has not.
 
 ### Stage 4: receive raw frames, passive scan (needs FM-1)
 
