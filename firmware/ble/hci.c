@@ -522,9 +522,11 @@ void hci_host_poll(hci_host *h, uint32_t elapsed_ms)
     /* The state is moved on before each send, so a controller that answers inside the send call (whether
      * JieLi's does is not known) finds the host as it is after the send; it is put back if the transport refuses. */
     if (h->wait_op != HCI_OP_NOP) {
+        int sent = 0;
         if (h->ncmd_bytes && h->ncmd) {
             uint8_t pkt[HCI_CMD_MAX];
             uint16_t nb = h->ncmd_bytes;
+            uint32_t waited = h->wait_ms;
             cpy(pkt, h->cmd, nb);
             h->ncmd_bytes = 0;
             h->ncmd--;
@@ -535,8 +537,12 @@ void hci_host_poll(hci_host *h, uint32_t elapsed_ms)
                 h->ncmd_bytes = nb;
                 h->ncmd++;
                 h->cmds--;
+                h->wait_ms = waited;
+            } else {
+                sent = 1;
             }
-        } else {                                     /* no answer, or no credit to send it: both time out */
+        }
+        if (!sent) {                                 /* no answer, no credit to send it, or the transport refused it */
             h->wait_ms += elapsed_ms;
             if (h->wait_ms >= HCI_CMD_TIMEOUT_MS)
                 fail(h, HCI_FAIL_TIMEOUT, h->wait_op, 0);

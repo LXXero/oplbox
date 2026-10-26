@@ -327,8 +327,8 @@ packet handler `hci_host_receive(type, packet, size)`, the shape of the controll
   LE Set Event Mask (LE Connection Complete, LE Connection Update Complete); LE Read Buffer Size, and Read Buffer Size
   when LE has no buffers of its own; Read BD_ADDR; LE Set Advertising Parameters (ADV_IND, public address, channels
   37-39); LE Set Advertising Data and Scan Response Data (31 bytes each, built with `hci_ad_add`); LE Set Advertising
-  Enable. A refused command, a 2 s silence or a Hardware Error ends the start with the command and status, for a
-  stage 4 page to show.
+  Enable. A refused command, a 2 s silence (also when the transport refuses every send) or a Hardware Error ends the
+  start with the command and status, for a stage 4 page to show.
 - **Connection.** LE Connection Complete makes the host connected (advertising stops on its own); LE Connection Update
   Complete updates the interval, latency and timeout. An L2CAP PDU (up to 256 bytes of payload) goes out in fragments
   of the controller's ACL size (PB 00 first, then 01), one per free buffer; Number Of Completed Packets gives buffers
@@ -344,10 +344,10 @@ packet handler `hci_host_receive(type, packet, size)`, the shape of the controll
   central from a script (connect, update, L2CAP PDUs in fragments, raw fragments, disconnect, Hardware Error, held
   buffers), checks what the host sends (parameter lengths, credits, buffer size and count, Packet_Boundary order,
   handles), and logs every packet in a fixture format.
-- **Tests**, `tests/ble_hci.c`, 108 checks: the packets byte for byte; a session diffed against
+- **Tests**, `tests/ble_hci.c`, 110 checks: the packets byte for byte; a session diffed against
   `tests/ble/session_expect.txt` (written by hand from the specification), once with queued answers and once with
   answers inside the send call; the failures above; a link lost while the controller holds both buffers.
-  `tests/ble_mutants.py`: 17 deliberate bugs in `hci.c`, all caught.
+  `tests/ble_mutants.py`: 18 deliberate bugs in `hci.c`, all caught.
 - **Size**: 3,017 B of code and read-only data, no static RAM (the `hci_host` struct, about 1 KB, is the caller's).
   Compiled by `./build.sh` with the app's flags, not linked.
 - **Untested on hardware.** Nothing here has talked to `btctrler.a`. Stage 4 shows whether its answers match: the same
