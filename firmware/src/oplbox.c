@@ -1528,20 +1528,20 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         else cat(s, "PLL BANK  -");
         wifi_line(5, s, C_ACC);
         p = cat(s, "FILTER ");
-        if (wifi_reached(r) > 3u) for (i = 0; i < 3u; i++) p = cati(p, r->bw[i], 4, 0);
+        if (wifi_reached(r) > 2u) for (i = 0; i < 3u; i++) p = cati(p, r->bw[i], 4, 0);   /* also when the trim itself failed: what it had read */
         else cat(p, " -");
         wifi_line(6, s, C_ACC);
         wifi_ram_line(rc);
         wifi_line(9, "PLAY: PAGE 2   SAVE: LEAVE", C_MUTE);
         return;
     }
-    if (wifi_reached(r) < 4u) {                       /* the trim did not finish: nothing to show */
+    if (wifi_reached(r) < 3u) {                       /* stopped before the trim began: nothing to show */
         wifi_line(0, "TRIM                   2/2", C_ACC);
         wifi_line(1, "NOT REACHED", C_TXT);
         wifi_line(9, "PLAY: PAGE 1   SAVE: LEAVE", C_MUTE);
         return;
     }
-    p = cat(s, "TRIM  CH "); p = cati(p, r->channel, 2, 0); p = cat(p, "  PWR "); p = cati(p, r->power, 1, 0); cat(p, "    2/2");
+    p = cat(s, wifi_reached(r) == 3u ? "TRIM FAILED  CH " : "TRIM  CH "); p = cati(p, r->channel, 2, 0); p = cat(p, "  PWR "); p = cati(p, r->power, 1, 0); cat(p, "    2/2");
     wifi_line(0, s, C_ACC);
     p = cat(s, "TX LO "); p = cati(p, r->txlo[0], 3, 0); p = cati(p, r->txlo[1], 4, 0);
     p = cat(p, "  DC "); p = cati(p, r->tx_dc[0], 4, 0); cati(p, r->tx_dc[1], 4, 0);
