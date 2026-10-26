@@ -1488,6 +1488,13 @@ static void wifi_ram_line(fm1wifi_ramcheck rc)                 /* lines 7 and 8 
     wifi_line(8, s, C_ACC);
 }
 
+static char *wifi_val(char *d, uint32_t got, uint32_t bit, int32_t v, uint32_t w, int plus)   /* as cati, or "--" if never read */
+{
+    if (got & bit) return cati(d, v, w, plus);
+    while (w > 2u) { *d++ = ' '; w--; }
+    return cat(d, "--");
+}
+
 static int32_t wifi_dc(uint16_t code) { return code & 0x200u ? (int32_t)(code & 0x1FFu) : -(int32_t)code; }
 
 static uint32_t wifi_reached(const fm1wifi_radio *r)   /* 0 not started .. 6 done: how far the bring-up got */
@@ -1502,7 +1509,8 @@ static uint32_t wifi_reached(const fm1wifi_radio *r)   /* 0 not started .. 6 don
     return 0;
 }
 
-static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio *r, const uint8_t *peak, fm1wifi_ramcheck rc)
+static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio *r, const uint8_t *peak, uint32_t peak_got,
+                      fm1wifi_ramcheck rc)
 {
     char s[40], *p;
     uint32_t i, k;
@@ -1528,7 +1536,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         else cat(s, "PLL BANK  -");
         wifi_line(5, s, C_ACC);
         p = cat(s, "FILTER ");
-        if (wifi_reached(r) > 2u) for (i = 0; i < 3u; i++) p = cati(p, r->bw[i], 4, 0);   /* also when the trim itself failed: what it had read */
+        if (wifi_reached(r) > 2u) for (i = 0; i < 3u; i++) p = wifi_val(p, r->got, FM1WIFI_GOT_BW(i), r->bw[i], 4, 0);   /* also when the trim itself failed: what it had read */
         else cat(p, " -");
         wifi_line(6, s, C_ACC);
         wifi_ram_line(rc);
@@ -1541,27 +1549,32 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         wifi_line(9, "PLAY: PAGE 1   SAVE: LEAVE", C_MUTE);
         return;
     }
-    p = cat(s, wifi_reached(r) == 3u ? "TRIM FAILED  CH " : "TRIM  CH "); p = cati(p, r->channel, 2, 0); p = cat(p, "  PWR "); p = cati(p, r->power, 1, 0); cat(p, "    2/2");
+    p = cat(s, wifi_reached(r) == 3u ? "TRIM FAILED  CH " : "TRIM  CH "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->channel, 2, 0);
+    p = cat(p, "  PWR "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->power, 1, 0); cat(p, "    2/2");
     wifi_line(0, s, C_ACC);
-    p = cat(s, "TX LO "); p = cati(p, r->txlo[0], 3, 0); p = cati(p, r->txlo[1], 4, 0);
-    p = cat(p, "  DC "); p = cati(p, r->tx_dc[0], 4, 0); cati(p, r->tx_dc[1], 4, 0);
+    p = cat(s, "TX LO "); p = wifi_val(p, r->got, FM1WIFI_GOT_TXLO_I, r->txlo[0], 3, 0);
+    p = wifi_val(p, r->got, FM1WIFI_GOT_TXLO_Q, r->txlo[1], 4, 0);
+    p = cat(p, "  DC "); p = wifi_val(p, r->got, FM1WIFI_GOT_TXDC_I, r->tx_dc[0], 4, 0);
+    wifi_val(p, r->got, FM1WIFI_GOT_TXDC_Q, r->tx_dc[1], 4, 0);
     wifi_line(1, s, C_ACC);
-    p = cat(s, "TX GAIN "); p = cati(p, r->tx_gain, 4, 1); p = cat(p, "  PHASE "); p = cati(p, r->tx_phase, 4, 1);
-    cat(p, r->tx_gain >= 0 ? " Q" : " I");
+    p = cat(s, "TX GAIN "); p = wifi_val(p, r->got, FM1WIFI_GOT_TX_GAIN, r->tx_gain, 4, 1);
+    p = cat(p, "  PHASE "); p = wifi_val(p, r->got, FM1WIFI_GOT_TX_PHASE, r->tx_phase, 4, 1);
+    if (r->got & FM1WIFI_GOT_TX_PHASE) cat(p, r->tx_gain >= 0 ? " Q" : " I");
     wifi_line(2, s, C_ACC);
-    p = cat(s, "RX GAIN "); p = cati(p, r->rx_gain, 4, 1); p = cat(p, "  PHASE "); p = cati(p, r->rx_phase, 4, 1);
-    cat(p, r->rx_gain >= 0 ? " Q" : " I");
+    p = cat(s, "RX GAIN "); p = wifi_val(p, r->got, FM1WIFI_GOT_RX_GAIN, r->rx_gain, 4, 1);
+    p = cat(p, "  PHASE "); p = wifi_val(p, r->got, FM1WIFI_GOT_RX_PHASE, r->rx_phase, 4, 1);
+    if (r->got & FM1WIFI_GOT_RX_PHASE) cat(p, r->rx_gain >= 0 ? " Q" : " I");
     wifi_line(3, s, C_ACC);
     for (k = 0; k < 2u; k++) {
         p = cat(s, k ? "RX DC Q" : "RX DC I");
-        for (i = 0; i < 4u; i++) p = cati(p, wifi_dc(r->rx_dc[i][k]), 5, 1);
+        for (i = 0; i < 4u; i++) p = wifi_val(p, r->got, FM1WIFI_GOT_RXDC(i), wifi_dc(r->rx_dc[i][k]), 5, 1);
         wifi_line(4u + k, s, C_ACC);
     }
     for (k = 0; k < 3u; k++) {                         /* the ADC peak per channel: 1-5, 6-10, 11-13 */
         uint32_t lo = 1u + 5u * k, hi = k == 2u ? 13u : lo + 4u;
         p = cat(s, "ADC ");
         p = cati(p, (int32_t)lo, 2, 0); *p++ = '-'; p = cati(p, (int32_t)hi, 2, 0); *p++ = ' ';
-        for (i = lo; i <= hi; i++) p = cati(p, peak[i - 1u], 4, 0);
+        for (i = lo; i <= hi; i++) p = wifi_val(p, peak_got, 1u << (i - 1u), peak[i - 1u], 4, 0);
         *p = 0;
         wifi_line(6u + k, s, C_ACC);
     }
@@ -1570,7 +1583,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
 
 static void wifi_page(void)
 {
-    uint32_t was_run = chip_run, was_play = playing, started = 0, page = 0, t_check = 0, rel, i;
+    uint32_t was_run = chip_run, was_play = playing, started = 0, page = 0, t_check = 0, rel, i, peak_got = 0;   /* bit i: peak[i] read */
     fm1wifi_ramcheck rc = { 0, 0 };
     fm1wifi_diag d;
     fm1wifi_radio r;
@@ -1595,7 +1608,7 @@ static void wifi_page(void)
         platform_poll();
         b = fm1_input_edges(&rel);
         if (b & (1u << BTN_SAVE)) break;
-        if ((b & (1u << BTN_PLAY)) && started) { page ^= 1u; wifi_show(page, &d, &r, peak, rc); }
+        if ((b & (1u << BTN_PLAY)) && started) { page ^= 1u; wifi_show(page, &d, &r, peak, peak_got, rc); }
         if ((b & (1u << BTN_PLAY)) && !started) {
             started = 1;
             chip_off();                       /* no sound while the core comes up: */
@@ -1607,12 +1620,12 @@ static void wifi_page(void)
             r.stage = "-";
             if (d.err == FM1WIFI_OK && fm1wifi_radio_up(&fm1wifi_cal_default, &r) == FM1WIFI_OK) {
                 for (i = 0; i < 13u; i++)     /* the receiver's level per channel, then back to 6 */
-                    if (fm1wifi_set_channel(i + 1u) == FM1WIFI_OK) fm1wifi_adc_peak(&peak[i]);
+                    if (fm1wifi_set_channel(i + 1u) == FM1WIFI_OK && fm1wifi_adc_peak(&peak[i]) == FM1WIFI_OK) peak_got |= 1u << i;
                 fm1wifi_set_channel(6);
             }
             rc = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             t_check = fm1_ms;
-            wifi_show(page, &d, &r, peak, rc);
+            wifi_show(page, &d, &r, peak, peak_got, rc);
         }
         if (started && fm1_ms - t_check >= 500u) {   /* the pool again: a later write by the hardware shows too */
             fm1wifi_ramcheck now = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
