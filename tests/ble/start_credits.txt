@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# tests/ble_hci.c: every answer gives no command credit (Num_HCI_Command_Packets 0); a NOP Command Complete gives
+# one every 100 ms, so each of the eight commands after Reset waits for it
+ncmd 0
+wait ms 100
+nop
+wait ms 100
+nop
+wait ms 100
+nop
+wait ms 100
+nop
+wait ms 100
+nop
+wait ms 100
+nop
+wait ms 100
+nop
+wait ms 100
+nop

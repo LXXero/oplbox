@@ -309,6 +309,52 @@ test proves. "FM-1" is what needs xero to flash a build and read numbers off the
 - `tests/ble/hci_model.c`: a host fake controller in the style of `tests/wifi/sdio_model.c`: answers commands from a
   script, logs every packet, plain-text fixture format, diff helper.
 - **Host**: the command sequence for advertise, connect and disconnect replays against the fixture. **FM-1**: nothing.
+- **Done (2026-10-26)**, see "Stage 1 as built" below.
+
+### Stage 1 as built
+
+Own code from the Bluetooth Core Specification (v5.4 section numbers in `firmware/ble/hci.h`; opcodes, event codes and
+field layouts cross-checked against Apache NimBLE's `include/nimble/hci_common.h`, values only). Nothing in it comes from
+`btstack.a` or the SDK's Bluetooth headers. The transport is our own function pair, `send(type, packet, size)` and a
+packet handler `hci_host_receive(type, packet, size)`, the shape of the controller's function-call interface above.
+
+- **Packets.** Command (opcode, length, parameters), event (code, length, parameters) and ACL data (12-bit handle,
+  Packet_Boundary flag, length) packed and decoded; an event whose length byte disagrees with its size, or that is
+  shorter than its fields, is refused. H4 framing (`hci_h4_feed`): the indicator byte, then the packet, read from a byte
+  stream in any pieces; a stray byte or an over-long packet is skipped and counted.
+- **Start**, one command at a time, each after the previous one's Command Complete with status 0, and only with a
+  command credit (Num_HCI_Command_Packets): Reset; Set Event Mask (Disconnection Complete, Hardware Error, LE Meta);
+  LE Set Event Mask (LE Connection Complete, LE Connection Update Complete); LE Read Buffer Size, and Read Buffer Size
+  when LE has no buffers of its own; Read BD_ADDR; LE Set Advertising Parameters (ADV_IND, public address, channels
+  37-39); LE Set Advertising Data and Scan Response Data (31 bytes each, built with `hci_ad_add`); LE Set Advertising
+  Enable. A refused command, a 2 s silence or a Hardware Error ends the start with the command and status, for a
+  stage 4 page to show.
+- **Connection.** LE Connection Complete makes the host connected (advertising stops on its own); LE Connection Update
+  Complete updates the interval, latency and timeout. An L2CAP PDU (up to 256 bytes of payload) goes out in fragments
+  of the controller's ACL size (PB 00 first, then 01), one per free buffer; Number Of Completed Packets gives buffers
+  back. Incoming fragments (PB 10 first, then 01) are put back together by the L2CAP basic header's length; a
+  fragment with no start, another handle, an over-long PDU or a start that cuts one off is dropped and counted.
+  Disconnection Complete (either side; `hci_host_disconnect` sends Disconnect) gives every buffer back and advertising
+  starts again.
+- **The host's state moves on before each send**, so it works whether the controller answers inside the send call or
+  later, from its own task; which one `btctrler.a` does is not known.
+- **The fake controller**, `tests/ble/hci_model.c`: answers commands as the specification describes (Invalid HCI
+  Command Parameters for an advertising interval out of range or data over 31 bytes, Command Disallowed for
+  advertising while connected, Unknown HCI Command otherwise), sends events only when the masks let it, plays a
+  central from a script (connect, update, L2CAP PDUs in fragments, raw fragments, disconnect, Hardware Error, held
+  buffers), checks what the host sends (parameter lengths, credits, buffer size and count, Packet_Boundary order,
+  handles), and logs every packet in a fixture format.
+- **Tests**, `tests/ble_hci.c`, 108 checks: the packets byte for byte; a session diffed against
+  `tests/ble/session_expect.txt` (written by hand from the specification), once with queued answers and once with
+  answers inside the send call; the failures above; a link lost while the controller holds both buffers.
+  `tests/ble_mutants.py`: 17 deliberate bugs in `hci.c`, all caught.
+- **Size**: 3,017 B of code and read-only data, no static RAM (the `hci_host` struct, about 1 KB, is the caller's).
+  Compiled by `./build.sh` with the app's flags, not linked.
+- **Untested on hardware.** Nothing here has talked to `btctrler.a`. Stage 4 shows whether its answers match: the same
+  opcodes accepted, how many command credits it gives, its LE buffer size and count, whether it sends LE Meta events
+  after these masks, and whether it calls back inside `send_packet`.
+- Not in stage 1: LE Connection Update from the peripheral (the L2CAP connection parameter request is stage 3's),
+  encryption events, random addresses, extended advertising.
 
 ### Stage 2: BLE-MIDI profile (host only, parallel with stage 1)
 

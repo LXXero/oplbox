@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# tests/ble_hci.c: no LE buffers of its own (LE Read Buffer Size answers 0 0), so the host asks Read Buffer Size
+bufsize 0 0
+shared 64 5

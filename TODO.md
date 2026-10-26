@@ -829,7 +829,7 @@ built together so one FM-1 run tests all of them (docs/WIFI_STAGE4.md).
 - **Not on the page yet**: stage 7 (IP over lwIP) and stage 8 (the WPA2 handshakes), both host-built; they join once
   an open join works on the FM-1.
 
-## 8. Bluetooth LE MIDI on code we can ship — stage 0 done (the map)
+## 8. Bluetooth LE MIDI on code we can ship — stage 0 done (the map), stage 1 done (HCI, host only)
 
 xero (2026-10-25): "ideally bluetooth as well". The goal is BLE MIDI beside USB and TRS, on GPL-3.0-compatible code.
 
@@ -862,8 +862,20 @@ Documents only; nothing was flashed.
 - Bluetooth and WiFi run one at a time at first; simultaneous use is stage 6.
 - The BLE-MIDI profile is our own code, written after reading the specification.
 
-**Next.** Stages 1 and 2 (HCI packet layer with a fake controller, and the BLE-MIDI profile) are host only and run in
-parallel; stage 3 ports NimBLE against the fake. Stage 4, the first FM-1 test: xero flashes a diagnostic build and
+**Stage 1 done (host only, 2026-10-26).** `firmware/ble/hci.c`/`.h`: the HCI packets (command, event, ACL), H4
+framing, and a host that resets the controller, sets both event masks, reads the buffer size (LE's own, or the shared
+one when LE has none) and the address, sets the advertising parameters and payloads, advertises, takes LE Connection
+Complete, sends L2CAP PDUs in fragments only as the controller frees buffers (Number Of Completed Packets), puts
+incoming fragments back together, follows a connection update, and advertises again after either side disconnects.
+`tests/ble/hci_model.c` is the fake controller (script, packet log, fixture diff); `tests/ble_hci.c` (108 checks)
+diffs a whole session against `tests/ble/session_expect.txt`, runs it again with answers inside the send call, and
+covers a refused command, a silent controller (2 s timeout), a Hardware Error, no command credit, a link lost with
+buffers held, and the ACL drop rules; `tests/ble_mutants.py` makes it catch 17 deliberate bugs. 3 KB of code, no
+static RAM, compiled by `./build.sh` but not linked. **Untested on an FM-1**: whether JieLi's controller answers the
+same way (the same opcodes, credits, buffer size, events after these masks, answers inside or after the send call) is
+stage 4's question.
+
+**Next.** Stage 2 (the BLE-MIDI profile) is host only; stage 3 ports NimBLE against the fake controller. Stage 4, the first FM-1 test: xero flashes a diagnostic build and
 reads the controller's start-up numbers off the screen.
 
 **Open.** Whether OPLBOX may ship the controller binary (xero's decision). Whether both radios fit in one image. Whether

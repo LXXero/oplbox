@@ -1,0 +1,2 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# tests/ble_hci.c: the defaults; the test asks for an advertising interval under 20 ms, which the controller refuses

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# tests/ble_hci.c: the link drops while the controller still holds the host's two buffers; on the next connection
+# the host must have them back (4.3: the controller frees what it held for a link when it reports the disconnection)
+bufsize 27 2
+wait adv
+connect handle=0040 peer=c0:ff:ee:00:00:01 type=1
+wait ms 5
+nocp hold
+l2cap cid=0004 52 10 00 01        # a write: the test sends a 74-byte PDU, two fragments go and are held
+wait ms 10
+disconnect reason=08              # Connection Timeout
+wait adv
+connect handle=0041 peer=c0:ff:ee:00:00:02 type=1
+wait ms 5
+nocp auto
+l2cap cid=0004 52 10 00 02        # the same again: all three fragments must go
+wait l2cap 1

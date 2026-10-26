@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# One session as a Mac or a phone runs it (tests/ble/hci_model.h has the format), for tests/ble_hci.c against
+# tests/ble/session_expect.txt: the host starts and advertises, a central connects, asks for an ATT MTU, writes a
+# PDU in three ACL fragments while the controller holds its buffers, changes the connection interval and leaves;
+# the host advertises again, a second central connects and the host ends that one. Made up from the Bluetooth Core
+# Specification's packet layouts, not recorded off an FM-1.
+bufsize 27 2                      # LE ACL buffers: 27-byte payloads, two of them
+bdaddr 02:46:4d:31:00:01
+wait adv
+wait ms 50
+connect handle=0040 peer=c0:ff:ee:00:00:01 type=1 interval=24 latency=0 timeout=72
+wait ms 10
+l2cap cid=0004 02 f7 00           # ATT Exchange MTU Request, MTU 247 (the test answers 23)
+wait l2cap 1
+nocp hold                         # the controller keeps both buffers busy: the host must wait for them
+l2cap cid=0004 frag=27 52 10 00 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 20 21 22 23 24 25 26 27 28 29 2a 2b 2c 2d 2e 2f 30 31 32 33 34 35 36 37 38
+wait ms 20                        # the test sends a 70-byte notification: two fragments go, the third waits
+nocp release
+wait l2cap 2
+update interval=12 latency=0 timeout=72
+wait ms 100
+disconnect reason=13              # Remote User Terminated Connection
+wait adv
+wait ms 50
+connect handle=0041 peer=c0:ff:ee:00:00:02 type=1 interval=12 latency=0 timeout=72
+wait ms 10
+wait adv                          # the test ended it with hci_host_disconnect; the host advertises again
