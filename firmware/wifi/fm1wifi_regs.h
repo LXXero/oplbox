@@ -153,6 +153,21 @@
 #define GF40_PROT_CFG 0x1378u
 #define EXP_ACK_TIME 0x1380u
 
+/* The channel survey (fm1wifi_channel_survey; docs/WIFI_STAGE3.md "Receive level per channel"): what JieLi's
+ * channel select (wl_wifi.a: RT30xx_ChipSwitchChannel, UpdateChannelInfo) writes and reads. */
+#define CH_BUSY_STA 0x1134u
+#define TX_PIN_CFG 0x1328u
+#define TX_PIN_CFG_PA_PE_G0_EN 0x00000002u
+#define TX_PIN_CFG_LNA_PE_A0_EN 0x00000100u
+#define TX_PIN_CFG_LNA_PE_G0_EN 0x00000200u
+#define TX_PIN_CFG_RFTR_EN 0x00010000u
+#define TX_PIN_CFG_TRSW_EN 0x00040000u
+#define TX_BAND_CFG 0x132cu
+#define TX_BAND_CFG_A 0x00000002u
+#define TX_BAND_CFG_BG 0x00000004u
+#define RX_STA_CNT1 0x1704u
+#define RX_STA_CNT1_FALSE_CCA 0x0000ffffu
+
 #define RX_FILTER_CFG 0x1400u
 #define RX_FILTER_CFG_DROP_CRC_ERROR 0x00000001u
 #define RX_FILTER_CFG_DROP_PHY_ERROR 0x00000002u

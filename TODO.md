@@ -675,6 +675,10 @@ Which RAM the hardware writes: none so far, to be checked again once RX/TX DMA r
 **Found.**
 - No RSSI register in the clean members (per-packet RSSI is in `wl_hw_init`'s RX hook, from the RX descriptor): the
   page shows `rd_adc_peak`'s ADC peak per channel instead, a relative level. A calibrated RSSI comes with stage 4.
+  Update (2026-10-26, FM-1 run of main c4aa202): the ADC peak reads only in the trim's loopback (0 on every channel in
+  the receive state, even at VGA gain 41), so the page now surveys each channel as JieLi's AP channel select does:
+  the false CCA count (`RX_STA_CNT1`) and busy time (`CH_BUSY_STA`) over 200 ms (`fm1wifi_channel_survey`; page 2's
+  CCA lines and page 4; docs/WIFI_STAGE3.md "Receive level per channel"). Untested on an FM-1.
 - JieLi's trims carry truncations (a best value kept as a signed byte, the middle bank falling back to a VCO reading
   when the scan finds no edge); the library keeps them so the writes match, and docs/WIFI_STAGE3.md says where.
 - The FM-1's flash code cannot call RAM code directly (beyond the 23-bit call range), so the library calls across

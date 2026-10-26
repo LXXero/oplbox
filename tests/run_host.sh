@@ -76,36 +76,40 @@ else
   echo "wifi_ir: no JieLi SDK here, the generated tables and trace not re-checked"
 fi
 # the WiFi page in the simulator (tests/script_wifi.txt): its text against the made-up core (stage 2's reads, the
-# radio's bring-up, page 2's trim and channels), then against a core whose baseband never answers and one that
+# radio's bring-up, page 2's trim and false CCA counts, page 4's channel survey), then against a core whose baseband never answers and one that
 # answers nothing: an error on the page, the radio not reached, no hang
 build/host/oplbox build/host/wifi tests/script_wifi.txt > build/host/wifi_page.txt
 HOST_WIFI_MODEL=tests/wifi/core_bbp_stuck.txt build/host/oplbox build/host/wifi_stuck tests/script_wifi.txt > build/host/wifi_page_stuck.txt
 HOST_WIFI_MODEL=tests/wifi/core_silent.txt build/host/oplbox build/host/wifi_silent tests/script_wifi.txt > build/host/wifi_page_silent.txt
 HOST_WIFI_MODEL=tests/wifi/core_trim_hang.txt build/host/oplbox build/host/wifi_trim tests/script_wifi.txt > build/host/wifi_page_trim.txt
 for want in "wifi page 0: WIFI TEST (STAGE 3)" "wifi page 1: PLAY: POWER UP, TRIM, READ" "wifi page 2: SAVE: LEAVE" \
-            "wifi page 0: WIFI TEST (STAGE 3)    1/3" "wifi page 1: RESULT: OK" "wifi page 2: MAC_CSR0     35920200" \
+            "wifi page 0: WIFI TEST (STAGE 3)    1/4" "wifi page 1: RESULT: OK" "wifi page 2: MAC_CSR0     35920200" \
             "wifi page 3: MAC_SYS_CTRL 0000000C" "wifi page 4: BBP 0        21" "wifi page 5: PLL BANK  64  MID  95" \
             "wifi page 6: FILTER  141  80  44" "wifi page 7: RAM CHECK: 0 CHANGED" "wifi page 9: PLAY: PAGE 2   SAVE: LEAVE" \
-            "wifi page 0: TRIM  CH  6  PWR 6    2/3" "wifi page 1: TX LO  57  41  DC   -1   0" \
+            "wifi page 0: TRIM  CH  6  PWR 6    2/4" "wifi page 1: TX LO  57  41  DC   -1   0" \
             "wifi page 2: TX GAIN   +5  PHASE   +2 Q" "wifi page 3: RX GAIN  -20  PHASE   +7 I" \
             "wifi page 4: RX DC I +123 +103  +76  +22" "wifi page 5: RX DC Q  -77  -66  -51  -21" \
-            "wifi page 6: ADC  1- 5    0   0   0   0   0" "wifi page 8: ADC 11-13    0   0   0" \
-            "wifi page 9: PLAY: PAGE 3   SAVE: LEAVE" "wifi page 0: RX CHECK  CH  6        3/3" \
+            "wifi page 6: CCA  1- 5   2K  2K  1K  2K  4K" "wifi page 8: CCA 11-13   2K  1K  1K" \
+            "wifi page 9: PLAY: PAGE 3   SAVE: LEAVE" "wifi page 0: RX CHECK  CH  6        3/4" \
             "wifi page 1: VGA GAIN    7   7   7" "wifi page 2: VGA PEAK   50  50  50" "wifi page 3: PEAK AT VGA  0    0" \
             "wifi page 4: PEAK AT VGA 41    0" "wifi page 5: RXFE 80 00  23 82" "wifi page 6: RXFE 0  3A  19 00  20 00" \
-            "wifi page 7: BBP 25  00" "wifi page 9: PLAY: PAGE 1   SAVE: LEAVE"; do
+            "wifi page 7: BBP 25  00" "wifi page 9: PLAY: PAGE 4   SAVE: LEAVE" "wifi page 0: SURVEY  200 MS EACH    4/4" \
+            "wifi page 1:     CCA   BUSY     CCA   BUSY" "wifi page 2: 1  2800  28000  8  2400  24000" \
+            "wifi page 7: 6  6400  64000 13  1000  10000" "wifi page 8: 7  4400  44000" \
+            "wifi page 9: PLAY: PAGE 1   SAVE: LEAVE"; do
   grep -qF "$want" build/host/wifi_page.txt || { echo "FAIL: WiFi page: no line '$want'" >&2; exit 1; }
 done
 for want in "wifi page 1: RESULT: TIMEOUT" "wifi page 2: MAC_CSR0     35920200" "wifi page 4: BBP 0        TIMEOUT" \
-            "wifi page 5: PLL BANK  -" "wifi page 1: NOT REACHED" "wifi page 0: RX CHECK               3/3"; do
+            "wifi page 5: PLL BANK  -" "wifi page 1: NOT REACHED" "wifi page 0: RX CHECK               3/4" \
+            "wifi page 0: SURVEY                 4/4"; do
   grep -qF "$want" build/host/wifi_page_stuck.txt || { echo "FAIL: WiFi page, BBP stuck: no line '$want'" >&2; exit 1; }
 done
 for want in "wifi page 1: RESULT: NO ANSWER" "wifi page 2: MAC_CSR0     00000000" "wifi page 6: FILTER  -"; do
   grep -qF "$want" build/host/wifi_page_silent.txt || { echo "FAIL: WiFi page, silent core: no line '$want'" >&2; exit 1; }
 done
 for want in "wifi page 1: RESULT: TIMEOUT AT TRIM" "wifi page 0: TRIM FAILED  CH --  PWR --" \
-            "wifi page 1: TX LO  --  --  DC   --  --" "wifi page 6: FILTER   --  --  --" "wifi page 6: ADC  1- 5   --" \
-            "wifi page 1: VGA GAIN   --  --  --" "wifi page 3: PEAK AT VGA  0   --" "wifi page 7: BBP 25  --"; do
+            "wifi page 1: TX LO  --  --  DC   --  --" "wifi page 6: FILTER   --  --  --" "wifi page 6: CCA  1- 5   --" \
+            "wifi page 1: VGA GAIN   --  --  --" "wifi page 3: PEAK AT VGA  0   --" "wifi page 7: BBP 25  --" "wifi page 2: 1    --     --  8    --     --"; do
   grep -qF "$want" build/host/wifi_page_trim.txt || { echo "FAIL: WiFi page, trim timeout: no line '$want'" >&2; exit 1; }
 done
 HOST_WIFI_MODEL=tests/wifi/core_trim_rxdc_hang.txt build/host/oplbox build/host/wifi_trim_rxdc tests/script_wifi.txt > build/host/wifi_page_trim_rxdc.txt

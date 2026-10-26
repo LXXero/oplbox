@@ -366,7 +366,12 @@ static void test_radio(const char *dir, const char *outdir)
     sdio_model *m = core(path, NULL);
     sdio_model_raw_log(m, 0);
     for (i = 0; i < N_CPU; i++) before[i] = sdio_model_peek(m, cpu_reg(i));
-    check(fm1wifi_set_channel(1) == FM1WIFI_ESTATE && fm1wifi_adc_peak(&peak) == FM1WIFI_ESTATE, "channel and ADC before the radio: OFF");
+    {
+        fm1wifi_survey sv;
+        check(fm1wifi_set_channel(1) == FM1WIFI_ESTATE && fm1wifi_adc_peak(&peak) == FM1WIFI_ESTATE &&
+                  fm1wifi_channel_survey(1, FM1WIFI_SURVEY_MS, &sv) == FM1WIFI_ESTATE,
+              "channel, ADC and survey before the radio: OFF");
+    }
     check(fm1wifi_power_up() == FM1WIFI_OK, "power-up before the radio");
     sdio_model_zero(m);                 /* tools/wifi_ir.py's run starts from zeroed registers: so does this one */
     sdio_model_script(m, "reg 0x31000 0x00300100\n", "csr0", stderr);
@@ -418,6 +423,31 @@ static void test_radio(const char *dir, const char *outdir)
         check(rx.peak == 0 && rx.peak_vga41 == 0 && rx.idle80 == 0, "RX probe: the peak 0 at VGA 0 and 41 (the model)");
         check(sdio_model_peek(m, FM1_WLA_CON(4)) == w4 && sdio_model_peek(m, FM1_WLA_CON(5)) == w5,
               "RX probe: the VGA gain back at 0 (WLA_CON4, WLA_CON5 as before)");
+    }
+    {
+        fm1wifi_survey sv;
+        const wifi_fix *w;
+        unsigned n, delays = 0;
+        check(fm1wifi_channel_survey(0, 200, &sv) == FM1WIFI_ERANGE && fm1wifi_channel_survey(14, 200, &sv) == FM1WIFI_ERANGE &&
+                  fm1wifi_channel_survey(6, 0, &sv) == FM1WIFI_ERANGE && fm1wifi_channel_survey(6, 1001, &sv) == FM1WIFI_ERANGE,
+              "survey: channel 0 or 14, 0 or 1001 ms: RANGE");
+        sdio_model_script(m, "reg 0x3132c 0x00000003\n", "band", stderr);
+        sdio_model_wlog_clear(m);
+        check(fm1wifi_channel_survey(6, FM1WIFI_SURVEY_MS, &sv) == FM1WIFI_OK && sv.false_cca == 6400u && sv.busy == 64000u,
+              "survey channel 6, 200 ms: false CCA 6400, busy 64000 (the model's access point on 6)");
+        w = sdio_model_wlog(m);
+        for (n = 3; n < (unsigned)w->n; n++) delays += w->r[n].kind == WIFI_REC_DELAY && w->r[n].val == 1000u;
+        check(w->n == 203 && w->r[0].kind == WIFI_REC_WR && w->r[0].addr == FM1_WF_CON(7) && (w->r[0].val & 0xFFu) == 107u &&
+                  w->r[1].addr == FM1_WIFI_CORE(TX_BAND_CFG) && w->r[1].val == 0x5u &&
+                  w->r[2].addr == FM1_WIFI_CORE(TX_PIN_CFG) && w->r[2].val == 0x00050302u && delays == 200u,
+              "survey: WF_CON7 = 107, TX_BAND_CFG bits 2-1 = 2 (BG; bit 0 kept), TX_PIN_CFG = 0x00050302, then 200 x 1 ms");
+        check(fm1wifi_channel_survey(13, 10, &sv) == FM1WIFI_OK && sv.false_cca == 50u && sv.busy == 500u &&
+                  (sdio_model_peek(m, FM1_WF_CON(7)) & 0xFFu) == 114u,
+              "survey channel 13, 10 ms: the counters cleared before the wait (50, 500), the radio left on 13");
+        sdio_model_script(m, "reg 0x31004 0x00000004\n", "rx off", stderr);
+        check(fm1wifi_channel_survey(6, 10, &sv) == FM1WIFI_OK && sv.false_cca == 0 && sv.busy == 0,
+              "survey with the MAC's receiver off: 0, 0 (the model)");
+        sdio_model_script(m, "reg 0x31004 0x0000000c\n", "rx on", stderr);
     }
     fm1wifi_power_down();
     check(!fm1wifi_is_up() && !fm1wifi_radio_is_up(), "powered down");
@@ -533,6 +563,13 @@ static void test_where(const char *dir)
         check(fm1wifi_rx_probe(&rx) == FM1WIFI_OK && fm1wifi_where.magic == 0 && s.bad == 0 && s.n == 1 &&
                   s.seq[0] == FM1WIFI_STEP_RX_PROBE,
               "where: the RX probe's writes (the VGA gain) as RX PROBE");
+    }
+    memset(&s, 0, sizeof s);
+    {
+        fm1wifi_survey sv;
+        check(fm1wifi_channel_survey(2, 1, &sv) == FM1WIFI_OK && fm1wifi_where.magic == 0 && s.bad == 0 && s.n == 1 &&
+                  s.seq[0] == FM1WIFI_STEP_SURVEY,
+              "where: the survey's writes as CHANNEL SURVEY");
     }
     memset(&s, 0, sizeof s);
     fm1wifi_power_down();

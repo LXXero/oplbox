@@ -20,19 +20,21 @@
 # the rails raised first (platform_supply_full, before the core came up); the bring-up over, no WiFi note for a crash
 800 is 0 88 4 1
 800 is 0 88 5 0
-# PLAY again: page 2 (the trim and the channels), again: page 3 (the VGA searches, the receive state), again: page 1
+# PLAY again: page 2 (the trim and the false CCA counts), again: page 3 (the VGA searches, the receive state), again:
+# page 4 (the channel survey), again: page 1
 1000 btn 12
 1200 btn 12
 1400 btn 12
+1600 btn 12
 # SAVE leaves: the core down again, the song where it was
-1600 btn 9
-1800 is 0 88 0 0
-1800 is 0 88 1 1
-1800 is 0 88 2 1
-1800 is 0 88 3 0
+1800 btn 9
+2000 is 0 88 0 0
+2000 is 0 88 1 1
+2000 is 0 88 2 1
+2000 is 0 88 3 0
 # SAVE again opens it, and SAVE leaves without PLAY: the core never powered
-2000 btn 9
 2200 btn 9
-2400 is 0 88 0 0
-2400 is 0 88 1 1
-2600 end
+2400 btn 9
+2600 is 0 88 0 0
+2600 is 0 88 1 1
+2800 end

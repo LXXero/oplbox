@@ -66,7 +66,7 @@ const char *fm1wifi_step_name(uint32_t step)
         "TX LO I", "TX LO Q", "TX DC I", "TX DC Q", "TX GAIN", "TX PHASE", "TRIM_RXDC", "RX DC TRIM", "TRIM_RXIQ",
         "RX IQ START", "RX GAIN", "RX PHASE", "RF_DONE", "PA CONFIG", "RF_GAIN", "VGA GAIN 0", "PHY_INIT_A 2",
         "AGC TABLE 2", "PHY_INIT_B 2", "CFR1", "RAPP", "RF RAM TABLE", "BSB_AUTO", "POWER 6 CH 6", "MCS GAINS",
-        "SET CHANNEL", "SET POWER", "ADC PEAK", "RX PROBE",
+        "SET CHANNEL", "SET POWER", "ADC PEAK", "RX PROBE", "CHANNEL SURVEY",
     };
     return step < FM1WIFI_STEP_N ? NAME[step] : "?";
 }
@@ -1033,6 +1033,40 @@ RAMFN static int rx_probe(fm1wifi_rxprobe *p)
     return e3;
 }
 
+RAMFN static uint32_t mac_r(uint32_t addr)
+{
+    uint32_t v = 0;
+    if (!e3) e3 = mac_rd(addr, &v);
+    return v;
+}
+
+RAMFN static void mac_w(uint32_t addr, uint32_t v)
+{
+    if (!e3) e3 = mac_wr(addr, v);
+}
+
+/* The channel switch of JieLi's RT30xx_ChipSwitchChannel on 2.4 GHz with one TX and one RX path (its antenna word
+ * 0x511), then UpdateChannelInfo's two reads after the wait. The counters clear when read (rt2800; JieLi's
+ * NICInitializeAsic reads them once for that), so the first reads start the count. */
+RAMFN static int channel_survey(unsigned ch, unsigned ms, fm1wifi_survey *s)
+{
+    if (!radio) return FM1WIFI_ESTATE;
+    if (ch < 1u || ch > 13u || ms < 1u || ms > 1000u) return FM1WIFI_ERANGE;
+    e3 = 0;
+    BEGIN(FM1WIFI_STEP_SURVEY);
+    fld(FM1_WF_CON(7), 0, 8, ch + 101u);                                       /* wifi_set_channel */
+    mac_w(TX_BAND_CFG, (mac_r(TX_BAND_CFG) & ~(TX_BAND_CFG_A | TX_BAND_CFG_BG)) | TX_BAND_CFG_BG);
+    mac_w(TX_PIN_CFG, TX_PIN_CFG_PA_PE_G0_EN | TX_PIN_CFG_LNA_PE_A0_EN | TX_PIN_CFG_LNA_PE_G0_EN | TX_PIN_CFG_RFTR_EN |
+                          TX_PIN_CFG_TRSW_EN);
+    mac_r(RX_STA_CNT1);
+    mac_r(CH_BUSY_STA);
+    while (ms-- && !e3) DELAY(1000);
+    s->false_cca = mac_r(RX_STA_CNT1) & RX_STA_CNT1_FALSE_CCA;
+    s->busy = mac_r(CH_BUSY_STA);
+    END();
+    return e3;
+}
+
 RAMFN static int radio_up(const fm1wifi_cal *cal, fm1wifi_radio *r)
 {
     uint8_t par[2], *z = (uint8_t *)r;
@@ -1111,4 +1145,5 @@ int fm1wifi_set_channel(unsigned ch) { return FAR(set_channel)(ch); }
 int fm1wifi_set_power(unsigned level) { return FAR(set_power)(level); }
 int fm1wifi_adc_peak(uint8_t *peak) { return FAR(read_peak)(peak); }
 int fm1wifi_rx_probe(fm1wifi_rxprobe *p) { return FAR(rx_probe)(p); }
+int fm1wifi_channel_survey(unsigned ch, unsigned ms, fm1wifi_survey *s) { return FAR(channel_survey)(ch, ms, s); }
 int fm1wifi_radio_up(const fm1wifi_cal *cal, fm1wifi_radio *r) { return FAR(radio_up)(cal, r); }
