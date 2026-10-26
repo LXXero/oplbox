@@ -1,5 +1,12 @@
 # Unreleased
 
+- IP over WiFi for stage 7, host part: lwIP 2.1.3 (BSD-3-Clause, the release's files unchanged, IPv4/ARP/DHCP/ICMP/UDP
+  only, in `firmware/wifi/lwip/`) and `firmware/wifi/fm1wifi_net.c`, a network interface that turns 802.11 data frames
+  into Ethernet frames for lwIP and back and hands EAPOL frames to the WPA2 code. `tests/wifi_net.c` plays an AP, a
+  DHCP server and two pinging hosts as 802.11 frames: an address from DHCP (retried while the server is silent), ARP
+  and ping answered, foreign frames dropped. 6.8 KB of RAM, about 15 KB of code; not linked into the firmware and
+  not on the WiFi page yet, untested on an FM-1.
+
 - WiFi page: the 13-channel scan now surveys each channel as JieLi's AP channel select does (`wl_wifi.a`:
   `APAutoSelectChannel`, `RT30xx_ChipSwitchChannel`, `UpdateChannelInfo`): the channel set with `TX_BAND_CFG` on
   2.4 GHz and `TX_PIN_CFG` = 0x00050302, 200 ms, then the false CCA count (`RX_STA_CNT1`) and the busy time

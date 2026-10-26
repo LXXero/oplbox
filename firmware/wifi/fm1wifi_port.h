@@ -37,3 +37,9 @@ void fm1wifi_port_delay_us(uint32_t us);
 
 /* The trim starts (1) or has ended (0): see above. */
 void fm1wifi_port_trim(int on);
+
+/* A millisecond clock for lwIP's timers (fm1wifi_net.c, stage 7: ARP ageing, DHCP's retries and lease): milliseconds
+ * since any fixed point, counting up and wrapping at 2^32 (lwIP compares times modulo 2^32). Any tick of 10 ms or finer
+ * will do. lwIP's own name (lwip/sys.h declares it too), because lwIP calls it directly; only needed when
+ * fm1wifi_net.c is linked. The host test's is in tests/wifi_net.c. */
+uint32_t sys_now(void);

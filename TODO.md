@@ -399,7 +399,7 @@ OPLBOX (238 KB free) anyway.
 **Next.** Stages 2 and 3 ran on xero's FM-1 (7e, 7f: the bring-up, the trims, a survey that counts on every
 channel). Stages 4-6 are built in one go (7h): xero makes an open hotspot named OPLBOX, flashes, opens the WiFi test
 page (SAVE, then PLAY) and photographs all ten pages (README "WiFi test page", docs/WIFI_STAGE4.md "Reading pages
-5-10"). Page 5 says where the run stopped; pages 7-9 hold the raw evidence for the next fix.
+5-10"). Page 5 says where the run stopped; pages 7-9 hold the raw evidence for the next fix. Stage 7's host part (IP on lwIP, 7g) and stage 8's handshakes (7d) are built ahead of the frames they need.
 
 ### 7a. Stage 1, register header — built, host-tested, not yet tried on hardware
 
@@ -754,6 +754,55 @@ USB rescue are untouched.
 **Waiting for xero.** Flash, open the page (SAVE, PLAY), read page 1 and page 2 (PLAY switches). Then: whether the
 bring-up completes (`RESULT`), whether BBP 0 comes out of reset, where the PLL and the trims land, what the receiver
 sees per channel, and whether the RAM check stays at 0.
+
+### 7g. Stage 7 host part, IP over WiFi on lwIP — built, host-tested, not yet tried on hardware
+
+**Built.**
+- lwIP 2.1.3 (BSD-3-Clause) in `firmware/wifi/lwip/src/`, the release's files unchanged: `git archive` of tag
+  `STABLE-2_1_3_RELEASE` (commit 6ca936f6) from an lwIP clone already on this machine (the Pico SDK's submodule), the
+  16 `.c` files IPv4, ARP, DHCP, ICMP and UDP need and the 63 headers they include, with `COPYING`. Not the JieLi
+  SDK's copy: JieLi changed 27 of its 37 core `.c` files. `SHA256SUMS` lists every vendored file and
+  `tests/run_host.sh` checks it. `CREDITS.md`, `LICENSING.md` and the directory's README.md say where it is from.
+- `firmware/wifi/lwip/port/lwipopts.h` (`NO_SYS=1`, raw API, no TCP or IPv6) and `arch/cc.h`, ours.
+- `firmware/wifi/fm1wifi_net.c`/`.h`: the network interface. In: data and QoS data frames (QoS control, HT control
+  with the Order bit) with FromDS, addr1 = our MAC or a group address, addr2 = the BSSID, addr3 = the source, RFC 1042
+  SNAP; everything else dropped (other MACs or BSSIDs, ToDS, protected frames, fragments, A-MSDUs, our own
+  broadcasts coming back, other LLC headers). Out: ToDS data frames, addr1 = BSSID, addr2 = our MAC, addr3 = the
+  destination, written in front of lwIP's pbuf without a copy (a chained one is copied into lwIP's heap). EAPOL
+  (0x888E) goes to a callback instead of lwIP, and `fm1wifi_net_eapol_send` sends the handshake's replies, for the
+  WPA2 code (7d's next step). DHCP start and stop, `fm1wifi_net_poll` for the timers, state, address and counters.
+- `sys_now()` (milliseconds) joins `firmware/wifi/fm1wifi_port.h`; the host test has its own clock.
+- `tests/run_host.sh`'s include rule for `firmware/wifi/` now admits lwIP's header names (`lwip/`, `lwip/priv/`,
+  `lwip/prot/`, `netif/`, `arch/cc.h`, `lwipopts.h`) and nothing else; `tools/build.py` compiles `fm1wifi_net.c`
+  with lwIP's include paths and exempts `wifi/lwip/src/` from the address-literal rule only (lwIP's TCP MSS
+  constant 0x02040000 looks like an XIP address), as for BearSSL.
+
+`tests/wifi_net.c` (508 checks; also clean under ASan/UBSan) plays the AP, a DHCP server and two pinging hosts as
+802.11 data frames: DISCOVER retried after 2 and 4 s while the server is silent, OFFER (broadcast), REQUEST with
+options 50 and 54, ACK (unicast) gives 192.168.4.23/24 and the gateway, a gratuitous ARP; ARP requests for our
+address answered, others not; ICMP echo answered in plain, QoS and QoS+HT control frames, 56 and 1,400 bytes
+(chained), and from a host lwIP has to ARP for first, with the IP and ICMP checksums and every 802.11 header field
+checked; a bad ICMP checksum not answered; 15 kinds of frame dropped; EAPOL to the callback and not to lwIP, and
+out; a send hook that refuses; DHCP stop sends a RELEASE (after ARPing for the server); down, and a restart on
+another BSSID; 300 pings answered in a row (the pools do not run dry). 15 deliberate bugs planted by hand in
+`fm1wifi_net.c`: 14 caught; the one missed restores the Ethernet header in a pbuf after sending, which lwIP never
+reads again.
+
+**Size** (JieLi clang `-Os`, objects not linked): RAM 6,839 B, all static (lwIP's heap `MEM_SIZE` 4,096, the receive
+pool 4 x 512 B, ARP table 4 entries; `lwipopts.h` and `firmware/wifi/lwip/README.md` have the breakdown); code and
+read-only data 14,959 B without `--gc-sections` (lwIP 13,411, `fm1wifi_net.c` 1,548). Not added to the firmware
+build: lwIP's files need `string.h`, and the C library's `memcmp` (plus `memmove`, `strlen`, `strncmp`, `atoi`
+unless `--gc-sections` drops their users), which `firmware/src/libc.c` does not have yet.
+
+**Decided** (chosen by the colony; xero can change it): upstream lwIP rather than the SDK's; no TCP yet (UDP is
+there; TCP is the files `tcp*.c` from the same tag when song transfer needs it); no IP fragmentation or reassembly;
+`DHCP_DOES_ARP_CHECK` off (no ARP probe of the offered address); protected frames dropped, so the driver must hand
+frames already decrypted by the MAC with the Protected bit cleared; the TX sequence number counted here, which the
+hardware may replace.
+
+**Open.** Untested on an FM-1 (it needs received frames: stages 4-6), not linked into OPLBOX and not on the WiFi page
+yet. Stack depth in `fm1wifi_net_input` is not measured [unchecked]. The FM-1 test (an address from the hotspot,
+ping answered) is stage 7's hardware part.
 
 ### 7h. Stages 4-6, frames, scans and joining an open network — built, host-tested, waiting for the FM-1
 

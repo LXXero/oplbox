@@ -10,7 +10,7 @@ registers, takes a diagnostic snapshot and checks RAM for writes by the hardware
 brings the radio up and calibrates it: PLL, a fresh trim, channel and TX power (stage 3, run on an FM-1). Stages 4-6
 (docs/WIFI_STAGE4.md; host-tested, not run on an FM-1 yet): the MAC's defaults and an address, one frame in or out
 through the FIFOs, a passive or active scan of a channel, joining an open network as a station. Networking (IP,
-WPA2) is stages 7-8, in the layers docs/WIFI.md "Standalone library" lists.
+WPA2) is stages 7-8, in the layers docs/WIFI.md "Standalone library" lists; the top layer is built ahead of them: `fm1wifi_net` (stage 7, host part) puts lwIP on 802.11 data frames and is tested on the host against replayed frames.
 
 ## Files
 
@@ -24,6 +24,7 @@ WPA2) is stages 7-8, in the layers docs/WIFI.md "Standalone library" lists.
 | `fm1wifi_port.h` | what the library needs from the board: you implement it |
 | `wpa_crypto.c`, `wpa_crypto.h`, `bearssl/` | WPA2 key primitives for stage 8 (PMK, PRF/PTK, AES key unwrap) on a BearSSL subset; not used by the driver yet |
 | `wpa_eapol.c`, `wpa_eapol.h` | the station side of the WPA2-PSK EAPOL-Key 4-way and group key handshakes (stage 8): takes EAPOL frames, writes the replies, hands over TK and GTK; not used by the driver yet |
+| `fm1wifi_net.c`, `fm1wifi_net.h`, `lwip/` | IP over the station link for stage 7: a network interface turning 802.11 data frames into Ethernet frames for lwIP 2.1.3 and back, DHCP, ARP, ICMP echo, EAPOL frames to a callback; lwIP unchanged in `lwip/src/`, its options in `lwip/port/` (`lwip/README.md`); host-tested, not linked yet |
 
 ## The API
 
@@ -56,6 +57,17 @@ int  fm1wifi_scan_channel(unsigned ch, unsigned ms, int active, const char *ssid
 int  fm1wifi_join(fm1wifi_sta *s, const fm1wifi_bss *b, unsigned ms, fm1wifi_frames *fr);   /* open networks */
 ```
 
+Stage 7, IP (`fm1wifi_net.h`; lwIP 2.1.3 with `NO_SYS=1`, everything from the main loop):
+
+```c
+int  fm1wifi_net_init(mac, bssid, tx, eapol, ctx);   /* after association: tx sends an 802.11 data frame */
+void fm1wifi_net_input(const uint8_t *frame, unsigned len);   /* each received 802.11 data frame */
+void fm1wifi_net_poll(void);                         /* lwIP's timers, every main-loop pass */
+int  fm1wifi_net_dhcp_start(void);                   /* then fm1wifi_net_state() == FM1WIFI_NET_UP, fm1wifi_net_addr() */
+int  fm1wifi_net_eapol_send(const uint8_t *body, unsigned len);   /* the WPA2 handshake's frames to the AP */
+void fm1wifi_net_down(void);
+```
+
 `fm1wifi_radio_up` takes a calibration (`fm1wifi_cal_default`, or the FM-1's own crystal caps, PA trim and MCS gains
 if you have them) and fills `fm1wifi_radio` with what it found (`fm1wifi.h`). It always makes a fresh trim. After a
 TIMEOUT the fields hold what it had read: `got` has a bit for each value that was read (`FM1WIFI_GOT_*`), and a value
@@ -68,8 +80,10 @@ is never touched before `fm1wifi_power_up()`.
 
 ## Linking it into your firmware
 
-1. Compile `fm1wifi.c` and `fm1wifi_frame.c` with `-I<this directory>` (C11; they need only `<stdint.h>`).
-2. Implement `fm1wifi_port.h`: six functions, 32-bit register access to the WiFi blocks, the two WiFi bits of the
+1. Compile `fm1wifi.c` and `fm1wifi_frame.c` with `-I<this directory>` (C11; they need only `<stdint.h>`). For IP, also `fm1wifi_net.c` and
+   the files in `lwip/src/` with `-I<this directory>/lwip/port -I<this directory>/lwip/src/include`; lwIP's files
+   need the C library's `string.h`, and the port a millisecond clock, `sys_now()` (`lwip/README.md`).
+2. Implement `fm1wifi_port.h`: six functions (seven with `sys_now` for IP), 32-bit register access to the WiFi blocks, the two WiFi bits of the
    shared `CLK_CON1`, a microsecond delay, what to do around the radio's trim, and the DMA address of a buffer. On **felucca-bsp**, use OPLBOX's
    [`firmware/hal/fm1wifi_port_bsp.c`](../hal/fm1wifi_port_bsp.c) as it is: it has nothing of OPLBOX's in it
    (compile it with felucca-bsp's `chip/` on the include path). On anything else, write your own, the same size.
@@ -94,6 +108,6 @@ OPLBOX, everything board-specific through the port.
 
 ## Licence
 
-Today every file here is GPL-3.0-only, as OPLBOX is (BearSSL's files: MIT). Stage 6 will take its code basis from
+Today every file here is GPL-3.0-only, as OPLBOX is (BearSSL's files: MIT; lwIP's in `lwip/src/`: BSD-3-Clause). Stage 6 will take its code basis from
 GPL-2.0-or-later sources, so the library as a whole will be GPL-licensed; which GPL version is an open decision for
 xero (docs/WIFI.md "Standalone library").

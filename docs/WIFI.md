@@ -745,6 +745,14 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   sized to the budget.
 - **Host**: the netif and lwIP run in the host build against a loopback that replays 802.11 data frames; DHCP
   against a scripted server. **FM-1**: gets an address on the open hotspot and answers ping.
+- Built so far (host part, TODO.md 7g): lwIP 2.1.3 from its release tag, unchanged, the IPv4/ARP/DHCP/ICMP/UDP files
+  only (`firmware/wifi/lwip/`, provenance and checksums in its README.md; not the SDK's copy, which JieLi changed), and
+  `firmware/wifi/fm1wifi_net.c`/`.h`: the netif (802.11 data and QoS data frames to Ethernet frames and back over RFC
+  1042 SNAP, ToDS out to the BSSID, FromDS in from it), EAPOL frames to a callback for stage 8, DHCP, state and
+  address getters; `sys_now()` joins the port. `lwipopts.h` takes 6,839 B of RAM (heap 4 KB, receive pool 4 x 512 B);
+  code about 15 KB before `--gc-sections`. `tests/wifi_net.c` plays the AP, a DHCP server and two pinging hosts as
+  802.11 frames (508 checks). Untested on an FM-1 (it needs stages 4-6 for real frames), not linked into OPLBOX and
+  not on the WiFi page yet.
 
 ### Stage 8: WPA2-PSK (parallel with stage 7 after stage 6; needs FM-1)
 
