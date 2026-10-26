@@ -422,8 +422,8 @@ static void test_made_up(void)
     struct ap a;
     struct wpa_eapol s;
     struct nonces nc;
-    uint8_t f[512], r[WPA_EAPOL_REPLY_MAX], tk1[16];
-    size_t len, rlen;
+    uint8_t f[512], r[WPA_EAPOL_REPLY_MAX], tk1[16], saved_reply[WPA_EAPOL_REPLY_MAX];
+    size_t len, rlen, saved_reply_len;
     unsigned info;
 
     ap_init(&a);
@@ -440,6 +440,11 @@ static void test_made_up(void)
     check(test_mic_ok(a.ptk, r, rlen), "made-up: msg 2 MIC verifies at the AP");
     check(same_hex(a.ptk, 48, "b881c51e62b05850c697361ee6cd6ceaadcb13753f96b7a88b328e239e7df7c7"
                               "d83db6939b4ac59141f08fc5e04144bb"), "made-up: PTK as Python's hashlib has it");
+    memcpy(saved_reply, r, rlen);
+    saved_reply_len = rlen;
+    check(wpa_eapol_rx(&s, f, len, r, sizeof r, &rlen) == WPA_EAPOL_OK && rlen == saved_reply_len &&
+          memcmp(r, saved_reply, rlen) == 0 && s.state == WPA_EAPOL_WAIT_MSG3,
+          "made-up: same-counter msg 1 retransmit gets identical msg 2 and SNonce");
 
     a.rc = 2;
     len = ap_msg3(&a, f, a.rsne, a.rsne_len, 1);
@@ -452,6 +457,11 @@ static void test_made_up(void)
     check(s.gtk_len == 16 && s.gtk_idx == 1 && memcmp(s.gtk, a.gtk, 16) == 0 && s.gtk_rsc[0] == 5,
           "made-up: GTK, key index 1, receive counter");
     memcpy(tk1, s.tk, 16);
+    memcpy(saved_reply, r, rlen);
+    saved_reply_len = rlen;
+    check(wpa_eapol_rx(&s, f, len, r, sizeof r, &rlen) == WPA_EAPOL_OK && rlen == saved_reply_len &&
+          memcmp(r, saved_reply, rlen) == 0 && s.new_keys == 0 && s.state == WPA_EAPOL_DONE,
+          "made-up: same-counter msg 3 retransmit gets msg 4 without reloading keys");
 
     a.rc = 3;                                   /* the same msg 3 again with a new counter: msg 4, keys not new */
     len = ap_msg3(&a, f, a.rsne, a.rsne_len, 1);
@@ -464,6 +474,11 @@ static void test_made_up(void)
     len = ap_group1(&a, f, 2 | 4);
     check(wpa_eapol_rx(&s, f, len, r, sizeof r, &rlen) == WPA_EAPOL_OK && s.new_keys == WPA_EAPOL_NEW_GTK &&
           s.state == WPA_EAPOL_DONE, "made-up: group msg 1 taken");
+    memcpy(saved_reply, r, rlen);
+    saved_reply_len = rlen;
+    check(wpa_eapol_rx(&s, f, len, r, sizeof r, &rlen) == WPA_EAPOL_OK && rlen == saved_reply_len &&
+          memcmp(r, saved_reply, rlen) == 0 && s.new_keys == 0 && s.gtk_idx == 2,
+          "made-up: same-counter group msg 1 retransmit gets msg 2 without reloading GTK");
     check(rlen == 99 && same_hex(r, 99, "0203005f0203020000000000000000000400000000000000000000000000000000000000"
                                         "000000000000000000000000000000000000000000000000000000000000000000000000"
                                         "0000000000000000003120ff95c333221db4607658bb8062ab0000"),
@@ -577,7 +592,11 @@ static void test_refusals(void)
     at_msg3(&a, &s, &nc);
     a.rc = 1;
     len = ap_msg1(&a, f);
-    refused(&s, f, len, WPA_EAPOL_E_REPLAY, WPA_EAPOL_WAIT_MSG3, "msg 1 again with the counter answered");
+    check(wpa_eapol_rx(&s, f, len, r, sizeof r, &rlen) == WPA_EAPOL_OK && rlen > 0 &&
+          s.state == WPA_EAPOL_WAIT_MSG3, "same-counter msg 1 retransmit answered");
+    memcpy(g, f, len);
+    g[F_NONCE] ^= 1;
+    refused(&s, g, len, WPA_EAPOL_E_REPLAY, WPA_EAPOL_WAIT_MSG3, "same-counter msg 1 with changed ANonce");
     a.rc = 1;
     len = ap_msg3(&a, f, a.rsne, a.rsne_len, 1);
     refused(&s, f, len, WPA_EAPOL_E_REPLAY, WPA_EAPOL_WAIT_MSG3, "msg 3 with msg 1's counter");
@@ -621,7 +640,12 @@ static void test_refusals(void)
         }
     check(wpa_eapol_rx(&s, f, len, r, sizeof r, &rlen) == WPA_EAPOL_OK && s.state == WPA_EAPOL_DONE,
           "msg 3 still taken after all those refusals");
-    refused(&s, f, len, WPA_EAPOL_E_REPLAY, WPA_EAPOL_DONE, "msg 3 again with the same counter");
+    check(wpa_eapol_rx(&s, f, len, r, sizeof r, &rlen) == WPA_EAPOL_OK && rlen == 99 &&
+          s.new_keys == 0 && s.state == WPA_EAPOL_DONE, "same-counter msg 3 retransmit answered without reloading keys");
+    memcpy(g, f, len);
+    g[F_RSC] ^= 1;
+    test_mic(a.ptk, g, len, g + F_MIC);
+    refused(&s, g, len, WPA_EAPOL_E_REPLAY, WPA_EAPOL_DONE, "same-counter msg 3 with changed authenticated body");
 
     /* key data length: not a multiple of 8, too short, too long (each with a valid MIC) */
     for (size_t l = 0; l <= 40; l++) {

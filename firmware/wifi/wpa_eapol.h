@@ -80,6 +80,8 @@ struct wpa_eapol {
     uint8_t have_replay, have_msg1;
     uint8_t replay[8];                  /* counter of the last frame whose MIC verified */
     uint8_t msg1_replay[8];             /* counter of the last msg 1 answered */
+    uint8_t last_frame_hash[20], msg1_frame_hash[20]; /* identify byte-identical EAPOL retransmits */
+    size_t last_frame_len, msg1_frame_len;
     uint8_t anonce[32], snonce[32];
     uint8_t tptk[WPA_PTK_LEN];          /* from the last msg 1; becomes ptk when msg 3 verifies under it (12.7.6.4) */
     uint8_t ptk[WPA_PTK_LEN];           /* KCK 0-15, KEK 16-31, TK 32-47 */

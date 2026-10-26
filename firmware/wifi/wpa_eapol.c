@@ -39,6 +39,14 @@ static void wipe(void *p, size_t n)
         *v++ = 0;
 }
 
+static void frame_hash(const uint8_t *f, size_t len, uint8_t out[20])
+{
+    br_sha1_context hash;
+    br_sha1_init(&hash);
+    br_sha1_update(&hash, f, len);
+    br_sha1_out(&hash, out);
+}
+
 /* nonzero when the n bytes differ (memcmp is not declared without the C library's headers) */
 static int differ(const uint8_t *a, const uint8_t *b, size_t n)
 {
@@ -46,6 +54,15 @@ static int differ(const uint8_t *a, const uint8_t *b, size_t n)
     while (n--)
         d |= *a++ ^ *b++;
     return d;
+}
+
+static int same_frame(const uint8_t *f, size_t len, size_t saved_len, const uint8_t saved_hash[20])
+{
+    uint8_t digest[20];
+    if (len != saved_len)
+        return 0;
+    frame_hash(f, len, digest);
+    return !differ(digest, saved_hash, sizeof digest);
 }
 
 static unsigned be16(const uint8_t *p)
@@ -261,6 +278,16 @@ enum wpa_eapol_reason wpa_eapol_rx(struct wpa_eapol *s, const uint8_t *f, size_t
         return s->reason = WPA_EAPOL_E_KEY_INFO;
 
     if (msg == MSG1) {
+        /* 12.7.6.2: an exact retransmit gets the same msg 2 and SNonce. */
+        if (s->state == WPA_EAPOL_WAIT_MSG3 && s->have_msg1 &&
+            !differ(f + O_REPLAY, s->msg1_replay, 8) &&
+            same_frame(f, flen, s->msg1_frame_len, s->msg1_frame_hash)) {
+            if (cap < WPA_EAPOL_HDR + WPA_EAPOL_KEY_FIXED + (size_t)s->own_rsne_len)
+                return s->reason = WPA_EAPOL_E_BUF;
+            *reply_len = reply_frame(reply, f[0], KEY_DESC_VER | KI_PAIRWISE | KI_MIC, s->msg1_replay, s->snonce,
+                                     s->own_rsne, s->own_rsne_len, s->tptk);
+            return s->reason = WPA_EAPOL_OK;
+        }
         /* 12.7.6.2: a counter used before is discarded; a new SNonce and a new PTK (kept aside until msg 3) */
         if ((s->have_replay && !above(f + O_REPLAY, s->replay)) ||
             (s->have_msg1 && !above(f + O_REPLAY, s->msg1_replay)))
@@ -271,6 +298,8 @@ enum wpa_eapol_reason wpa_eapol_rx(struct wpa_eapol *s, const uint8_t *f, size_t
             return fail(s, WPA_EAPOL_E_RNG);
         memcpy(s->anonce, f + O_NONCE, 32);
         memcpy(s->msg1_replay, f + O_REPLAY, 8);
+        frame_hash(f, flen, s->msg1_frame_hash);
+        s->msg1_frame_len = flen;
         s->have_msg1 = 1;
         wpa_ptk(s->pmk, s->aa, s->spa, s->anonce, s->snonce, s->tptk);
         *reply_len = reply_frame(reply, f[0], KEY_DESC_VER | KI_PAIRWISE | KI_MIC, s->msg1_replay, s->snonce,
@@ -282,6 +311,17 @@ enum wpa_eapol_reason wpa_eapol_rx(struct wpa_eapol *s, const uint8_t *f, size_t
     /* msg 3 and group msg 1: checks before the MIC drop the frame, failures after it end the association */
     if (msg == MSG3 ? !s->have_msg1 : s->state != WPA_EAPOL_DONE)
         return s->reason = WPA_EAPOL_E_STATE;
+    /* A byte-identical retry at the last accepted counter gets its reply again, without taking keys twice. */
+    if (s->have_replay && !differ(f + O_REPLAY, s->replay, 8) &&
+        same_frame(f, flen, s->last_frame_len, s->last_frame_hash)) {
+        if (cap < WPA_EAPOL_HDR + WPA_EAPOL_KEY_FIXED)
+            return s->reason = WPA_EAPOL_E_BUF;
+        unsigned reply_info = KEY_DESC_VER | KI_MIC | KI_SECURE;
+        if (msg == MSG3)
+            reply_info |= KI_PAIRWISE;
+        *reply_len = reply_frame(reply, f[0], reply_info, s->replay, 0, 0, 0, s->ptk);
+        return s->reason = WPA_EAPOL_OK;
+    }
     if ((s->have_replay && !above(f + O_REPLAY, s->replay)) || (msg == MSG3 && !above(f + O_REPLAY, s->msg1_replay)))
         return s->reason = WPA_EAPOL_E_REPLAY;
     if (msg == MSG3 && be16(f + O_KEYLEN) != 16)
@@ -318,6 +358,8 @@ enum wpa_eapol_reason wpa_eapol_rx(struct wpa_eapol *s, const uint8_t *f, size_t
         *reply_len = reply_frame(reply, f[0], KEY_DESC_VER | KI_MIC | KI_SECURE, s->replay, 0, 0, 0, s->ptk);
     }
     take_gtk(s, gtk, gtk_len, key_id, f + O_RSC);
+    frame_hash(f, flen, s->last_frame_hash);
+    s->last_frame_len = flen;
     wipe(plain, sizeof plain);
     return s->reason = WPA_EAPOL_OK;
 }
