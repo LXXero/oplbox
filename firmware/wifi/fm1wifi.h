@@ -110,10 +110,11 @@ typedef struct {
 #define FM1WIFI_GOT_TXDC_Q    (1u << 6)
 #define FM1WIFI_GOT_TX_GAIN   (1u << 7)
 #define FM1WIFI_GOT_TX_PHASE  (1u << 8)
-#define FM1WIFI_GOT_RXDC(g)   (1u << (9u + (g)))   /* rx_dc[g], I and Q, g 0-3 */
+#define FM1WIFI_GOT_RXDC(g, k) (1u << ((k) ? 16u + (g) : 9u + (g)))   /* rx_dc[g][k], g 0-3, k 0 I, 1 Q */
 #define FM1WIFI_GOT_RX_GAIN   (1u << 13)
 #define FM1WIFI_GOT_RX_PHASE  (1u << 14)
 #define FM1WIFI_GOT_CHANNEL   (1u << 15)           /* channel and power set */
+#define FM1WIFI_GOT_ALL       0xFFFFFu             /* every bit above */
 
 /* Power up (stage 2, if not up yet), then the radio: the MAC/PHY reset and tables, the PLL bank scan, a fresh trim
  * (TX LO and IQ, RX DC, RX IQ), the PA configuration, the RF RAM table, channel 6 and TX power 6, as JieLi's

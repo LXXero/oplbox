@@ -1567,7 +1567,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
     wifi_line(3, s, C_ACC);
     for (k = 0; k < 2u; k++) {
         p = cat(s, k ? "RX DC Q" : "RX DC I");
-        for (i = 0; i < 4u; i++) p = wifi_val(p, r->got, FM1WIFI_GOT_RXDC(i), wifi_dc(r->rx_dc[i][k]), 5, 1);
+        for (i = 0; i < 4u; i++) p = wifi_val(p, r->got, FM1WIFI_GOT_RXDC(i, k), wifi_dc(r->rx_dc[i][k]), 5, 1);
         wifi_line(4u + k, s, C_ACC);
     }
     for (k = 0; k < 3u; k++) {                         /* the ADC peak per channel: 1-5, 6-10, 11-13 */
