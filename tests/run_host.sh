@@ -196,7 +196,7 @@ build/host/wifi_net
 # connection update, a disconnection either way), the same with answers inside the send call, and how a start fails;
 # and the test must catch 17 deliberate bugs in hci.c
 for f in firmware/ble/*.c firmware/ble/*.h; do
-  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v '"hci\.h"'; then
+  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v -e '"hci\.h"' -e '"ble_midi\.h"'; then
     echo "FAIL: $f includes a file from outside firmware/ble/" >&2; exit 1; fi
 done
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/ble_hci.o firmware/ble/hci.c
@@ -204,6 +204,16 @@ cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -Ifirmware/ble -Ites
    tests/ble_hci.c tests/ble/hci_model.c firmware/ble/hci.c
 build/host/ble_hci tests/ble
 python3 tests/ble_mutants.py build/host
+# the BLE-MIDI profile (firmware/ble/ble_midi.c, docs/BLUETOOTH.md stage 2): warning-free alone, then its test: the
+# UUIDs and advertising data, packets byte for byte (header, 13-bit timestamps and their wrap, running status, SysEx
+# split over packets) worked out from the specification's rules, round trips through the encoder and decoder at ten
+# packet sizes, what the decoder drops, the bridge to the app's midi_get(), and random packets; it must catch 32
+# deliberate bugs in ble_midi.c
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/ble_midi.o firmware/ble/ble_midi.c
+cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -Ifirmware/ble -o build/host/ble_midi \
+   tests/ble_midi.c firmware/ble/ble_midi.c
+build/host/ble_midi
+python3 tests/ble_midi_mutants.py build/host
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c
