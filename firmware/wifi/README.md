@@ -47,7 +47,9 @@ int  fm1wifi_adc_peak(uint8_t *peak);              /* the receiver's ADC peak, a
 ```
 
 `fm1wifi_radio_up` takes a calibration (`fm1wifi_cal_default`, or the FM-1's own crystal caps, PA trim and MCS gains
-if you have them) and fills `fm1wifi_radio` with what it found (`fm1wifi.h`). It always makes a fresh trim.
+if you have them) and fills `fm1wifi_radio` with what it found (`fm1wifi.h`). It always makes a fresh trim. After a
+TIMEOUT the fields hold what it had read: `got` has a bit for each value that was read (`FM1WIFI_GOT_*`), and a value
+whose bit is clear was never reached.
 
 Every call returns `FM1WIFI_OK` or an error (`FM1WIFI_ESTATE` when the core is not powered up, `FM1WIFI_ETIMEOUT`
 when a bounded wait ran out, `FM1WIFI_EBUS` when the core answered nothing, ...; `fm1wifi.h`). Nothing blocks for

@@ -389,6 +389,7 @@ static void test_radio(const char *dir, const char *outdir)
           "RX DC codes per gain range");
     check(r.channel == 6 && r.power == 6 && (sdio_model_peek(m, FM1_WF_CON(7)) & 0x00FF00FFu) == 0x00060000u + 107u,
           "channel 6 (WF_CON7 bits 7-0 = 107), TX power 6");
+    check(r.got == FM1WIFI_GOT_ALL, "every value marked read (got)");
     check(sdio_model_trims(m) == 1 && !sdio_model_in_trim(m), "the port told before the trim and after it, once");
     check((sdio_model_peek(m, FM1_WLA_CON(7)) >> 8 & 0x7Fu) == 57u && (sdio_model_peek(m, FM1_WLA_CON(8)) & 0x7Fu) == 41u &&
               sdio_model_win(m, 2, 8) == 0xFF && sdio_model_win(m, 2, 9) == 0 && (sdio_model_win(m, 2, 98) & 0x0Fu) == 0x03u,
@@ -434,11 +435,11 @@ static void test_radio(const char *dir, const char *outdir)
 
 static void test_radio_waits(const char *dir)
 {
-    static const struct { const char *script, *stage, *what; unsigned polls; } T[] = {
-        { "hang tune\n", "TRIM", "the filter tune never done", 1000 },
-        { "hang measure\n", "TRIM", "the measurement never ready", 1000 },
-        { "hang anl\n", "TABLE", "the RF digital block always busy", 1001 },   /* + the read that saves it */
-        { "stuck 0x3101c 0x00020000\n", "PHY", "BBP BUSY stuck", 1000 },
+    static const struct { const char *script, *stage, *what; unsigned polls; uint32_t got; } T[] = {
+        { "hang tune\n", "TRIM", "the filter tune never done", 1000, 0 },
+        { "hang measure\n", "TRIM", "the measurement never ready", 1000, 7 },                /* the filter codes only */
+        { "hang anl\n", "TABLE", "the RF digital block always busy", 1001, 0xF7FFF },        /* + the read that saves it */
+        { "stuck 0x3101c 0x00020000\n", "PHY", "BBP BUSY stuck", 1000, 0 },
     };
     char path[512];
     snprintf(path, sizeof path, "%s/core_model.txt", dir);
@@ -452,6 +453,9 @@ static void test_radio_waits(const char *dir)
                  T[i].polls, r.stage ? r.stage : "?", sdio_model_polls(m));
         check(rc == FM1WIFI_ETIMEOUT && r.err == FM1WIFI_ETIMEOUT && !strcmp(r.stage, T[i].stage) &&
                   sdio_model_polls(m) == T[i].polls && !fm1wifi_radio_is_up(), what);
+        snprintf(what, sizeof what, "%s: got %04x, the values read before it (got %04x)", T[i].what, (unsigned)T[i].got,
+                 (unsigned)r.got);
+        check(r.got == T[i].got, what);
         snprintf(what, sizeof what, "%s: the port told the trim ended", T[i].what);
         check(!sdio_model_in_trim(m) && sdio_model_trims(m) >= 0, what);
         fm1wifi_power_down();

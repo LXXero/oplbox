@@ -521,6 +521,7 @@ TRIMFN static void filter_tune(fm1wifi_radio *r)   /* RX filter tune: the 6, 10 
             DELAY(1);
         }
         r->bw[k] = (uint8_t)(status1() >> 8);
+        if (!e3) r->got |= FM1WIFI_GOT_BW(k);
         fld(WLA(26), 0, 1, 0);
     }
     fld(WLA(20), 27, 1, 0);
@@ -566,6 +567,7 @@ TRIMFN static void tx_trim(fm1wifi_radio *r, const uint8_t *par)
     }
     txlo_i(c);
     r->txlo[0] = (uint8_t)c;
+    if (!e3) r->got |= FM1WIFI_GOT_TXLO_I;          /* not when a wait ran out: the search never finished */
     txlo_q(64);                                        /* LO Q */
     best = measure(0);
     c = 64;
@@ -575,6 +577,7 @@ TRIMFN static void tx_trim(fm1wifi_radio *r, const uint8_t *par)
     }
     txlo_q(c);
     r->txlo[1] = (uint8_t)c;
+    if (!e3) r->got |= FM1WIFI_GOT_TXLO_Q;
     tx_dc_i(0);                                        /* DC I: n wraps to a signed byte, as JieLi's does */
     tx_dc_q(0);
     r->vga[1] = vga_search();
@@ -587,6 +590,7 @@ TRIMFN static void tx_trim(fm1wifi_radio *r, const uint8_t *par)
     }
     tx_dc_i(b);
     r->tx_dc[0] = b;
+    if (!e3) r->got |= FM1WIFI_GOT_TXDC_I;
     tx_dc_q(0);                                        /* DC Q */
     best = measure(0);
     b = 0;
@@ -596,6 +600,7 @@ TRIMFN static void tx_trim(fm1wifi_radio *r, const uint8_t *par)
     }
     tx_dc_q(b);
     r->tx_dc[1] = b;
+    if (!e3) r->got |= FM1WIFI_GOT_TXDC_Q;
     win_w(W_RXFE, 19, 60);                             /* gain imbalance */
     tx_gain_i(1023);
     tx_gain_q(1023);
@@ -609,6 +614,7 @@ TRIMFN static void tx_trim(fm1wifi_radio *r, const uint8_t *par)
     if (b < 0) { tx_gain_i(1023 + b); tx_gain_q(1023); }
     else { tx_gain_i(1023); tx_gain_q(1023 - b); }
     r->tx_gain = b;
+    if (!e3) r->got |= FM1WIFI_GOT_TX_GAIN;
     tx_phase_i(0);                                     /* phase, on Q when the gain went on Q */
     tx_phase_q(0);
     best = measure(0);
@@ -619,6 +625,7 @@ TRIMFN static void tx_trim(fm1wifi_radio *r, const uint8_t *par)
     }
     if (b >= 0) tx_phase_q(p); else tx_phase_i(p);
     r->tx_phase = p;
+    if (!e3) r->got |= FM1WIFI_GOT_TX_PHASE;
 }
 
 TRIMFN static void rxdc_trim(fm1wifi_radio *r, const uint8_t *par)
@@ -646,10 +653,12 @@ TRIMFN static void rxdc_trim(fm1wifi_radio *r, const uint8_t *par)
             if (m > 0 && i > -510) i -= step;
             else if (m < 0 && i < 510) i += step;
             r->rx_dc[g][0] = rxdc_set(0, i);           /* kept as it is read: a timeout later keeps it */
+            if (!e3) r->got |= FM1WIFI_GOT_RXDC(g, 0);   /* only once its measurement answered */
             m = measure(2);
             if (m > 0 && q > -510) q -= step;
             else if (m < 0 && q < 510) q += step;
             r->rx_dc[g][1] = rxdc_set(1, q);
+            if (!e3) r->got |= FM1WIFI_GOT_RXDC(g, 1);
             step = step > 1 ? step >> 1 : 1;
         }
         r->rx_dc[g][0] = rxdc_set(0, i);
@@ -687,6 +696,7 @@ TRIMFN static void rxiq_trim(fm1wifi_radio *r, const uint8_t *par)
     if (b < 0) { win_w(W_RXFE, 9, (uint8_t)(b - 1)); win_w(W_RXFE, 11, 255); }
     else { win_w(W_RXFE, 9, 255); win_w(W_RXFE, 11, (uint8_t)~b); }
     r->rx_gain = b;
+    if (!e3) r->got |= FM1WIFI_GOT_RX_GAIN;
     win_w(W_RXFE, 10, 0);                              /* phase, on Q when the gain went on Q */
     win_w(W_RXFE, 12, 0);
     best = measure(3);
@@ -697,6 +707,7 @@ TRIMFN static void rxiq_trim(fm1wifi_radio *r, const uint8_t *par)
     }
     win_w(W_RXFE, b >= 0 ? 12 : 10, (uint8_t)p);
     r->rx_phase = p;
+    if (!e3) r->got |= FM1WIFI_GOT_RX_PHASE;
 }
 
 TRIMFN static void trim(fm1wifi_radio *r, const uint8_t *par)   /* the trim, from RAM; the port told around it */
@@ -979,6 +990,7 @@ RAMFN static int radio_up(const fm1wifi_cal *cal, fm1wifi_radio *r)
     mcs_gains(cal->mcs_gain);
     r->channel = 6;
     r->power = 6;
+    if (!e3) r->got |= FM1WIFI_GOT_CHANNEL;
     if (!e3) { r->stage = "DONE"; radio = 1; }
     r->err = e3;
     return e3;

@@ -100,12 +100,21 @@ done
 for want in "wifi page 1: RESULT: NO ANSWER" "wifi page 2: MAC_CSR0     00000000" "wifi page 6: FILTER  -"; do
   grep -qF "$want" build/host/wifi_page_silent.txt || { echo "FAIL: WiFi page, silent core: no line '$want'" >&2; exit 1; }
 done
-for want in "wifi page 1: RESULT: TIMEOUT AT TRIM" "wifi page 0: TRIM FAILED  CH"; do
+for want in "wifi page 1: RESULT: TIMEOUT AT TRIM" "wifi page 0: TRIM FAILED  CH --  PWR --" \
+            "wifi page 1: TX LO  --  --  DC   --  --" "wifi page 6: FILTER   --  --  --" "wifi page 6: ADC  1- 5   --"; do
   grep -qF "$want" build/host/wifi_page_trim.txt || { echo "FAIL: WiFi page, trim timeout: no line '$want'" >&2; exit 1; }
 done
 HOST_WIFI_MODEL=tests/wifi/core_trim_rxdc_hang.txt build/host/oplbox build/host/wifi_trim_rxdc tests/script_wifi.txt > build/host/wifi_page_trim_rxdc.txt
-for want in "wifi page 1: RESULT: TIMEOUT AT TRIM" "wifi page 4: RX DC I  +96   +0   +0   +0" "wifi page 5: RX DC Q  -96   +0   +0   +0"; do
+for want in "wifi page 1: RESULT: TIMEOUT AT TRIM" "wifi page 4: RX DC I  +96   --   --   --" "wifi page 5: RX DC Q  -96   --   --   --"; do
   grep -qF "$want" build/host/wifi_page_trim_rxdc.txt || { echo "FAIL: WiFi page, timeout inside an RX DC range: no line '$want'" >&2; exit 1; }
+done
+HOST_WIFI_MODEL=tests/wifi/core_trim_rxdc_first_hang.txt build/host/oplbox build/host/wifi_trim_rxdc tests/script_wifi.txt > build/host/wifi_page_trim_rxdc_first.txt
+for want in "wifi page 1: RESULT: TIMEOUT AT TRIM" "wifi page 4: RX DC I   --   --   --   --" "wifi page 5: RX DC Q   --   --   --   --"; do
+  grep -qF "$want" build/host/wifi_page_trim_rxdc_first.txt || { echo "FAIL: WiFi page, timeout at the first RX DC measurement: no line '$want'" >&2; exit 1; }
+done
+HOST_WIFI_MODEL=tests/wifi/core_trim_rxdc_q_hang.txt build/host/oplbox build/host/wifi_trim_rxdc tests/script_wifi.txt > build/host/wifi_page_trim_rxdc_q.txt
+for want in "wifi page 1: RESULT: TIMEOUT AT TRIM" "wifi page 4: RX DC I +256   --   --   --" "wifi page 5: RX DC Q   --   --   --   --"; do
+  grep -qF "$want" build/host/wifi_page_trim_rxdc_q.txt || { echo "FAIL: WiFi page, timeout at the first RX DC Q measurement: no line '$want'" >&2; exit 1; }
 done
 if grep -qF "NOT REACHED" build/host/wifi_page_trim.txt; then echo "FAIL: WiFi page: a trim timeout reads NOT REACHED" >&2; exit 1; fi
 echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) as expected"
