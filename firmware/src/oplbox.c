@@ -14,7 +14,7 @@
  *   SELECT         turn: pick a song (18 built in, then 9 flash slots)
  *   REC            loop one song <-> play them all in turn (the LED says which)
  *   GLO            the battery's raw ADC count in the status line, for a moment (the icon at the top right)
- *   SAVE           the WiFi test page (docs/WIFI.md stage 2): PLAY there powers the radio up and reads it, SAVE leaves
+ *   SAVE           the WiFi test page (docs/WIFI.md stages 2-3): PLAY there brings the radio up and reads it, SAVE leaves
  *   scope: the first nine white keys (F3..G4) mute / unmute channels 1..9 (key LED = muted)
  *   ARP            the arpeggiator on (its settings open) / off  LFO   the arp's settings: open, or the next page
  *   PRESETS        the instrument the keys / the arp play (one of the song's; the editor's I too)
@@ -60,7 +60,7 @@ static inline void irq_restore(uint32_t f) { (void)f; }
 #endif
 #include "macsop.h"
 #include "songs.h"
-#include "fm1wifi.h"                         /* the WiFi driver (firmware/wifi/), for the stage 2 page */
+#include "fm1wifi.h"                         /* the WiFi driver (firmware/wifi/), for the WiFi test page */
 
 static macsop_song song __attribute__((section(".pool")));    /* the song being played / edited (190 KB) */
 static macsop player;                         /* the audio ISR owns the chip and the player while playing */
@@ -1429,13 +1429,15 @@ static void draw_arp(void)
     batt_draw();
 }
 
-/* ---- the WiFi diagnostic page (docs/WIFI.md stage 2; the driver is firmware/wifi/, the fm1wifi library). SAVE
- * outside EDIT opens it; nothing touches the radio until PLAY there. PLAY stops the sound, fills the free pool
- * (past the last .pool buffer, up to the stacks) with a pattern, powers the WiFi core up and reads MAC_CSR0
- * (the chip's ASIC version), MAC_SYS_CTRL and BBP register 0; the pool is checked again every half second
- * while the page is open, for RAM the hardware writes. SAVE leaves: the core powered down (its registers
- * back as they were), the sound back. The page runs its own loop, so the rest of the app is held meanwhile;
- * platform_poll() keeps USB (the updater) alive. */
+/* ---- the WiFi diagnostic page (docs/WIFI.md stages 2 and 3; the driver is firmware/wifi/, the fm1wifi library).
+ * SAVE outside EDIT opens it; nothing touches the radio until PLAY there. PLAY stops the sound (and waits until the
+ * output buffers hold silence), fills the free pool (past the last .pool buffer, up to the stacks) with a pattern,
+ * powers the WiFi core up and reads MAC_CSR0, MAC_SYS_CTRL and BBP 0 (stage 2), then brings the radio up (stage 3:
+ * MAC/PHY reset, PLL bank scan, the trim from RAM with interrupts masked, RF RAM table, channel 6), reads the
+ * receiver's ADC peak on channels 1-13 and goes back to 6. Page 1 shows the bring-up, page 2 the trim and the
+ * channels; PLAY again switches. The pool is checked again every half second while the page is open, for RAM the
+ * hardware writes. SAVE leaves: the core powered down (its registers back as they were), the sound back. The page
+ * runs its own loop, so the rest of the app is held meanwhile; platform_poll() keeps USB (the updater) alive. */
 #ifdef DINGHY_HOST
 #include "sdio_model.h"                       /* the host's WiFi core: tests/wifi/sdio_model.c */
 static uint32_t wifi_pool_host[4096];
@@ -1454,6 +1456,19 @@ static char *hexn(char *d, uint32_t v, uint32_t digits)
     return d;
 }
 
+static char *cati(char *d, int32_t v, uint32_t w, int plus)   /* v right-aligned in w places, its sign in front */
+{
+    char t[12];
+    uint32_t n = 0, a = v < 0 ? (uint32_t)-v : (uint32_t)v;
+    do { t[n++] = (char)('0' + a % 10u); a /= 10u; } while (a);
+    if (v < 0) t[n++] = '-';
+    else if (plus) t[n++] = '+';
+    while (w > n) { *d++ = ' '; w--; }
+    while (n) *d++ = t[--n];
+    *d = 0;
+    return d;
+}
+
 static void wifi_line(uint32_t i, const char *s, uint16_t c)   /* line i of the page */
 {
     draw_text_box(0, 2u + 22u * i, 240, &FONT_S, s, c, 0);
@@ -1462,35 +1477,117 @@ static void wifi_line(uint32_t i, const char *s, uint16_t c)   /* line i of the 
 #endif
 }
 
-static void wifi_ram_line(fm1wifi_ramcheck rc)
+static void wifi_ram_line(fm1wifi_ramcheck rc)                 /* lines 7 and 8 of page 1 */
 {
     char s[40], *p;
-    if (!rc.changed) { wifi_line(5, "RAM CHECK: 0 CHANGED", C_ACC); wifi_line(6, "", C_MUTE); return; }
+    if (!rc.changed) { wifi_line(7, "RAM CHECK: 0 CHANGED", C_ACC); wifi_line(8, "", C_MUTE); return; }
     p = cat(s, "RAM CHECK: "); p = catn(p, rc.changed, rc.changed >= 10000u ? 5u : rc.changed >= 1000u ? 4u : rc.changed >= 100u ? 3u : rc.changed >= 10u ? 2u : 1u);
     cat(p, " CHANGED");
-    wifi_line(5, s, C_ACC);
+    wifi_line(7, s, C_ACC);
     p = cat(s, "FIRST AT "); hexn(p, (uint32_t)(uintptr_t)rc.first, 8);
-    wifi_line(6, s, C_ACC);
+    wifi_line(8, s, C_ACC);
+}
+
+static int32_t wifi_dc(uint16_t code) { return code & 0x200u ? (int32_t)(code & 0x1FFu) : -(int32_t)code; }
+
+static uint32_t wifi_reached(const fm1wifi_radio *r)   /* 0 not started .. 6 done: how far the bring-up got */
+{
+    static const char *const ST[] = { "PHY", "PLL", "TRIM", "RF", "TABLE", "DONE" };
+    uint32_t i, k;
+    for (i = 0; i < 6u && r->stage; i++) {                 /* no strcmp on the chip */
+        for (k = 0; ST[i][k] && r->stage[k] == ST[i][k]; k++)
+            ;
+        if (!ST[i][k] && !r->stage[k]) return i + 1u;
+    }
+    return 0;
+}
+
+static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio *r, const uint8_t *peak, fm1wifi_ramcheck rc)
+{
+    char s[40], *p;
+    uint32_t i, k;
+    lcd_fill(0, 0, 240, 240, C_BLACK);
+    if (page == 0u) {
+        int ok = d->err == FM1WIFI_OK && r->err == FM1WIFI_OK;
+        wifi_line(0, "WIFI TEST (STAGE 3)    1/2", C_ACC);
+        p = cat(s, "RESULT: ");
+        if (d->err != FM1WIFI_OK) cat(p, fm1wifi_strerror(d->err));
+        else if (r->err != FM1WIFI_OK) { p = cat(p, fm1wifi_strerror(r->err)); p = cat(p, " AT "); cat(p, r->stage); }
+        else cat(p, "OK");
+        wifi_line(1, s, ok ? C_ACC : C_TXT);
+        p = cat(s, "MAC_CSR0     "); hexn(p, d->mac_csr0, 8);
+        wifi_line(2, s, C_ACC);
+        p = cat(s, "MAC_SYS_CTRL "); hexn(p, d->err == FM1WIFI_OK ? r->mac_sys_ctrl : d->mac_sys_ctrl, 8);
+        wifi_line(3, s, C_ACC);
+        p = cat(s, "BBP 0        ");
+        if (d->err == FM1WIFI_OK) hexn(p, r->bbp0, 2);
+        else if (d->bbp_err == FM1WIFI_OK) hexn(p, d->bbp0, 2);
+        else cat(p, fm1wifi_strerror(d->bbp_err));
+        wifi_line(4, s, C_ACC);
+        if (wifi_reached(r) > 2u) { p = cat(s, "PLL BANK "); p = cati(p, r->pll_bank, 3, 0); p = cat(p, "  MID "); cati(p, r->pll_mid, 3, 0); }
+        else cat(s, "PLL BANK  -");
+        wifi_line(5, s, C_ACC);
+        p = cat(s, "FILTER ");
+        if (wifi_reached(r) > 3u) for (i = 0; i < 3u; i++) p = cati(p, r->bw[i], 4, 0);
+        else cat(p, " -");
+        wifi_line(6, s, C_ACC);
+        wifi_ram_line(rc);
+        wifi_line(9, "PLAY: PAGE 2   SAVE: LEAVE", C_MUTE);
+        return;
+    }
+    if (wifi_reached(r) < 4u) {                       /* the trim did not finish: nothing to show */
+        wifi_line(0, "TRIM                   2/2", C_ACC);
+        wifi_line(1, "NOT REACHED", C_TXT);
+        wifi_line(9, "PLAY: PAGE 1   SAVE: LEAVE", C_MUTE);
+        return;
+    }
+    p = cat(s, "TRIM  CH "); p = cati(p, r->channel, 2, 0); p = cat(p, "  PWR "); p = cati(p, r->power, 1, 0); cat(p, "    2/2");
+    wifi_line(0, s, C_ACC);
+    p = cat(s, "TX LO "); p = cati(p, r->txlo[0], 3, 0); p = cati(p, r->txlo[1], 4, 0);
+    p = cat(p, "  DC "); p = cati(p, r->tx_dc[0], 4, 0); cati(p, r->tx_dc[1], 4, 0);
+    wifi_line(1, s, C_ACC);
+    p = cat(s, "TX GAIN "); p = cati(p, r->tx_gain, 4, 1); p = cat(p, "  PHASE "); p = cati(p, r->tx_phase, 4, 1);
+    cat(p, r->tx_gain >= 0 ? " Q" : " I");
+    wifi_line(2, s, C_ACC);
+    p = cat(s, "RX GAIN "); p = cati(p, r->rx_gain, 4, 1); p = cat(p, "  PHASE "); p = cati(p, r->rx_phase, 4, 1);
+    cat(p, r->rx_gain >= 0 ? " Q" : " I");
+    wifi_line(3, s, C_ACC);
+    for (k = 0; k < 2u; k++) {
+        p = cat(s, k ? "RX DC Q" : "RX DC I");
+        for (i = 0; i < 4u; i++) p = cati(p, wifi_dc(r->rx_dc[i][k]), 5, 1);
+        wifi_line(4u + k, s, C_ACC);
+    }
+    for (k = 0; k < 3u; k++) {                         /* the ADC peak per channel: 1-5, 6-10, 11-13 */
+        uint32_t lo = 1u + 5u * k, hi = k == 2u ? 13u : lo + 4u;
+        p = cat(s, "ADC ");
+        p = cati(p, (int32_t)lo, 2, 0); *p++ = '-'; p = cati(p, (int32_t)hi, 2, 0); *p++ = ' ';
+        for (i = lo; i <= hi; i++) p = cati(p, peak[i - 1u], 4, 0);
+        *p = 0;
+        wifi_line(6u + k, s, C_ACC);
+    }
+    wifi_line(9, "PLAY: PAGE 1   SAVE: LEAVE", C_MUTE);
 }
 
 static void wifi_page(void)
 {
-    uint32_t was_run = chip_run, was_play = playing, started = 0, t_check = 0, rel;
+    uint32_t was_run = chip_run, was_play = playing, started = 0, page = 0, t_check = 0, rel, i;
     fm1wifi_ramcheck rc = { 0, 0 };
     fm1wifi_diag d;
-    char s[40], *p;
+    fm1wifi_radio r;
+    uint8_t peak[13] = { 0 };
 #ifdef DINGHY_HOST
     static sdio_model *core;
     if (!core) {                              /* the core the host simulator talks to: HOST_WIFI_MODEL, or the made-up one */
         const char *path = getenv("HOST_WIFI_MODEL");
         core = sdio_model_new();
         if (sdio_model_load(core, path ? path : "tests/wifi/core_model.txt", stderr)) exit(1);
+        sdio_model_raw_log(core, 0);
         sdio_model_use(core);
     }
 #endif
     lcd_fill(0, 0, 240, 240, C_BLACK);
-    wifi_line(0, "WIFI TEST (STAGE 2)", C_ACC);
-    wifi_line(1, "PLAY: POWER UP AND READ", C_TXT);
+    wifi_line(0, "WIFI TEST (STAGE 3)", C_ACC);
+    wifi_line(1, "PLAY: POWER UP, TRIM, READ", C_TXT);
     wifi_line(2, "SAVE: LEAVE", C_TXT);
     wifi_line(3, "THE SOUND STOPS MEANWHILE", C_MUTE);
     for (;;) {
@@ -1498,31 +1595,29 @@ static void wifi_page(void)
         platform_poll();
         b = fm1_input_edges(&rel);
         if (b & (1u << BTN_SAVE)) break;
+        if ((b & (1u << BTN_PLAY)) && started) { page ^= 1u; wifi_show(page, &d, &r, peak, rc); }
         if ((b & (1u << BTN_PLAY)) && !started) {
             started = 1;
-            chip_off();                       /* no sound while the core comes up */
+            chip_off();                       /* no sound while the core comes up: */
+            fm1_delay_ms(15);                 /* both output halves rendered silent, so a masked trim stays quiet */
+            wifi_line(1, "WORKING (ABOUT 2 S)", C_TXT);
             fm1wifi_pattern_fill(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             fm1wifi_diag_read(&d);
+            for (i = 0; i < sizeof r; i++) ((uint8_t *)&r)[i] = 0;
+            r.stage = "-";
+            if (d.err == FM1WIFI_OK && fm1wifi_radio_up(&fm1wifi_cal_default, &r) == FM1WIFI_OK) {
+                for (i = 0; i < 13u; i++)     /* the receiver's level per channel, then back to 6 */
+                    if (fm1wifi_set_channel(i + 1u) == FM1WIFI_OK) fm1wifi_adc_peak(&peak[i]);
+                fm1wifi_set_channel(6);
+            }
             rc = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             t_check = fm1_ms;
-            lcd_fill(0, 24, 240, 216, C_BLACK);
-            p = cat(s, "RESULT: "); cat(p, fm1wifi_strerror(d.err));
-            wifi_line(1, s, d.err == FM1WIFI_OK ? C_ACC : C_TXT);
-            p = cat(s, "MAC_CSR0     "); hexn(p, d.mac_csr0, 8);
-            wifi_line(2, s, C_ACC);
-            p = cat(s, "MAC_SYS_CTRL "); hexn(p, d.mac_sys_ctrl, 8);
-            wifi_line(3, s, C_ACC);
-            p = cat(s, "BBP 0        ");
-            if (d.bbp_err == FM1WIFI_OK) hexn(p, d.bbp0, 2); else cat(p, fm1wifi_strerror(d.bbp_err));
-            wifi_line(4, s, C_ACC);
-            wifi_ram_line(rc);
-            p = cat(s, "POOL "); p = catn(p, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO) / 1024u, 3); cat(p, " KB  SAVE: LEAVE");
-            wifi_line(7, s, C_MUTE);
+            wifi_show(page, &d, &r, peak, rc);
         }
         if (started && fm1_ms - t_check >= 500u) {   /* the pool again: a later write by the hardware shows too */
             fm1wifi_ramcheck now = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             t_check = fm1_ms;
-            if (now.changed != rc.changed || now.first != rc.first) { rc = now; wifi_ram_line(rc); }
+            if (now.changed != rc.changed || now.first != rc.first) { rc = now; if (page == 0u) wifi_ram_line(rc); }
         }
     }
     fm1wifi_power_down();                     /* nothing if it never came up */
@@ -1557,8 +1652,9 @@ static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col)
         default: return chip.mute;
 #endif
         }
-    if (row == 88u)                           /* the WiFi page: col 0 the core powered up, 1 the song's rows ticking, 2 the chip sounding */
-        return col == 0u ? (uint32_t)fm1wifi_is_up() : col == 1u ? playing : chip_run;
+    if (row == 88u)                           /* the WiFi page: col 0 the core powered up, 1 the song's rows ticking, 2 the chip
+                                               * sounding, 3 the radio up (stage 3) */
+        return col == 0u ? (uint32_t)fm1wifi_is_up() : col == 1u ? playing : col == 2u ? chip_run : (uint32_t)fm1wifi_radio_is_up();
     if (row == 89u)                           /* SYNC, since the settings last changed: col 0 steps, 1 those not on a row's first
                                                * sample, 2 those on a row the grid has no step on, 3 / 4 the shortest / longest
                                                * gap between two (native samples); 5 arp_bpm (0 SYNC), 6 the song's speed */

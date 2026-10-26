@@ -51,22 +51,45 @@ song is stopped the arp keeps the same step length from the song's speed; a new 
 song changes it at once. To play along and keep it: ARP on, K4 to SYNC, play the song and the chord until it sounds
 right; then EDIT, cursor to the row it should start on, and **ARP** writes what you heard (below).
 
-**WiFi test page** (stage 2 of docs/WIFI.md; for xero to read back off a real FM-1). Outside EDIT press **SAVE**:
-the page opens and says `PLAY: POWER UP AND READ`. Nothing touches the radio yet. Press **PLAY**: the sound stops,
-the WiFi core is powered up and read, and the page shows
+**WiFi test page** (stages 2 and 3 of docs/WIFI.md; for xero to read back off a real FM-1). Outside EDIT press
+**SAVE**: the page opens and says `PLAY: POWER UP, TRIM, READ`. Nothing touches the radio yet. Press **PLAY**: the
+sound stops, the WiFi core is powered up and read (stage 2), then the radio is brought up and calibrated (stage 3:
+the PLL, a fresh trim, channel 6), and the receiver's level is read on channels 1-13. It takes a second or two
+(`WORKING`). Page 1:
 
 ```
-RESULT: OK                    OK, or what went wrong: NO ANSWER, TIMEOUT
-MAC_CSR0     xxxxxxxx         the chip's ASIC version (8 hex digits)
-MAC_SYS_CTRL xxxxxxxx         8 hex digits
-BBP 0        xx               baseband register 0 (2 hex digits), or TIMEOUT
+RESULT: OK                    OK, or what went wrong and where: TIMEOUT AT TRIM, NO ANSWER, ...
+MAC_CSR0     00300100         the chip's ASIC version (stage 2 read 00300100 on xero's FM-1)
+MAC_SYS_CTRL 0000000C         after the MAC and BBP resets are released: 0000000C (TX and RX on) is right
+BBP 0        xx               baseband register 0 once out of reset: anything but 00 or FF is right
+PLL BANK  nn  MID  mm         the PLL's bank for the reference divider (0-127) and the scan's middle bank
+FILTER  aaa bbb ccc           the receive filter tune's codes for 6, 10 and 20 MHz
 RAM CHECK: n CHANGED          bytes of free RAM the hardware wrote (0 is the good answer)
 FIRST AT xxxxxxxx             the first changed byte's address (only when n is not 0)
 ```
 
-Read back those four values and the RAM check (the RAM line updates every half second while the page is open, so
-wait a few seconds before reading it). **SAVE** leaves: the core is powered down and the sound comes back. If the
-FM-1 hangs on the page, power it off and on: nothing was written to flash, and it boots as before.
+Press **PLAY** again for page 2 (and again to go back):
+
+```
+TRIM  CH  6  PWR 6            the channel and TX power the radio was left on
+TX LO  ii  qq  DC   ii  qq    TX trim: LO leakage I and Q (0-127), DC I and Q (-128-127)
+TX GAIN   +g  PHASE   +p Q    TX trim: gain imbalance, and the phase on the side it went (I or Q)
+RX GAIN   +g  PHASE   +p I    RX trim: the same
+RX DC I   +a   +b   +c   +d   RX DC trim: the analog DC per gain range, I then Q
+RX DC Q   +a   +b   +c   +d
+ADC  1- 5   nn  nn  nn  nn  nn    the receiver's ADC peak on channels 1-5, 6-10, 11-13 (0-255, not dBm)
+ADC  6-10 ...
+ADC 11-13 ...
+```
+
+Read back everything on both pages. What would look wrong: `RESULT` other than OK (the word after `AT` says which
+step stopped: PHY, PLL, TRIM, RF, TABLE), `BBP 0` still `00`, a PLL bank of 0 or 127, a middle bank of 15 (the scan
+found no edge), trim values sitting at the end of their range (TX LO 0 or 127, TX DC ±127, an RX DC near ±510) or a
+filter code of 0 or 255: each means a search ran to its limit. The ADC peaks are a relative level; the same numbers
+on every channel is the noise floor, a higher one may be a busy channel, and if the receiver's automatic gain holds
+them all level that is worth knowing too. The trim runs from RAM with interrupts off for about half a second, so USB
+goes quiet meanwhile. **SAVE** leaves: the core is powered down (every register back to how it was) and the sound
+comes back. If the FM-1 hangs on the page, power it off and on: nothing was written to flash, and it boots as before.
 
 **Battery.** Every screen shows a battery at the top right: 3 bars, red outline when empty. It reads ADC ch3
 (the battery divider) once a second, smoothed over a few seconds. The bars switch at raw counts 531 / 561 / 591,

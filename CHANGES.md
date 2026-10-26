@@ -1,5 +1,18 @@
 # Unreleased
 
+- WiFi stage 3, the radio's power-up and calibration, in the fm1wifi library: `fm1wifi_radio_up` resets the MAC and
+  baseband, loads their tables, sets up the radio (crystal caps from a calibration), scans the PLL's banks, makes a
+  fresh trim (RX filter, TX LO/DC/gain/phase, RX DC per gain range, RX gain/phase), configures the PA, loads the RF
+  RAM table and sets channel 6 and TX power 6, in JieLi's `wfhw_init` order; every wait is bounded. The trim runs from
+  RAM with interrupts masked, and the build fails if that RAM code refers to the flash. The register facts come from
+  `tools/wifi_ir.py`, which runs the eight clean members of JieLi's `wl_rf_common.a` as LLVM IR against a register
+  model and writes them as tables (`firmware/wifi/fm1wifi_tables.h`, generated) and as a reference trace; the steps
+  with loops are written from the plain description in `docs/WIFI_STAGE3.md`. On the host the library's writes equal
+  JieLi's code's, record for record (35,821), and 8 planted bugs are all caught. The **WiFi test page** brings the
+  radio up after stage 2's reads and has a second page (PLAY): the PLL bank, the filter codes, the trim results and
+  the receiver's ADC peak on channels 1-13 (README "WiFi test page"). Stage 2's values from xero's FM-1 are recorded
+  in docs/WIFI.md and TODO.md 7e (`MAC_CSR0` 00300100). Image +15,648 B, RAM code +7,504 B. Not run on an FM-1.
+
 - WiFi stage 2, as a library: `firmware/wifi/` is now **fm1wifi**, a WiFi driver any FM-1 firmware can link (its
   `README.md`): no OPLBOX code, headers or globals, everything board-specific through `fm1wifi_port.h`, implemented
   for felucca-bsp in `firmware/hal/fm1wifi_port_bsp.c` (usable as is by another firmware) and for the host tests by

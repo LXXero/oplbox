@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # The WiFi core tests/wifi_model.c and the host simulator (tests/run_host.sh) run fm1wifi against, in the
 # register model's script format (tests/wifi/sdio_model.h). NOT MEASURED: these are made-up values chosen so
-# each power-up step changes something visible. What a real FM-1 answers is what xero reads off the stage 2
-# page.
+# each power-up step changes something visible. What a real FM-1 answers is what xero reads off the WiFi test
+# page (stage 2 on 2026-10-26: MAC_CSR0 00300100, MAC_SYS_CTRL 00000003, BBP 0 00).
 
 clk 0xc000                  # CLK_CON1's WiFi bits before power-up (both set, so clearing them shows)
 reg 0x1405c 0x00001234      # WF_CON7 before power-up

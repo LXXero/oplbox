@@ -3,8 +3,9 @@
  * port on the host), and of the model's fixture format and diff. Built from firmware/wifi/ and tests/wifi/
  * only, so a dependency on OPLBOX or the bsp fails to compile here.
  *   wifi_model <dir> <out>        all checks; <dir> holds core_model.txt, bringup_expect.txt and
- *                                 diag_expect.txt; the runs' logs are written to <out>/wifi_bringup.txt and
- *                                 <out>/wifi_diag.txt
+ *                                 diag_expect.txt, <out> radio_trace.txt (tests/run_host.sh decompresses
+ *                                 tests/wifi/radio_trace.txt.gz there); the runs' logs are written to
+ *                                 <out>/wifi_bringup.txt, <out>/wifi_diag.txt and <out>/wifi_radio.txt
  *   wifi_model diff <want> <got>  the diff helper on two fixture files: exit 1 when they differ
  * Exits 1 when a check fails.
  */
@@ -231,6 +232,15 @@ static void test_format(void)
         "frame rx ch=6 rssi=-42 80 00 00 00 ff ff ff ff ff ff\r\n"
         "\t02 00 00 00 00 01 ??\n"
         "frame tx 40 00\n";
+    {
+        wifi_fix w = { 0 };
+        check(wifi_fix_parse(&w, "bbp 0x16 0x00\nwin txbe 0x5c 0x10\nwin rxfe 0x17 0x82\n", "w", stderr) == 0 && w.n == 3 &&
+                  w.r[0].kind == WIFI_REC_BBP && w.r[0].addr == 0x16 && w.r[1].kind == WIFI_REC_WIN && w.r[1].addr == 0x25c &&
+                  w.r[1].val == 0x10 && w.r[2].addr == 0x317, "bbp and win records parse");
+        check(diff_text("bbp 0x16 0x00\nwin txbe 0x5c 0x11\nwin rxfe 0x17 0x82\n", &w, quiet) == 1, "diff: a window value differs");
+        check(diff_text("bbp 0x16 0x00\nwin cca 0x5c 0x10\nwin rxfe 0x17 0x82\n", &w, quiet) == 1, "diff: another window differs");
+        wifi_fix_free(&w);
+    }
     wifi_fix f = { 0 };
     check(wifi_fix_parse(&f, txt, "format", stderr) == 0 && f.n == 7, "fixture parses: 7 records");
     if (f.n == 7) {
@@ -297,6 +307,7 @@ static void test_format(void)
         "frame rx ch=1\n",                    /* frame without data */
         "frame rx 0\n",                       /* odd hex */
         "cmd52 w f0 0x00002 ff\n",            /* the SDIO command records are gone */
+        "bbp 0x100 0\n", "bbp 1\n", "win dma 0x10 0x1\n", "win cca 0x100 0\n", "win cca 0x10\n",
         "bogus\n",
     };
     for (size_t i = 0; i < sizeof badtxt / sizeof *badtxt; i++) {
@@ -319,6 +330,7 @@ static void test_format(void)
     static const char *const badscript[] = {
         "reg\n", "reg 0x31002 1\n", "reg 0x31000\n", "reg 0x31000 1 2\n", "next 0x3101c\n", "stuck 0x3101c 1 2\n",
         "bbp 0x100 1\n", "bbp 0 0x100\n", "clk 0x1\n", "clk\n", "bogus 1\n", "next 0x3101c zz\n",
+        "hang\n", "hang dma\n", "hang tune x\n", "reg 0x20000 1\n",
     };
     for (size_t i = 0; i < sizeof badscript / sizeof *badscript; i++) {
         sdio_model *m = sdio_model_new();
@@ -333,6 +345,119 @@ static void test_format(void)
     fm1wifi_wf_wr(1, 3);
     check(fm1wifi_wf_rd(1) == 9 && sdio_model_peek(m, 0x14044) == 3, "stuck answers whatever was written");
     sdio_model_free(m);
+}
+
+/* ---- stage 3: the radio (docs/WIFI_STAGE3.md) */
+
+#define N_CPU 80u
+static uint32_t cpu_reg(unsigned i) { return i < 40u ? FM1_WLA_CON(i) : FM1_JL_WL_BASE + 4u * (i - 40u); }
+
+static void test_radio(const char *dir, const char *outdir)
+{
+    char path[512];
+    uint32_t before[N_CPU];
+    wifi_fix want = { 0 };
+    fm1wifi_radio r;
+    uint8_t peak = 0;
+    unsigned i;
+    snprintf(path, sizeof path, "%s/radio_trace.txt", outdir);
+    check(wifi_fix_load(&want, path, stderr) == 0 && want.n > 30000, "the radio trace (tools/wifi_ir.py --trace) loads");
+    snprintf(path, sizeof path, "%s/core_model.txt", dir);
+    sdio_model *m = core(path, NULL);
+    sdio_model_raw_log(m, 0);
+    for (i = 0; i < N_CPU; i++) before[i] = sdio_model_peek(m, cpu_reg(i));
+    check(fm1wifi_set_channel(1) == FM1WIFI_ESTATE && fm1wifi_adc_peak(&peak) == FM1WIFI_ESTATE, "channel and ADC before the radio: OFF");
+    check(fm1wifi_power_up() == FM1WIFI_OK, "power-up before the radio");
+    sdio_model_zero(m);                 /* tools/wifi_ir.py's run starts from zeroed registers: so does this one */
+    sdio_model_script(m, "reg 0x31000 0x00300100\n", "csr0", stderr);
+    sdio_model_wlog_clear(m);
+    check(fm1wifi_radio_up(NULL, &r) == FM1WIFI_OK && r.err == FM1WIFI_OK && !strcmp(r.stage, "DONE") && fm1wifi_radio_is_up(),
+          "radio up: OK");
+    snprintf(path, sizeof path, "%s/wifi_radio.txt", outdir);
+    FILE *o = fopen(path, "w");
+    if (o) { wifi_fix_write(o, sdio_model_wlog(m)); fclose(o); }
+    check(wifi_fix_diff(stderr, &want, sdio_model_wlog(m)) == 0,
+          "the radio's register, BBP and window writes and delays match JieLi's (radio_trace.txt), record for record");
+    wifi_fix_free(&want);
+    check(r.mac_sys_ctrl == 0x0Cu && r.bbp0 == 0, "MAC_SYS_CTRL and BBP 0 read after the resets are released");
+    check(r.pll_mid == 95 && r.pll_bank == 64, "PLL: middle bank 95, bank 64 for divider 121 (the model's VCO)");
+    check(r.bw[0] == 141 && r.bw[1] == 80 && r.bw[2] == 44, "filter codes 141, 80, 44");
+    check(r.txlo[0] == 57 && r.txlo[1] == 41 && r.tx_dc[0] == -1 && r.tx_dc[1] == 0, "TX LO 57/41, TX DC -1/0");
+    check(r.tx_gain == 5 && r.tx_phase == 2, "TX gain imbalance 5, phase 2 on Q");
+    check(r.rx_gain == -20 && r.rx_phase == 7, "RX gain imbalance -20, phase 7 on I");
+    check(r.rx_dc[0][0] == (0x200 | 123) && r.rx_dc[0][1] == 77 && r.rx_dc[1][0] == (0x200 | 103) && r.rx_dc[3][1] == 21,
+          "RX DC codes per gain range");
+    check(r.channel == 6 && r.power == 6 && (sdio_model_peek(m, FM1_WF_CON(7)) & 0x00FF00FFu) == 0x00060000u + 107u,
+          "channel 6 (WF_CON7 bits 7-0 = 107), TX power 6");
+    check(sdio_model_trims(m) == 1 && !sdio_model_in_trim(m), "the port told before the trim and after it, once");
+    check((sdio_model_peek(m, FM1_WLA_CON(7)) >> 8 & 0x7Fu) == 57u && (sdio_model_peek(m, FM1_WLA_CON(8)) & 0x7Fu) == 41u &&
+              sdio_model_win(m, 2, 8) == 0xFF && sdio_model_win(m, 2, 9) == 0 && (sdio_model_win(m, 2, 98) & 0x0Fu) == 0x03u,
+          "the trim's results stay in the registers (TX LO in WLA_CON7/8, TX DC -1/0 in the TX back end)");
+    check(fm1wifi_set_channel(13) == FM1WIFI_OK && (sdio_model_peek(m, FM1_WF_CON(7)) & 0xFFu) == 114u, "channel 13: 114");
+    check(fm1wifi_set_channel(0) == FM1WIFI_ERANGE && fm1wifi_set_channel(14) == FM1WIFI_ERANGE, "channel 0 and 14: RANGE");
+    check(fm1wifi_set_power(3) == FM1WIFI_OK && (sdio_model_peek(m, FM1_WF_CON(7)) >> 16 & 0xFFu) == 3u, "TX power 3");
+    check(fm1wifi_set_power(7) == FM1WIFI_ERANGE, "TX power 7: RANGE");
+    sdio_model_wlog_clear(m);
+    check(fm1wifi_adc_peak(&peak) == FM1WIFI_OK && peak > 0, "ADC peak read");
+    {
+        const wifi_fix *w = sdio_model_wlog(m);
+        check(w->n == 3 && w->r[0].kind == WIFI_REC_WIN && w->r[0].addr == 0x317 && w->r[0].val == 0x82 &&
+                  w->r[1].kind == WIFI_REC_DELAY && w->r[1].val == 1000 && w->r[2].val == 2,
+              "... as RX front end 23 = 0x82, 1 ms, the peak, 23 = 2");
+    }
+    fm1wifi_power_down();
+    check(!fm1wifi_is_up() && !fm1wifi_radio_is_up(), "powered down");
+    for (i = 0; i < N_CPU; i++) {
+        char what[80];
+        snprintf(what, sizeof what, "power-down restores %05x after the radio", (unsigned)cpu_reg(i));
+        check(sdio_model_peek(m, cpu_reg(i)) == before[i], what);
+    }
+    check(sdio_model_bad(m) == 0, "the radio: no access outside the WiFi blocks");
+    sdio_model_free(m);
+
+    /* the calibration bytes reach their registers */
+    snprintf(path, sizeof path, "%s/core_model.txt", dir);
+    m = core(path, NULL);
+    sdio_model_raw_log(m, 0);
+    {
+        fm1wifi_cal c = fm1wifi_cal_default;
+        c.xosc[0] = 3; c.xosc[1] = 12; c.pa[0] = 5; c.pa[4] = 9; c.pa[5] = 2;
+        check(fm1wifi_radio_up(&c, &r) == FM1WIFI_OK, "radio up with another calibration");
+        uint32_t w12 = sdio_model_peek(m, FM1_WLA_CON(12)), w9 = sdio_model_peek(m, FM1_WLA_CON(9));
+        uint32_t w10 = sdio_model_peek(m, FM1_WLA_CON(10)), w11 = sdio_model_peek(m, FM1_WLA_CON(11));
+        check((w12 >> 13 & 15u) == 3u && (w12 >> 19 & 15u) == 12u, "crystal caps into WLA_CON12 bits 16-13, 22-19");
+        check((w9 >> 24 & 7u) == 5u && (w10 >> 22 & 15u) == 9u && (w11 & 7u) == 2u, "PA trim into WLA_CON9, 10, 11");
+    }
+    fm1wifi_power_down();
+    sdio_model_free(m);
+}
+
+static void test_radio_waits(const char *dir)
+{
+    static const struct { const char *script, *stage, *what; unsigned polls; } T[] = {
+        { "hang tune\n", "TRIM", "the filter tune never done", 1000 },
+        { "hang measure\n", "TRIM", "the measurement never ready", 1000 },
+        { "hang anl\n", "TABLE", "the RF digital block always busy", 1001 },   /* + the read that saves it */
+        { "stuck 0x3101c 0x00020000\n", "PHY", "BBP BUSY stuck", 1000 },
+    };
+    char path[512];
+    snprintf(path, sizeof path, "%s/core_model.txt", dir);
+    for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+        char what[120];
+        fm1wifi_radio r;
+        sdio_model *m = core(path, T[i].script);
+        sdio_model_raw_log(m, 0);
+        int rc = fm1wifi_radio_up(NULL, &r);
+        snprintf(what, sizeof what, "%s: TIMEOUT at %s after %u polls (stopped at %s, %u polls)", T[i].what, T[i].stage,
+                 T[i].polls, r.stage ? r.stage : "?", sdio_model_polls(m));
+        check(rc == FM1WIFI_ETIMEOUT && r.err == FM1WIFI_ETIMEOUT && !strcmp(r.stage, T[i].stage) &&
+                  sdio_model_polls(m) == T[i].polls && !fm1wifi_radio_is_up(), what);
+        snprintf(what, sizeof what, "%s: the port told the trim ended", T[i].what);
+        check(!sdio_model_in_trim(m) && sdio_model_trims(m) >= 0, what);
+        fm1wifi_power_down();
+        check(!fm1wifi_is_up(), "powered down after a TIMEOUT");
+        sdio_model_free(m);
+    }
 }
 
 static int diff_files(const char *want_path, const char *got_path)
@@ -358,8 +483,11 @@ int main(int argc, char **argv)
     test_accessors();
     test_pattern();
     test_format();
+    test_radio(argv[1], argv[2]);
+    test_radio_waits(argv[1]);
     fclose(quiet);
     if (bad) return 1;
-    printf("wifi_model: fm1wifi power-up, first reads, bounded waits, power-down, RAM check; model, fixtures, diff pass\n");
+    printf("wifi_model: fm1wifi power-up, first reads, bounded waits, power-down, RAM check; the radio against JieLi's "
+           "trace, its results, its waits; model, fixtures, diff pass\n");
     return 0;
 }

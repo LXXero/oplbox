@@ -60,23 +60,43 @@ build/host/wifi_regs > build/host/wifi_regs.txt
 python3 tests/wifi_regs.py build/host/wifi_regs.txt
 # fm1wifi against the register model (tests/wifi/sdio_model.c, the library's port on the host): the power-up and
 # the first reads must match tests/wifi/bringup_expect.txt and diag_expect.txt (written by hand from
-# docs/WIFI.md), the BBP waits are bounded, power-down puts every register back; the fixture format and diff
+# docs/WIFI.md), the BBP waits are bounded, power-down puts every register back; the fixture format and diff.
+# Stage 3 (docs/WIFI_STAGE3.md): the radio's bring-up must write what JieLi's wl_rf_common.a writes against the same
+# model, record for record (tests/wifi/radio_trace.txt.gz, from tools/wifi_ir.py --trace), its four kinds of wait
+# must end in TIMEOUT when the model never answers, and power-down must put every register back
+gzip -dc tests/wifi/radio_trace.txt.gz > build/host/radio_trace.txt
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/wifi/fm1wifi.c
 build/host/wifi_model tests/wifi build/host
-# the WiFi page in the simulator (tests/script_wifi.txt): its text against the made-up core, then against a
-# core whose baseband never answers and one that answers nothing: an error on the page, no hang
+# ... and that test catches a swapped write, a dropped delay and a wait without its bound (8 deliberate bugs)
+python3 tests/wifi_mutants.py build/host
+# the generated tables and the trace are what the SDK's archive gives (only where the SDK is: tools/wifi_ir.py)
+if [ -f "${AC79_SDK:-$HOME/fw-AC79_AIoT_SDK}/cpu/wl82/liba/wl_rf_common.a" ]; then
+  python3 tools/wifi_ir.py --check
+else
+  echo "wifi_ir: no JieLi SDK here, the generated tables and trace not re-checked"
+fi
+# the WiFi page in the simulator (tests/script_wifi.txt): its text against the made-up core (stage 2's reads, the
+# radio's bring-up, page 2's trim and channels), then against a core whose baseband never answers and one that
+# answers nothing: an error on the page, the radio not reached, no hang
 build/host/oplbox build/host/wifi tests/script_wifi.txt > build/host/wifi_page.txt
 HOST_WIFI_MODEL=tests/wifi/core_bbp_stuck.txt build/host/oplbox build/host/wifi_stuck tests/script_wifi.txt > build/host/wifi_page_stuck.txt
 HOST_WIFI_MODEL=tests/wifi/core_silent.txt build/host/oplbox build/host/wifi_silent tests/script_wifi.txt > build/host/wifi_page_silent.txt
-for want in "wifi page 0: WIFI TEST (STAGE 2)" "wifi page 1: PLAY: POWER UP AND READ" "wifi page 2: SAVE: LEAVE" \
-            "wifi page 1: RESULT: OK" "wifi page 2: MAC_CSR0     35920200" "wifi page 3: MAC_SYS_CTRL 0000000C" \
-            "wifi page 4: BBP 0        21" "wifi page 5: RAM CHECK: 0 CHANGED" "wifi page 7: POOL 016 KB  SAVE: LEAVE"; do
+for want in "wifi page 0: WIFI TEST (STAGE 3)" "wifi page 1: PLAY: POWER UP, TRIM, READ" "wifi page 2: SAVE: LEAVE" \
+            "wifi page 0: WIFI TEST (STAGE 3)    1/2" "wifi page 1: RESULT: OK" "wifi page 2: MAC_CSR0     35920200" \
+            "wifi page 3: MAC_SYS_CTRL 0000000C" "wifi page 4: BBP 0        21" "wifi page 5: PLL BANK  64  MID  95" \
+            "wifi page 6: FILTER  141  80  44" "wifi page 7: RAM CHECK: 0 CHANGED" "wifi page 9: PLAY: PAGE 2   SAVE: LEAVE" \
+            "wifi page 0: TRIM  CH  6  PWR 6    2/2" "wifi page 1: TX LO  57  41  DC   -1   0" \
+            "wifi page 2: TX GAIN   +5  PHASE   +2 Q" "wifi page 3: RX GAIN  -20  PHASE   +7 I" \
+            "wifi page 4: RX DC I +123 +103  +76  +22" "wifi page 5: RX DC Q  -77  -66  -51  -21" \
+            "wifi page 6: ADC  1- 5   25  21  17  24  20" "wifi page 8: ADC 11-13   18  25  21" \
+            "wifi page 9: PLAY: PAGE 1   SAVE: LEAVE"; do
   grep -qF "$want" build/host/wifi_page.txt || { echo "FAIL: WiFi page: no line '$want'" >&2; exit 1; }
 done
-for want in "wifi page 1: RESULT: TIMEOUT" "wifi page 2: MAC_CSR0     35920200" "wifi page 4: BBP 0        TIMEOUT"; do
+for want in "wifi page 1: RESULT: TIMEOUT" "wifi page 2: MAC_CSR0     35920200" "wifi page 4: BBP 0        TIMEOUT" \
+            "wifi page 5: PLL BANK  -" "wifi page 1: NOT REACHED"; do
   grep -qF "$want" build/host/wifi_page_stuck.txt || { echo "FAIL: WiFi page, BBP stuck: no line '$want'" >&2; exit 1; }
 done
-for want in "wifi page 1: RESULT: NO ANSWER" "wifi page 2: MAC_CSR0     00000000"; do
+for want in "wifi page 1: RESULT: NO ANSWER" "wifi page 2: MAC_CSR0     00000000" "wifi page 6: FILTER  -"; do
   grep -qF "$want" build/host/wifi_page_silent.txt || { echo "FAIL: WiFi page, silent core: no line '$want'" >&2; exit 1; }
 done
 echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) as expected"

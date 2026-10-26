@@ -14,6 +14,7 @@ uint32_t fm1wifi_port_rd32(uint32_t addr) { last_addr = addr; n_rd++; return add
 void fm1wifi_port_wr32(uint32_t addr, uint32_t v) { last_addr = addr; last_val = v; n_wr++; }
 uint32_t fm1wifi_port_clk(uint32_t bits) { (void)bits; return 0; }
 void fm1wifi_port_delay_us(uint32_t us) { (void)us; }
+void fm1wifi_port_trim(int on) { (void)on; }
 
 static int bad;
 static void check(int ok, const char *what) { if (!ok) { fprintf(stderr, "FAIL: %s\n", what); bad = 1; } }
