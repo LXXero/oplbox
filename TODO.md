@@ -519,7 +519,7 @@ Linux version the MMC structures match; the bodies of `usb_submit_urb`, `sdio_re
 and the WEXT functions against upstream; rt2x00's 15 field-built defaults; `hsm.a`'s authorship. None of these
 blocks stages 1-3 under the limits above.
 
-### 7d. Stage 8 host part, WPA2 key primitives — built, host-tested, not yet tried on hardware
+### 7d. Stage 8 host part, WPA2 key primitives and EAPOL-Key handshakes — built, host-tested, not yet tried on hardware
 
 **Built.** `firmware/wifi/wpa_crypto.c`/`.h`, own code from IEEE 802.11-2020 (12.7.1.2 PRF, 12.7.1.3 PTK, J.4
 passphrase to PSK), RFC 8018 (PBKDF2) and RFC 3394 (key unwrap), on a BearSSL subset in `firmware/wifi/bearssl/`
@@ -564,9 +564,59 @@ from the address-literal rule only, because AES's round constant 0x02000000 look
   so stage 9 can change it without touching this code.
 - The unwrap takes any KEK size BearSSL supports (16/24/32), so all six RFC 3394 vectors run; WPA2 uses 16.
 
-**Open.** The EAPOL-Key 4-way and group handshakes (state machine, MIC check, replay counter, key data parsing,
-keys into the MAC's tables at 0x4000-0x7000), caching the PMK per SSID in the WiFi settings sector, and the replay
-of a recorded handshake on the host are the rest of stage 8. Timing on the FM-1 is stage 8's too.
+**Built: the EAPOL-Key handshakes.** `firmware/wifi/wpa_eapol.c`/`.h`, the station (supplicant) side of the 4-way
+and group key handshakes for WPA2-PSK with CCMP (AKM 2, key descriptor version 2: HMAC-SHA1-128 MIC, AES key wrap),
+own code from IEEE 802.11-2020 12.7.2, 12.7.6 and 12.7.7 on `wpa_crypto.c`, no malloc. Not on the WiFi page and not
+run on an FM-1.
+- `wpa_eapol_init` takes the PMK, both MACs, the RSNE the station sent in its association request and the one from
+  the beacon / probe response, and a nonce callback (so the tests are deterministic). `wpa_eapol_rx` takes one EAPOL
+  frame (the 802.1X header onward, as it comes out of LLC/SNAP with ethertype 0x888E), writes the reply (msg 2,
+  msg 4 or group msg 2) into the caller's buffer, and leaves a state (waiting for msg 1, waiting for msg 3, done,
+  failed) and a reason.
+- Checks: descriptor type and version, the key information bits of each message, the replay counter (above every
+  one taken; it moves only on a valid MIC), the ANonce of msg 3 against msg 1's, msg 3's key length (16), the MIC on
+  msg 3 and group msg 1, encrypted key data a multiple of 8 and at least 24 bytes, the RSNE in msg 3 byte for byte
+  against the beacon's (no second RSNE), and the GTK KDE in the unwrapped key data (padding, other KDEs skipped).
+  A frame that fails a check before the MIC is dropped and the state kept; a frame with a valid MIC that fails after
+  it (RSNE, unwrap, no GTK) ends in FAILED with every key wiped, for the caller to deauthenticate.
+- The PTK from msg 1 is held aside until msg 3 verifies under it. A repeated msg 3 or group msg 1 is answered but
+  does not flag the same key for reloading, so reloading cannot reset the MAC's receive counters.
+- Output for a later stage to load into the MAC's key tables (nothing here writes a register): `tk` (CCMP),
+  `gtk`/`gtk_len`/`gtk_idx`/`gtk_tx` and `gtk_rsc`, with `new_keys` saying which changed on that frame.
+
+`tests/wifi_eapol.c` (in `tests/run_host.sh`, 668 checks):
+- the 4-way handshake recorded in Wireshark's sample capture `wpa-Induction.pcap` (SSID "Coherer", passphrase
+  "Induction"): its msg 1 and msg 3 go in with the capture's SNonce, and the msg 2 and msg 4 that come out are the
+  recorded ones byte for byte except the key length field (the recorded station sent 16; this code sends 0, which is
+  what 12.7.6 asks for), with the MIC recomputed for that field. The TK is the one that decrypts the capture's CCMP
+  data frame 99 (checked once with Python's `cryptography`, not in the test); the GTK (TKIP, 32 bytes, key index 2)
+  is the KDE in msg 3. The frames' bytes are in the test, so it needs no network;
+- a made-up AP in the test (AES-128 encryption and RFC 3394 key wrap of its own, checked against FIPS-197 C.1 and
+  RFC 3394 4.1): 4-way handshake, group key handshake, a repeated msg 3 and group msg 1, a PTK rekey; the PTK and the
+  group msg 2 compared with values computed with Python's `hmac`/`hashlib`;
+- the refusals: bad MIC, replayed counters (msg 1, msg 3, group msg 1), descriptor type 254, key descriptor versions
+  0-7 other than 2, wrong key information bits, the wrong ANonce, key length 32, RSNEs that differ from the
+  beacon's (capabilities, group cipher, length, missing, a second one), every truncation of msg 1, key data lengths
+  0-40 that are not multiples of 8 or under 24 and one of 264, a KEK that does not unwrap, no GTK KDE, two GTK KDEs,
+  a 4-byte GTK, a KDE longer than the key data, a nonce source that fails, a reply buffer one byte short, and every
+  single-bit change (bits 0 and 7) to msg 3 and group msg 1.
+
+No PTK or EAPOL-Key MIC vector for AKM 2 could be sourced from IEEE 802.11-2020 Annex J: the Annex J vectors
+wpa_supplicant cites are J.3/J.4 (already in `tests/wifi_crypto.c`), J.10 (SAE), J.12 (PASN) and J.13 (KDK), the
+last three SHA-256 based; the IEEE text was not read [unchecked]. The recorded handshake stands in for one. The test
+also passes under ASan/UBSan. 24 deliberate bugs were planted in `wpa_eapol.c`; it catches the 23 that change
+behaviour (the 24th, `>` to `>=` in the counter compare, cannot: that compare only runs on bytes that differ). It
+missed three at first (any KDE type taken as the GTK, two GTK KDEs, the TK not wiped on a failure after the
+handshake); each has a check now.
+
+**Size.** JieLi clang `-Os`: `wpa_eapol.c` 1,870 B of code and read-only data, no static RAM (about 6 KB with
+`wpa_crypto.c` and the BearSSL subset); the context (`struct wpa_eapol`) is 424 B with 32-bit pointers, in the
+caller's RAM. Stack: `wpa_eapol_rx` about 0.9 KB at its deepest (its own 324-byte frame, then the PRF's or the MIC's
+HMAC contexts, about 0.4 KB) [unchecked on the device]. It uses only `memcpy` and `memset` from the C library.
+
+**Open.** Loading the keys into the MAC's tables (0x4000-0x7000), caching the PMK per SSID in the WiFi settings
+sector, the frames carrying EAPOL to and from the MAC (stages 5-7), and timing on the FM-1 are the rest of stage 8.
+Joining xero's WPA2 network is its hardware check.
 
 ### 7e. Stage 2, first contact, as a standalone library — built, run on xero's FM-1
 

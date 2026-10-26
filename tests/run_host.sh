@@ -50,7 +50,7 @@ python3 tests/slot_sysex_tool.py build/host/slot_sysex_test build/host
 # directory and a port (no firmware/src, hal or bsp on the include path), warning-free, and none of its files
 # includes anything from outside it
 for f in firmware/wifi/*.c firmware/wifi/*.h; do
-  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v '"\(fm1wifi[a-z_]*\|wpa_crypto\|bearssl/[a-z_]*\)\.h"'; then
+  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v '"\(fm1wifi[a-z_]*\|wpa_crypto\|wpa_eapol\|bearssl/[a-z_]*\)\.h"'; then
     echo "FAIL: $f includes a file from outside firmware/wifi/" >&2; exit 1; fi
 done
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -c -o build/host/fm1wifi.o firmware/wifi/fm1wifi.c
@@ -161,6 +161,10 @@ echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) 
 # AES key unwrap against RFC 3394 4.1-4.6, the PMK in main-loop steps, and the refusals
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_crypto tests/wifi_crypto.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c
 build/host/wifi_crypto
+# the station side of the EAPOL-Key 4-way and group key handshakes (firmware/wifi/wpa_eapol.c): Wireshark's recorded
+# wpa-Induction handshake replayed byte for byte, a made-up AP for the group key handshake and rekeys, the refusals
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_eapol tests/wifi_eapol.c firmware/wifi/wpa_eapol.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c
+build/host/wifi_eapol
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c

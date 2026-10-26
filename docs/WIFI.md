@@ -600,7 +600,7 @@ same FM-1 and could stream over WiFi (RTSP or similar) instead of USB. So the dr
 
 - **One directory.** `firmware/wifi/` holds the driver (`fm1wifi.c`, `fm1wifi.h`, the register map
   `fm1wifi_regs.h`), the port header (`fm1wifi_port.h`), and the WPA2 primitives (`wpa_crypto.c` on its BearSSL
-  subset), which already had no OPLBOX dependency. Nothing in it includes a file from outside it, uses an OPLBOX
+  subset, and the EAPOL-Key handshakes in `wpa_eapol.c`), which already had no OPLBOX dependency. Nothing in it includes a file from outside it, uses an OPLBOX
   global, or touches a register itself.
 - **The port.** Everything the library needs from the board goes through `fm1wifi_port.h`, which the firmware that
   links it implements: 32-bit register access to the WiFi blocks, the WiFi bits of the shared `CLK_CON1`, and a
@@ -757,7 +757,13 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   **FM-1**: joins xero's WPA2 network.
 - Built so far (host part, TODO.md 7d): `firmware/wifi/wpa_crypto.c` with the stepped PMK, the PRF and PTK and AES key
   unwrap, on a BearSSL subset (2,932 B, against about 8,914 B for wpa_supplicant's SHA-1/HMAC/AES; 4,109 B with
-  our code). The EAPOL-Key handshakes are still to do.
+  our code). `firmware/wifi/wpa_eapol.c` (1,870 B): the station side of the EAPOL-Key 4-way and group key
+  handshakes (12.7.2, 12.7.6, 12.7.7; AKM 2, CCMP, key descriptor version 2), with the replay counter, MIC, RSNE and
+  GTK KDE checks; it hands TK and GTK to the caller and writes no register. `tests/wifi_eapol.c` replays the
+  4-way handshake recorded in Wireshark's `wpa-Induction.pcap` byte for byte, runs a made-up AP for the group key
+  handshake and rekeys, and checks the refusals. No Annex J vector for the PTK or the EAPOL-Key MIC could be
+  sourced [unchecked]. Untested on hardware and not on the WiFi page; the keys into the MAC's tables and the PMK
+  cache are still to do.
 
 ### Stage 9: OPLBOX integration (needs FM-1)
 
