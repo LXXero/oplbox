@@ -341,7 +341,7 @@ struct sdio_model {
     uint8_t bbp[256], win[4][256];
     uint32_t clk;
     int bad, raw_off, trims, in_trim;
-    int hang_tune, hang_measure, hang_anl;
+    int hang_tune, hang_measure, hang_anl, hang_after, measures;
     unsigned poll[N_POLL], poll_max;
     wifi_fix log, wlog;
 };
@@ -453,7 +453,16 @@ int sdio_model_script(sdio_model *m, const char *text, const char *name, FILE *e
         if (!strcmp(t, "hang")) {
             t = tok(&p);
             if (t && !strcmp(t, "tune")) m->hang_tune = 1;
-            else if (t && !strcmp(t, "measure")) m->hang_measure = 1;
+            else if (t && !strcmp(t, "measure")) {
+                m->hang_measure = 1;
+                t = tok(&p);
+                if (t && !strcmp(t, "after")) {        /* hang measure after N: the first N measurements answer */
+                    t = tok(&p);
+                    if (!t) { rc = perr(err, name, line, "a number after hang measure after"); break; }
+                    m->hang_after = atoi(t);
+                } else if (t) { rc = perr(err, name, line, "hang measure, or hang measure after N"); break; }
+                continue;
+            }
             else if (t && !strcmp(t, "anl")) m->hang_anl = 1;
             else { rc = perr(err, name, line, "hang needs tune, measure or anl"); break; }
             if (tok(&p)) { rc = perr(err, name, line, "one word after hang"); break; }
@@ -575,7 +584,12 @@ static uint8_t adc_peak(const sdio_model *m)
 static uint8_t win_read(sdio_model *m, unsigned w, uint8_t a)
 {
     if (w == 3u) {
-        if (a == 0x8D) { poll(m, POLL_MEASURE, m->hang_measure); return m->hang_measure ? 3 : 0; }
+        if (a == 0x8D) {
+            int busy = m->hang_measure && m->measures >= m->hang_after;
+            poll(m, POLL_MEASURE, busy);
+            if (!busy) m->measures++;
+            return busy ? 3 : 0;
+        }
         if (a == 0x80) return adc_peak(m);
         if (a >= 0x81 && a <= 0x8C) {
             int32_t i, q, v;

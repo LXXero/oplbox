@@ -652,11 +652,11 @@ TRIMFN static void rxdc_trim(fm1wifi_radio *r, const uint8_t *par)
             m = measure(1);
             if (m > 0 && i > -510) i -= step;
             else if (m < 0 && i < 510) i += step;
-            rxdc_set(0, i);
+            r->rx_dc[g][0] = rxdc_set(0, i);           /* kept as it is read: a timeout later keeps it */
             m = measure(2);
             if (m > 0 && q > -510) q -= step;
             else if (m < 0 && q < 510) q += step;
-            rxdc_set(1, q);
+            r->rx_dc[g][1] = rxdc_set(1, q);
             step = step > 1 ? step >> 1 : 1;
         }
         r->rx_dc[g][0] = rxdc_set(0, i);
