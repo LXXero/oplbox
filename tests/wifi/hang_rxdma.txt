@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Loaded after core_model.txt and aps.txt: the RX FIFO's DMA never finishes.
+hang rxdma

@@ -83,6 +83,13 @@ static int settings_save(const void *p, uint32_t n)
     return 0;
 }
 
+/* the flash part's unique ID (platform.c platform_uid): a made-up one, the same every run */
+static int platform_uid(uint8_t *dst)
+{
+    for (uint32_t i = 0; i < 16u; i++) dst[i] = (uint8_t)(0xA0u + i);
+    return 0;
+}
+
 static uint8_t mq[64][3];
 static uint32_t mq_w, mq_r;
 static int midi_get(uint8_t *st, uint8_t *d1, uint8_t *d2)

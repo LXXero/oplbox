@@ -87,6 +87,13 @@
 #define FM1_WL30_HOST_14 FM1_WL30_HOST(0x14u)
 #define FM1_WL30_HOST_18 FM1_WL30_HOST(0x18u)
 #define FM1_WL30_HOST_1C FM1_WL30_HOST(0x1Cu)
+/* 0x04's bits the frame FIFOs use (wl30_mmc_io_rw_extended, sdio_recv_int_hdl; stages 4-5): */
+#define FM1_WL30_04_RX_READY (1u << 17)   /* a received frame waits in the RX FIFO (sdio_recv_int_hdl's test) */
+#define FM1_WL30_04_TX_DONE (1u << 20)    /* the TX DMA (0x10/0x14) has finished */
+#define FM1_WL30_04_RX_DONE (1u << 21)    /* the RX DMA (0x18/0x1C) has finished */
+#define FM1_WL30_04_TX_CLR (1u << 10)     /* written 1: clears TX_DONE (set before a TX DMA starts and after it ends) */
+#define FM1_WL30_04_RX_CLR (1u << 11)     /* written 1: clears RX_DONE (likewise for each RX DMA) */
+#define FM1_WL30_DMA_INCR (1u << 31)      /* 0x14 / 0x1C: the increment flag JieLi passes (always 0 for the FIFOs) */
 
 /* IRQ_WF_IDX (hwi.h). It must run below the audio's ALNK0 and only set a flag (docs/WIFI.md "OPLBOX's
  * constraints"). */
@@ -113,6 +120,11 @@
 
 #define MAC_ADDR_DW0 0x1008u
 #define MAC_ADDR_DW1 0x100cu
+#define MAC_ADDR_DW1_UNICAST_TO_ME_MASK 0x00ff0000u
+#define MAC_BSSID_DW0 0x1010u
+#define MAC_BSSID_DW1 0x1014u
+#define MAC_BSSID_DW1_BSS_ID_MASK 0x00030000u
+#define MAC_BSSID_DW1_BSS_BCN_NUM 0x001c0000u
 #define MAX_LEN_CFG 0x1018u
 
 #define BBP_CSR_CFG 0x101cu
@@ -167,6 +179,24 @@
 #define TX_BAND_CFG_BG 0x00000004u
 #define RX_STA_CNT1 0x1704u
 #define RX_STA_CNT1_FALSE_CCA 0x0000ffffu
+
+/* The statistics counters the WiFi page shows as evidence (stages 4-6; rt2800.h, all clear when read): received
+ * frames dropped for a bad CRC or a PHY error, duplicates and FIFO overflows; frames sent, failed and retried. */
+#define RX_STA_CNT0 0x1700u
+#define RX_STA_CNT0_CRC_ERR 0x0000ffffu
+#define RX_STA_CNT0_PHY_ERR 0xffff0000u
+#define RX_STA_CNT2 0x1708u
+#define RX_STA_CNT2_RX_DUPLI_COUNT 0x0000ffffu
+#define RX_STA_CNT2_RX_FIFO_OVERFLOW 0xffff0000u
+#define TX_STA_CNT0 0x170cu
+#define TX_STA_CNT0_TX_FAIL_COUNT 0x0000ffffu
+#define TX_STA_CNT0_TX_BEACON_COUNT 0xffff0000u
+#define TX_STA_CNT1 0x1710u
+#define TX_STA_CNT1_TX_SUCCESS 0x0000ffffu
+#define TX_STA_CNT1_TX_RETRANSMIT 0xffff0000u
+#define TX_STA_CNT2 0x1714u
+#define TX_STA_CNT2_TX_ZERO_LEN_COUNT 0x0000ffffu
+#define TX_STA_CNT2_TX_UNDER_FLOW_COUNT 0xffff0000u
 
 #define RX_FILTER_CFG 0x1400u
 #define RX_FILTER_CFG_DROP_CRC_ERROR 0x00000001u

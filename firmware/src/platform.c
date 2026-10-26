@@ -12,6 +12,7 @@
  *   keys, knobs, LEDs   fm1_in.notes / buttons, fm1_input_edges, fm1_enc_take, fm1_led_key (bsp/boards/fm1/fm1_input.h)
  *   screen              240 x 240, lcd_fill, draw_text_box with FONT_S (16 px) / FONT_L (32 px) (gfx.c)
  *   settings            one 4 KiB flash sector with a CRC (settings_load / settings_save)
+ *   unique ID           the flash part's factory ID (platform_uid), for the WiFi address
  *   crash screen        the fault's registers (and the app's note), then a reboot
  *
  * The app (dinghy.c) includes this file first and supplies:
@@ -78,6 +79,7 @@ static volatile uint32_t fm1_ms;                /* milliseconds since power-on (
 /* OPLBOX: the song slots, 9 x 32 KiB at 0x98000 (Felucca-family data area, below the OTA staging) */
 #define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, SETTINGS_AT, SETTINGS_AT + 0x1000u) || \
                              FL_IN(off, n, 0x98000u, 0xE0000u))
+#define FL_UID                                  /* the part's unique ID: the WiFi page's address (platform_uid) */
 #include "fm1_flash.h"
 static uint8_t flash_ok;
 static int st_read(uint32_t off, void *dst, uint32_t n)
@@ -154,6 +156,18 @@ static uint32_t crc32(const uint8_t *p, uint32_t n)
     }
     return ~c;
 }
+/* the flash part's factory unique ID, 16 bytes: 0, or -1 without a working flash */
+static int platform_uid(uint8_t *dst)
+{
+    uint32_t f;
+    int rc;
+    if (!flash_ok) return -1;
+    f = irq_save();
+    rc = FL_FAR(fl_uid_ram)(dst);
+    irq_restore(f);
+    return rc ? -1 : 0;
+}
+
 static int settings_load(void *p, uint32_t n)   /* 0: loaded; else p is untouched */
 {
     static uint8_t buf[256];

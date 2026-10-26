@@ -2,7 +2,7 @@
  * fm1wifi's port (firmware/wifi/fm1wifi_port.h) on felucca-bsp (firmware/bsp/): the register accesses the WiFi
  * library makes, its delays, the WiFi bits of the shared CLK_CON1, and the radio's trim. Nothing in it is OPLBOX's,
  * so any FM-1 firmware on felucca-bsp can compile it as is next to firmware/wifi/fm1wifi.c (firmware/wifi/README.md).
- * Main loop only. Stage 2 ran on an FM-1 (2026-10-26); the trim parts are not run on one yet.
+ * Main loop only. Stage 2 ran on an FM-1 (2026-10-26), stage 3 too; the frame FIFOs (stages 4-5) are not run on one yet.
  *
  * The trim must not read the flash (fm1wifi_port.h): the register access and the delay are in RAM
  * (.ram_code.fm1wifi_port, which felucca's app.ld copies there), use only inline helpers, and the delay is the BSP's
@@ -30,8 +30,13 @@ PORT_RAM uint32_t fm1wifi_port_rd32(uint32_t addr)
 
 PORT_RAM void fm1wifi_port_wr32(uint32_t addr, uint32_t v)
 {
-    if (wifi_addr(addr)) *(volatile uint32_t *)(uintptr_t)addr = v;
+    if (!wifi_addr(addr)) return;
+    *(volatile uint32_t *)(uintptr_t)addr = v;
+    if (addr >= FM1_WL30_HOST_BASE && addr <= FM1_WL30_HOST_LAST)   /* the DMA block: as JieLi, a csync after each */
+        __asm__ volatile("csync" ::: "memory");
 }
+
+uint32_t fm1wifi_port_bus(const void *p) { return (uint32_t)(uintptr_t)p; }   /* the DMA takes CPU addresses */
 
 uint32_t fm1wifi_port_clk(uint32_t bits)   /* CLK_CON1 is shared (USB, UART): the read-modify-write with interrupts off */
 {

@@ -600,7 +600,7 @@ same FM-1 and could stream over WiFi (RTSP or similar) instead of USB. So the dr
 
 - **One directory.** `firmware/wifi/` holds the driver (`fm1wifi.c`, `fm1wifi.h`, the register map
   `fm1wifi_regs.h`), the port header (`fm1wifi_port.h`), and the WPA2 primitives (`wpa_crypto.c` on its BearSSL
-  subset), which already had no OPLBOX dependency. Nothing in it includes a file from outside it, uses an OPLBOX
+  subset, and the EAPOL-Key handshakes in `wpa_eapol.c`), which already had no OPLBOX dependency. Nothing in it includes a file from outside it, uses an OPLBOX
   global, or touches a register itself.
 - **The port.** Everything the library needs from the board goes through `fm1wifi_port.h`, which the firmware that
   links it implements: 32-bit register access to the WiFi blocks, the WiFi bits of the shared `CLK_CON1`, and a
@@ -706,6 +706,12 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   SSID/BSSID/RSSI/security list.
 - **Host**: the parser on recorded frames (the FM-1 dumps a few raw frames over USB SysEx or onto the screen in
   hex; they become fixtures). **FM-1**: the page lists the networks around, the first visible milestone.
+- **Built, with stages 5 and 6** (TODO.md 7h; docs/WIFI_STAGE4.md): no IRQ yet, the main loop polls the RX FIFO's
+  ready bit (WL30 host 0x04 bit 17), as JieLi's receive thread does without the interrupt; the FIFO read is
+  `sdio_recv_int_hdl`'s (0x0324 = 2, a 4-byte DMA for the big-endian length word N, then N + 4 bytes); the RXWI and
+  the trailer by rt2800.h's fields; `RX_FILTER_CFG` from the MAC's defaults (written in stage 4, not 5: receiving
+  needs them); a passive scan per channel into a list of 16. The fixtures are hand-written from IEEE 802.11 until the
+  page's raw frames (pages 7-8) come back from the FM-1. Not run on an FM-1.
 
 ### Stage 5: transmit raw frames, active scan (needs FM-1)
 
@@ -715,6 +721,11 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   (`TX_RTY_CFG`). Send probe requests.
 - **Host**: descriptor encoding tests. **FM-1**: probe responses arrive (hidden networks too); optionally xero
   checks with a phone's WiFi analyser that the FM-1's MAC address shows up.
+- **Built** (docs/WIFI_STAGE4.md "The TX FIFO", "The link"): the FIFO image as `usb_submit_urb` lays it out
+  (JieLi's two words, the TXWI, the frame; frame + 26 bytes by DMA) behind the same queue checks; the 22 defaults
+  with JieLi's `TX_RTY_CFG` (retry limits 31 and 15: what ran on this core, and joining at 1 Mbit/s wants the
+  retries); the address made from the flash part's unique ID on every start instead of kept in a settings sector (the
+  same every time without a flash write). Not run on an FM-1.
 
 ### Stage 6: 802.11 station, open networks (needs FM-1)
 
@@ -722,6 +733,10 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   disconnect and rejoin. A small state machine written from IEEE 802.11-2020 (clauses 11.3, 9.3.3), taking MAC
   programming from rt2x00 and Ralink's staging driver where needed (both GPL-2.0-or-later).
 - **Host**: the state machine with frame fixtures and timeouts. **FM-1**: joins an open hotspot (a phone).
+- **Built** (`fm1wifi_frame.c`; docs/WIFI_STAGE4.md "Scanning and joining"): open-system authentication and
+  association, 3 tries 300 ms apart each, beacon loss after 10 intervals (at least 1 s), deauthentication and
+  disassociation, leaving and rejoining; the BSSID into `MAC_BSSID_DW0/1`. The page joins the open network OPLBOX.
+  Not run on an FM-1.
 
 ### Stage 7: IP over WiFi (parallel with stage 8 after stage 6; needs FM-1)
 
@@ -730,6 +745,14 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   sized to the budget.
 - **Host**: the netif and lwIP run in the host build against a loopback that replays 802.11 data frames; DHCP
   against a scripted server. **FM-1**: gets an address on the open hotspot and answers ping.
+- Built so far (host part, TODO.md 7g): lwIP 2.1.3 from its release tag, unchanged, the IPv4/ARP/DHCP/ICMP/UDP files
+  only (`firmware/wifi/lwip/`, provenance and checksums in its README.md; not the SDK's copy, which JieLi changed), and
+  `firmware/wifi/fm1wifi_net.c`/`.h`: the netif (802.11 data and QoS data frames to Ethernet frames and back over RFC
+  1042 SNAP, ToDS out to the BSSID, FromDS in from it), EAPOL frames to a callback for stage 8, DHCP, state and
+  address getters; `sys_now()` joins the port. `lwipopts.h` takes 6,839 B of RAM (heap 4 KB, receive pool 4 x 512 B);
+  code about 15 KB before `--gc-sections`. `tests/wifi_net.c` plays the AP, a DHCP server and two pinging hosts as
+  802.11 frames (508 checks). Untested on an FM-1 (it needs stages 4-6 for real frames), not linked into OPLBOX and
+  not on the WiFi page yet.
 
 ### Stage 8: WPA2-PSK (parallel with stage 7 after stage 6; needs FM-1)
 
@@ -742,7 +765,13 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   **FM-1**: joins xero's WPA2 network.
 - Built so far (host part, TODO.md 7d): `firmware/wifi/wpa_crypto.c` with the stepped PMK, the PRF and PTK and AES key
   unwrap, on a BearSSL subset (2,932 B, against about 8,914 B for wpa_supplicant's SHA-1/HMAC/AES; 4,109 B with
-  our code). The EAPOL-Key handshakes are still to do.
+  our code). `firmware/wifi/wpa_eapol.c` (1,870 B): the station side of the EAPOL-Key 4-way and group key
+  handshakes (12.7.2, 12.7.6, 12.7.7; AKM 2, CCMP, key descriptor version 2), with the replay counter, MIC, RSNE and
+  GTK KDE checks; it hands TK and GTK to the caller and writes no register. `tests/wifi_eapol.c` replays the
+  4-way handshake recorded in Wireshark's `wpa-Induction.pcap` byte for byte, runs a made-up AP for the group key
+  handshake and rekeys, and checks the refusals. No Annex J vector for the PTK or the EAPOL-Key MIC could be
+  sourced [unchecked]. Untested on hardware and not on the WiFi page; the keys into the MAC's tables and the PMK
+  cache are still to do.
 
 ### Stage 9: OPLBOX integration (needs FM-1)
 

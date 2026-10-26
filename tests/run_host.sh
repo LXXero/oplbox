@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 mkdir -p build/host
 rm -f build/host/oplbox-*.ppm build/host/oplbox-*.png build/host/oplbox.wav
 cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -DDBOPL2_SCOPE_N=512 -Ifirmware/src -Ifirmware/gen \
-   -Ifirmware/wifi -Itests/wifi -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c firmware/wifi/fm1wifi.c tests/wifi/sdio_model.c
+   -Ifirmware/wifi -Itests/wifi -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c tests/wifi/sdio_model.c
 build/host/oplbox build/host/oplbox
 # the editor's undo and live recording, checked against the song in memory: each script exits 1 when a check fails
 build/host/oplbox build/host/undo tests/script_undo.txt
@@ -48,14 +48,27 @@ build/host/slot_sysex_test
 python3 tests/slot_sysex_tool.py build/host/slot_sysex_test build/host
 # the fm1wifi library (firmware/wifi/, docs/WIFI.md "Standalone library") stands alone: compiled with only its own
 # directory and a port (no firmware/src, hal or bsp on the include path), warning-free, and none of its files
-# includes anything from outside it
-for f in firmware/wifi/*.c firmware/wifi/*.h; do
-  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v '"\(fm1wifi[a-z_]*\|wpa_crypto\|bearssl/[a-z_]*\)\.h"'; then
+# includes anything from outside it: its own headers, BearSSL's, and lwIP's (firmware/wifi/lwip/: lwip/*.h with its
+# priv/ and prot/, netif/*.h, arch/cc.h and lwipopts.h, the port's two). The vendored lwIP files are held to the
+# upstream release by their checksums instead (firmware/wifi/lwip/SHA256SUMS: lwIP 2.1.3, unchanged)
+for f in firmware/wifi/*.c firmware/wifi/*.h firmware/wifi/lwip/port/*.h firmware/wifi/lwip/port/arch/*.h; do
+  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v '"\(fm1wifi[a-z_]*\|wpa_crypto\|wpa_eapol\|bearssl/[a-z_]*\|lwip/\(priv/\|prot/\)\{0,1\}[a-z0-9_]*\|netif/[a-z0-9_]*\|arch/cc\|lwipopts\)\.h"'; then
     echo "FAIL: $f includes a file from outside firmware/wifi/" >&2; exit 1; fi
 done
+python3 - <<'PY'
+import hashlib, sys
+from pathlib import Path
+d = Path("firmware/wifi/lwip")
+want = dict(reversed(l.split(None, 1)) for l in (d / "SHA256SUMS").read_text().splitlines())
+have = {str(p.relative_to(d)) for p in (d / "src").rglob("*") if p.is_file()} | {"COPYING"}
+bad = [f for f in sorted(want) if not (d / f).is_file() or hashlib.sha256((d / f).read_bytes()).hexdigest() != want[f]]
+bad += [f"{f} (not in SHA256SUMS)" for f in sorted(have - set(want))]
+if bad: sys.exit("FAIL: firmware/wifi/lwip differs from lwIP 2.1.3: " + ", ".join(bad))
+print(f"lwIP: {len(want)} files as in the 2.1.3 release")
+PY
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -c -o build/host/fm1wifi.o firmware/wifi/fm1wifi.c
 # the register header: the accessors hit their addresses, and every address matches docs/WIFI.md
-cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_regs tests/wifi_regs.c firmware/wifi/fm1wifi.c
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_regs tests/wifi_regs.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c
 build/host/wifi_regs > build/host/wifi_regs.txt
 python3 tests/wifi_regs.py build/host/wifi_regs.txt
 # fm1wifi against the register model (tests/wifi/sdio_model.c, the library's port on the host): the power-up and
@@ -65,10 +78,18 @@ python3 tests/wifi_regs.py build/host/wifi_regs.txt
 # model, record for record (tests/wifi/radio_trace.txt.gz, from tools/wifi_ir.py --trace), its four kinds of wait
 # must end in TIMEOUT when the model never answers, and power-down must put every register back
 gzip -dc tests/wifi/radio_trace.txt.gz > build/host/radio_trace.txt
-cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/wifi/fm1wifi.c
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c
 build/host/wifi_model tests/wifi build/host
 # ... and that test catches a swapped write, a dropped delay and a wait without its bound (8 deliberate bugs)
 python3 tests/wifi_mutants.py build/host
+# stages 4-6 (docs/WIFI_STAGE4.md): the frame code alone (the RX parser on buffers laid out as the FIFO gives them,
+# the scan list, the TX image, the management frames byte for byte, the station's state machine and timeouts), then
+# the driver against the model's FIFOs and scripted access points (the DMA register by register, passive and active
+# scans, a join and what ends it, every wait bounded, the crash record's step)
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_frame tests/wifi_frame.c firmware/wifi/fm1wifi_frame.c
+build/host/wifi_frame
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -Itests/wifi -o build/host/wifi_link tests/wifi_link.c tests/wifi/sdio_model.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c
+build/host/wifi_link tests/wifi
 # the generated tables and the trace are what the SDK's archive gives (only where the SDK is: tools/wifi_ir.py)
 if [ -f "${AC79_SDK:-$HOME/fw-AC79_AIoT_SDK}/cpu/wl82/liba/wl_rf_common.a" ]; then
   python3 tools/wifi_ir.py --check
@@ -82,26 +103,37 @@ build/host/oplbox build/host/wifi tests/script_wifi.txt > build/host/wifi_page.t
 HOST_WIFI_MODEL=tests/wifi/core_bbp_stuck.txt build/host/oplbox build/host/wifi_stuck tests/script_wifi.txt > build/host/wifi_page_stuck.txt
 HOST_WIFI_MODEL=tests/wifi/core_silent.txt build/host/oplbox build/host/wifi_silent tests/script_wifi.txt > build/host/wifi_page_silent.txt
 HOST_WIFI_MODEL=tests/wifi/core_trim_hang.txt build/host/oplbox build/host/wifi_trim tests/script_wifi.txt > build/host/wifi_page_trim.txt
-for want in "wifi page 0: WIFI TEST (STAGE 3)" "wifi page 1: PLAY: POWER UP, TRIM, READ" "wifi page 2: SAVE: LEAVE" \
-            "wifi page 0: WIFI TEST (STAGE 3)    1/4" "wifi page 1: RESULT: OK" "wifi page 2: MAC_CSR0     35920200" \
+for want in "wifi page 0: WIFI TEST (STAGE 6)" "wifi page 1: PLAY: POWER UP, TRIM, READ" "wifi page 2: SAVE: LEAVE" \
+            "wifi page 0: WIFI TEST (STAGE 6)   1/10" "wifi page 1: RESULT: OK" "wifi page 2: MAC_CSR0     35920200" \
             "wifi page 3: MAC_SYS_CTRL 0000000C" "wifi page 4: BBP 0        21" "wifi page 5: PLL BANK  64  MID  95" \
             "wifi page 6: FILTER  141  80  44" "wifi page 7: RAM CHECK: 0 CHANGED" "wifi page 9: PLAY: PAGE 2   SAVE: LEAVE" \
-            "wifi page 0: TRIM  CH  6  PWR 6    2/4" "wifi page 1: TX LO  57  41  DC   -1   0" \
+            "wifi page 0: TRIM  CH  6  PWR 6   2/10" "wifi page 1: TX LO  57  41  DC   -1   0" \
             "wifi page 2: TX GAIN   +5  PHASE   +2 Q" "wifi page 3: RX GAIN  -20  PHASE   +7 I" \
             "wifi page 4: RX DC I +123 +103  +76  +22" "wifi page 5: RX DC Q  -77  -66  -51  -21" \
             "wifi page 6: CCA  1- 5   2K  2K  1K  2K  4K" "wifi page 8: CCA 11-13   2K  1K  1K" \
-            "wifi page 9: PLAY: PAGE 3   SAVE: LEAVE" "wifi page 0: RX CHECK  CH  6        3/4" \
+            "wifi page 9: PLAY: PAGE 3   SAVE: LEAVE" "wifi page 0: RX CHECK  CH  6       3/10" \
             "wifi page 1: VGA GAIN    7   7   7" "wifi page 2: VGA PEAK   50  50  50" "wifi page 3: PEAK AT VGA  0    0" \
             "wifi page 4: PEAK AT VGA 41    0" "wifi page 5: RXFE 80 00  23 82" "wifi page 6: RXFE 0  3A  19 00  20 00" \
-            "wifi page 7: BBP 25  00" "wifi page 9: PLAY: PAGE 4   SAVE: LEAVE" "wifi page 0: SURVEY  200 MS EACH    4/4" \
+            "wifi page 7: BBP 25  00" "wifi page 9: PLAY: PAGE 4   SAVE: LEAVE" "wifi page 0: SURVEY  200 MS EACH   4/10" \
             "wifi page 1:     CCA   BUSY     CCA   BUSY" "wifi page 2: 1  2800  28000  8  2400  24000" \
             "wifi page 7: 6  6400  64000 13  1000  10000" "wifi page 8: 7  4400  44000" \
+            "wifi page 9: PLAY: PAGE 5   SAVE: LEAVE" \
+            "wifi page 0: STEPS                 5/10" "wifi page 1: RADIO   OK" "wifi page 2: SURVEY  OK 13 OF 13 CH" \
+            "wifi page 3: LINK    OK" "wifi page 4: PASSIVE OK 4 NETWORKS" "wifi page 5: ACTIVE  OK 4 ANSWERS" \
+            "wifi page 6: JOIN    OK AID 1" "wifi page 7: STAY 2S OK 20 BEACONS" "wifi page 8: REJOIN  OK" \
+            "wifi page 0: SCAN LIST   4 NETS   6/10" "wifi page 1: HOME        1  -61 WPA2 P" \
+            "wifi page 2: OPLBOX      6  -40 OPEN P" "wifi page 3: OLDROUTER  11  -75 WPA P" "wifi page 4: (HIDDEN)   11  -55 OPEN" \
+            "wifi page 0: RAW FRAMES 1-2       7/10" "wifi page 1: 1 CH  1  BYTES 104" "wifi page 4: FFFFFFFF FFFF0200 00000001" \
+            "wifi page 0: RAW FRAMES 3-4       8/10" "wifi page 0: RX/TX COUNTS          9/10" "wifi page 3: FRAMES 33 BAD 0 TO ME 8" \
+            "wifi page 6: SENT 32 ERR 0" "wifi page 7: TX OK 32 FAIL 0 RETRY 0" "wifi page 8: MAC 16:C6:87:70:CF:3D UID" \
+            "wifi page 0: JOIN OPLBOX          10/10" "wifi page 1: BSSID 02:00:00:00:00:06" "wifi page 2: CH  6  RSSI  -40  OPEN" \
+            "wifi page 3: AUTH  OK" "wifi page 4: ASSOC OK  AID 1" "wifi page 5: 2 S: UP, 20 BEACONS" "wifi page 6: LEFT, REJOIN UP" \
             "wifi page 9: PLAY: PAGE 1   SAVE: LEAVE"; do
   grep -qF "$want" build/host/wifi_page.txt || { echo "FAIL: WiFi page: no line '$want'" >&2; exit 1; }
 done
 for want in "wifi page 1: RESULT: TIMEOUT" "wifi page 2: MAC_CSR0     35920200" "wifi page 4: BBP 0        TIMEOUT" \
-            "wifi page 5: PLL BANK  -" "wifi page 1: NOT REACHED" "wifi page 0: RX CHECK               3/4" \
-            "wifi page 0: SURVEY                 4/4"; do
+            "wifi page 5: PLL BANK  -" "wifi page 1: NOT REACHED" "wifi page 0: RX CHECK              3/10" \
+            "wifi page 0: SURVEY                4/10" "wifi page 3: LINK    NOT REACHED" "wifi page 6: JOIN    NOT REACHED"; do
   grep -qF "$want" build/host/wifi_page_stuck.txt || { echo "FAIL: WiFi page, BBP stuck: no line '$want'" >&2; exit 1; }
 done
 for want in "wifi page 1: RESULT: NO ANSWER" "wifi page 2: MAC_CSR0     00000000" "wifi page 6: FILTER  -"; do
@@ -124,12 +156,39 @@ HOST_WIFI_MODEL=tests/wifi/core_trim_rxdc_q_hang.txt build/host/oplbox build/hos
 for want in "wifi page 1: RESULT: TIMEOUT AT TRIM" "wifi page 4: RX DC I +256   --   --   --" "wifi page 5: RX DC Q   --   --   --   --"; do
   grep -qF "$want" build/host/wifi_page_trim_rxdc_q.txt || { echo "FAIL: WiFi page, timeout at the first RX DC Q measurement: no line '$want'" >&2; exit 1; }
 done
-if grep -qF "NOT REACHED" build/host/wifi_page_trim.txt; then echo "FAIL: WiFi page: a trim timeout reads NOT REACHED" >&2; exit 1; fi
-echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) as expected"
+if grep -q "wifi page 1: NOT REACHED$" build/host/wifi_page_trim.txt; then echo "FAIL: WiFi page: a trim timeout reads NOT REACHED" >&2; exit 1; fi
+# stages 4-6 when a step fails: the RX FIFO's DMA never finishes (the passive scan says so, the rest is not run, the
+# first frame is not kept), and OPLBOX refuses the association (the join says so, with the status code)
+HOST_WIFI_MODEL=tests/wifi/core_model.txt:tests/wifi/aps.txt:tests/wifi/hang_rxdma.txt build/host/oplbox build/host/wifi_rxhang tests/script_wifi.txt > build/host/wifi_page_rxhang.txt
+for want in "wifi page 4: PASSIVE FAIL RX TIMEOUT" "wifi page 5: ACTIVE  NOT REACHED" "wifi page 6: JOIN    NOT REACHED" \
+            "wifi page 1: NO FRAME RECEIVED" "wifi page 1: NOT REACHED: SEE PAGE 5"; do
+  grep -qF "$want" build/host/wifi_page_rxhang.txt || { echo "FAIL: WiFi page, RX DMA hang: no line '$want'" >&2; exit 1; }
+done
+HOST_WIFI_MODEL=tests/wifi/core_model.txt:tests/wifi/aps_refuse.txt build/host/oplbox build/host/wifi_refuse tests/script_wifi.txt > build/host/wifi_page_refuse.txt
+for want in "wifi page 4: PASSIVE OK 1 NETWORK" "wifi page 6: JOIN    FAIL ASSOC REFUSED" "wifi page 7: STAY 2S NOT REACHED" \
+            "wifi page 3: AUTH  OK" "wifi page 4: ASSOC REFUSED, STATUS 17" "wifi page 6: LEFT, REJOIN --"; do
+  grep -qF "$want" build/host/wifi_page_refuse.txt || { echo "FAIL: WiFi page, association refused: no line '$want'" >&2; exit 1; }
+done
+echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) as expected; stages 4-6 failures say where"
 # the WPA2 key primitives (firmware/wifi/wpa_crypto.c on BearSSL): PSK and PRF against IEEE 802.11 J.4.2 / J.3,
 # AES key unwrap against RFC 3394 4.1-4.6, the PMK in main-loop steps, and the refusals
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_crypto tests/wifi_crypto.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c
 build/host/wifi_crypto
+# the station side of the EAPOL-Key 4-way and group key handshakes (firmware/wifi/wpa_eapol.c): Wireshark's recorded
+# wpa-Induction handshake replayed byte for byte, a made-up AP for the group key handshake and rekeys, the refusals
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_eapol tests/wifi_eapol.c firmware/wifi/wpa_eapol.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c
+build/host/wifi_eapol
+# IP over WiFi (firmware/wifi/fm1wifi_net.c on lwIP 2.1.3, docs/WIFI.md stage 7): a test that plays the AP, a DHCP
+# server and two pinging hosts as 802.11 data frames (DHCP with a silent server, ARP, ICMP echo, the drop rules,
+# EAPOL to its callback). lwIP's own files without -Werror (upstream code, a newer compiler may warn), ours with it
+mkdir -p build/host/lwip
+LWIP_INC="-Ifirmware/wifi/lwip/port -Ifirmware/wifi/lwip/src/include"
+for f in firmware/wifi/lwip/src/core/*.c firmware/wifi/lwip/src/core/ipv4/*.c firmware/wifi/lwip/src/netif/*.c; do
+  cc -std=c11 -O2 -Wall -Wextra -DFM1WIFI_NET_DEBUG $LWIP_INC -c "$f" -o "build/host/lwip/$(basename "$f" .c).o"
+done
+cc -std=c11 -O2 -Wall -Wextra -Werror -DFM1WIFI_NET_DEBUG -Ifirmware/wifi $LWIP_INC -o build/host/wifi_net \
+   tests/wifi_net.c firmware/wifi/fm1wifi_net.c build/host/lwip/*.o
+build/host/wifi_net
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c

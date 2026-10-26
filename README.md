@@ -51,11 +51,13 @@ song is stopped the arp keeps the same step length from the song's speed; a new 
 song changes it at once. To play along and keep it: ARP on, K4 to SYNC, play the song and the chord until it sounds
 right; then EDIT, cursor to the row it should start on, and **ARP** writes what you heard (below).
 
-**WiFi test page** (stages 2 and 3 of docs/WIFI.md; for xero to read back off a real FM-1). Outside EDIT press
+**WiFi test page** (stages 2-6 of docs/WIFI.md; for xero to read back off a real FM-1). Outside EDIT press
 **SAVE**: the page opens and says `PLAY: POWER UP, TRIM, READ`. Nothing touches the radio yet. Press **PLAY**: the
 sound stops, the WiFi core is powered up and read (stage 2), then the radio is brought up and calibrated (stage 3:
 the PLL, a fresh trim, channel 6), each of channels 1-13 is surveyed for 200 ms as JieLi's own channel select does,
-and the receive state is read on channel 6. It takes about five seconds (`WORKING`). Page 1:
+and the receive state is read on channel 6. Then stages 4-6 in the same run (docs/WIFI_STAGE4.md): a passive scan, an
+active scan, and joining an open network named `OPLBOX` (make one: a phone's hotspot, open, 2.4 GHz), 2 s joined,
+leaving and joining again. It takes about 10-15 seconds (`WORKING`). Page 1:
 
 ```
 RESULT: OK                    OK, or what went wrong and where: TIMEOUT AT TRIM, NO ANSWER, ...
@@ -68,7 +70,7 @@ RAM CHECK: n CHANGED          bytes of free RAM the hardware wrote (0 is the goo
 FIRST AT xxxxxxxx             the first changed byte's address (only when n is not 0)
 ```
 
-Press **PLAY** again for page 2, again for page 3, again for page 4, and again to go back to page 1. Page 2:
+Press **PLAY** again for page 2, and so on to page 10, then back to page 1. Page 2:
 
 ```
 TRIM  CH  6  PWR 6            the channel and TX power the radio was left on
@@ -86,7 +88,7 @@ Page 3, the receiver's ADC peak outside the trim (main c4aa202's run: it reads o
 page no longer scans with it; docs/WIFI_STAGE3.md "ADC peak 0 on every channel"):
 
 ```
-RX CHECK  CH  6        3/4
+RX CHECK  CH  6       3/10
 VGA GAIN   nn  nn  nn         the VGA gain each trim search settled on (TX LO, TX DC, RX IQ); 36 = it ran to its limit
 VGA PEAK  nnn nnn nnn         the ADC peak each search read last; above 47 ends a search early
 PEAK AT VGA  0  nnn           the ADC peak on channel 6 at VGA gain 0 (where the bring-up leaves it)
@@ -104,7 +106,7 @@ Page 4, the channel survey (docs/WIFI_STAGE3.md "Receive level per channel"): pe
 select reads after 200 ms on it, channels 1-7 on the left, 8-13 on the right:
 
 ```
-SURVEY  200 MS EACH    4/4
+SURVEY  200 MS EACH   4/10
     CCA   BUSY     CCA   BUSY
 1  nnnn  nnnnn  8  nnnn  nnnnn    channel, false CCA count, busy time (rt2800: microseconds, at most 200000)
 ...
@@ -117,7 +119,13 @@ point on them or next to them count more (JieLi's channel select picks the lowes
 `CCA` is not: the busy-time accounting is off on this chip. Both 0 everywhere with access points near: these counters
 do not count either, and a level waits for received frames (stage 4).
 
-Read back everything on all four pages. What would look wrong: `RESULT` other than OK (the word after `AT` says which
+Pages 5-10 are stages 4-6 (how to read them, and what a failure would mean: docs/WIFI_STAGE4.md "Reading pages
+5-10"): page 5 each step's result (`RADIO`, `SURVEY`, `LINK`, `PASSIVE`, `ACTIVE`, `JOIN`, `STAY 2S`, `REJOIN`: OK
+with what it found, FAIL with the reason, or NOT REACHED), page 6 the networks heard (SSID, channel, RSSI, security,
+`P` when it answered a probe), pages 7 and 8 the first four received frames' bytes in hex, page 9 the core's FIFO and
+counter registers and the FM-1's WiFi address, page 10 the join in detail.
+
+Read back everything on all ten pages (a photo of each is enough). What would look wrong: `RESULT` other than OK (the word after `AT` says which
 step stopped: PHY, PLL, TRIM, RF, TABLE), `BBP 0` still `00`, a PLL bank of 0 or 127, a middle bank of 15 (the scan
 found no edge), trim values sitting at the end of their range (TX LO 0 or 127, TX DC ±127, an RX DC near ±510) or a
 filter code of 0 or 255: each means a search ran to its limit (a VGA GAIN of 36 on page 3 too, though JieLi's
@@ -139,7 +147,7 @@ RET xxxxxxxx  SP  xxxxxxxx    the return address and the stack pointer
 ETM xxxxxxxx  xxxxxxxx        the last four branches the trace unit kept
     xxxxxxxx  xxxxxxxx
 RAM CODE SAME AS FLASH        or CHANGED AT xxxxxxxx: the code that runs from RAM was overwritten there
-WIFI AT TX LO I               only for a crash inside the WiFi bring-up: the step it was in
+WIFI AT TX LO I               only for a crash inside the WiFi library: the step it was in (RX READ, TX SEND, ...)
 WR 00011930 = xxxxxxxx        and its last register write (address = value)
 ```
 

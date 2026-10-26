@@ -381,7 +381,7 @@ two bars).
 - No sign of USB power: on USB the count is the charging battery's. Felucca shows a bolt when a USB host is
   configured (`usb.config && !usb.suspended`); OPLBOX could do the same.
 
-## 7. WiFi on our own driver — stage 2 run on the FM-1, stage 3 built, waiting for the FM-1
+## 7. WiFi on our own driver — stages 2-3 run on the FM-1, stages 4-6 built, waiting for the FM-1
 
 xero: "i would rather keep it gpl and just build our own wifi firmware". OPLBOX stays GPL-3.0-only and does not
 link JieLi's binary WiFi archives.
@@ -396,9 +396,10 @@ RT2800 family (Linux `rt2800.h`, GPL-2.0-or-later); the radio and internal bus (
 Linux header lineage in five of thirteen members (see 7c), and the archives are LLVM bitcode, readable as LLVM IR. JieLi's stack (about 330 KB of code) would not fit beside
 OPLBOX (238 KB free) anyway.
 
-**Next.** Stage 2 ran on xero's FM-1 (7e: the core's window answers, `MAC_CSR0` 00300100). Stage 3 is built (7f):
-xero flashes it, opens the WiFi test page (SAVE, then PLAY), and reads both of its pages off the screen (README "WiFi
-test page"). Stage 4 (receiving raw frames) waits for that.
+**Next.** Stages 2 and 3 ran on xero's FM-1 (7e, 7f: the bring-up, the trims, a survey that counts on every
+channel). Stages 4-6 are built in one go (7h): xero makes an open hotspot named OPLBOX, flashes, opens the WiFi test
+page (SAVE, then PLAY) and photographs all ten pages (README "WiFi test page", docs/WIFI_STAGE4.md "Reading pages
+5-10"). Page 5 says where the run stopped; pages 7-9 hold the raw evidence for the next fix. Stage 7's host part (IP on lwIP, 7g) and stage 8's handshakes (7d) are built ahead of the frames they need.
 
 ### 7a. Stage 1, register header — built, host-tested, not yet tried on hardware
 
@@ -518,7 +519,7 @@ Linux version the MMC structures match; the bodies of `usb_submit_urb`, `sdio_re
 and the WEXT functions against upstream; rt2x00's 15 field-built defaults; `hsm.a`'s authorship. None of these
 blocks stages 1-3 under the limits above.
 
-### 7d. Stage 8 host part, WPA2 key primitives — built, host-tested, not yet tried on hardware
+### 7d. Stage 8 host part, WPA2 key primitives and EAPOL-Key handshakes — built, host-tested, not yet tried on hardware
 
 **Built.** `firmware/wifi/wpa_crypto.c`/`.h`, own code from IEEE 802.11-2020 (12.7.1.2 PRF, 12.7.1.3 PTK, J.4
 passphrase to PSK), RFC 8018 (PBKDF2) and RFC 3394 (key unwrap), on a BearSSL subset in `firmware/wifi/bearssl/`
@@ -563,9 +564,59 @@ from the address-literal rule only, because AES's round constant 0x02000000 look
   so stage 9 can change it without touching this code.
 - The unwrap takes any KEK size BearSSL supports (16/24/32), so all six RFC 3394 vectors run; WPA2 uses 16.
 
-**Open.** The EAPOL-Key 4-way and group handshakes (state machine, MIC check, replay counter, key data parsing,
-keys into the MAC's tables at 0x4000-0x7000), caching the PMK per SSID in the WiFi settings sector, and the replay
-of a recorded handshake on the host are the rest of stage 8. Timing on the FM-1 is stage 8's too.
+**Built: the EAPOL-Key handshakes.** `firmware/wifi/wpa_eapol.c`/`.h`, the station (supplicant) side of the 4-way
+and group key handshakes for WPA2-PSK with CCMP (AKM 2, key descriptor version 2: HMAC-SHA1-128 MIC, AES key wrap),
+own code from IEEE 802.11-2020 12.7.2, 12.7.6 and 12.7.7 on `wpa_crypto.c`, no malloc. Not on the WiFi page and not
+run on an FM-1.
+- `wpa_eapol_init` takes the PMK, both MACs, the RSNE the station sent in its association request and the one from
+  the beacon / probe response, and a nonce callback (so the tests are deterministic). `wpa_eapol_rx` takes one EAPOL
+  frame (the 802.1X header onward, as it comes out of LLC/SNAP with ethertype 0x888E), writes the reply (msg 2,
+  msg 4 or group msg 2) into the caller's buffer, and leaves a state (waiting for msg 1, waiting for msg 3, done,
+  failed) and a reason.
+- Checks: descriptor type and version, the key information bits of each message, the replay counter (above every
+  one taken; it moves only on a valid MIC), the ANonce of msg 3 against msg 1's, msg 3's key length (16), the MIC on
+  msg 3 and group msg 1, encrypted key data a multiple of 8 and at least 24 bytes, the RSNE in msg 3 byte for byte
+  against the beacon's (no second RSNE), and the GTK KDE in the unwrapped key data (padding, other KDEs skipped).
+  A frame that fails a check before the MIC is dropped and the state kept; a frame with a valid MIC that fails after
+  it (RSNE, unwrap, no GTK) ends in FAILED with every key wiped, for the caller to deauthenticate.
+- The PTK from msg 1 is held aside until msg 3 verifies under it. A repeated msg 3 or group msg 1 is answered but
+  does not flag the same key for reloading, so reloading cannot reset the MAC's receive counters.
+- Output for a later stage to load into the MAC's key tables (nothing here writes a register): `tk` (CCMP),
+  `gtk`/`gtk_len`/`gtk_idx`/`gtk_tx` and `gtk_rsc`, with `new_keys` saying which changed on that frame.
+
+`tests/wifi_eapol.c` (in `tests/run_host.sh`, 668 checks):
+- the 4-way handshake recorded in Wireshark's sample capture `wpa-Induction.pcap` (SSID "Coherer", passphrase
+  "Induction"): its msg 1 and msg 3 go in with the capture's SNonce, and the msg 2 and msg 4 that come out are the
+  recorded ones byte for byte except the key length field (the recorded station sent 16; this code sends 0, which is
+  what 12.7.6 asks for), with the MIC recomputed for that field. The TK is the one that decrypts the capture's CCMP
+  data frame 99 (checked once with Python's `cryptography`, not in the test); the GTK (TKIP, 32 bytes, key index 2)
+  is the KDE in msg 3. The frames' bytes are in the test, so it needs no network;
+- a made-up AP in the test (AES-128 encryption and RFC 3394 key wrap of its own, checked against FIPS-197 C.1 and
+  RFC 3394 4.1): 4-way handshake, group key handshake, a repeated msg 3 and group msg 1, a PTK rekey; the PTK and the
+  group msg 2 compared with values computed with Python's `hmac`/`hashlib`;
+- the refusals: bad MIC, replayed counters (msg 1, msg 3, group msg 1), descriptor type 254, key descriptor versions
+  0-7 other than 2, wrong key information bits, the wrong ANonce, key length 32, RSNEs that differ from the
+  beacon's (capabilities, group cipher, length, missing, a second one), every truncation of msg 1, key data lengths
+  0-40 that are not multiples of 8 or under 24 and one of 264, a KEK that does not unwrap, no GTK KDE, two GTK KDEs,
+  a 4-byte GTK, a KDE longer than the key data, a nonce source that fails, a reply buffer one byte short, and every
+  single-bit change (bits 0 and 7) to msg 3 and group msg 1.
+
+No PTK or EAPOL-Key MIC vector for AKM 2 could be sourced from IEEE 802.11-2020 Annex J: the Annex J vectors
+wpa_supplicant cites are J.3/J.4 (already in `tests/wifi_crypto.c`), J.10 (SAE), J.12 (PASN) and J.13 (KDK), the
+last three SHA-256 based; the IEEE text was not read [unchecked]. The recorded handshake stands in for one. The test
+also passes under ASan/UBSan. 24 deliberate bugs were planted in `wpa_eapol.c`; it catches the 23 that change
+behaviour (the 24th, `>` to `>=` in the counter compare, cannot: that compare only runs on bytes that differ). It
+missed three at first (any KDE type taken as the GTK, two GTK KDEs, the TK not wiped on a failure after the
+handshake); each has a check now.
+
+**Size.** JieLi clang `-Os`: `wpa_eapol.c` 1,870 B of code and read-only data, no static RAM (about 6 KB with
+`wpa_crypto.c` and the BearSSL subset); the context (`struct wpa_eapol`) is 424 B with 32-bit pointers, in the
+caller's RAM. Stack: `wpa_eapol_rx` about 0.9 KB at its deepest (its own 324-byte frame, then the PRF's or the MIC's
+HMAC contexts, about 0.4 KB) [unchecked on the device]. It uses only `memcpy` and `memset` from the C library.
+
+**Open.** Loading the keys into the MAC's tables (0x4000-0x7000), caching the PMK per SSID in the WiFi settings
+sector, the frames carrying EAPOL to and from the MAC (stages 5-7), and timing on the FM-1 are the rest of stage 8.
+Joining xero's WPA2 network is its hardware check.
 
 ### 7e. Stage 2, first contact, as a standalone library — built, run on xero's FM-1
 
@@ -703,6 +754,80 @@ USB rescue are untouched.
 **Waiting for xero.** Flash, open the page (SAVE, PLAY), read page 1 and page 2 (PLAY switches). Then: whether the
 bring-up completes (`RESULT`), whether BBP 0 comes out of reset, where the PLL and the trims land, what the receiver
 sees per channel, and whether the RAM check stays at 0.
+
+### 7g. Stage 7 host part, IP over WiFi on lwIP — built, host-tested, not yet tried on hardware
+
+**Built.**
+- lwIP 2.1.3 (BSD-3-Clause) in `firmware/wifi/lwip/src/`, the release's files unchanged: `git archive` of tag
+  `STABLE-2_1_3_RELEASE` (commit 6ca936f6) from an lwIP clone already on this machine (the Pico SDK's submodule), the
+  16 `.c` files IPv4, ARP, DHCP, ICMP and UDP need and the 63 headers they include, with `COPYING`. Not the JieLi
+  SDK's copy: JieLi changed 27 of its 37 core `.c` files. `SHA256SUMS` lists every vendored file and
+  `tests/run_host.sh` checks it. `CREDITS.md`, `LICENSING.md` and the directory's README.md say where it is from.
+- `firmware/wifi/lwip/port/lwipopts.h` (`NO_SYS=1`, raw API, no TCP or IPv6) and `arch/cc.h`, ours.
+- `firmware/wifi/fm1wifi_net.c`/`.h`: the network interface. In: data and QoS data frames (QoS control, HT control
+  with the Order bit) with FromDS, addr1 = our MAC or a group address, addr2 = the BSSID, addr3 = the source, RFC 1042
+  SNAP; everything else dropped (other MACs or BSSIDs, ToDS, protected frames, fragments, A-MSDUs, our own
+  broadcasts coming back, other LLC headers). Out: ToDS data frames, addr1 = BSSID, addr2 = our MAC, addr3 = the
+  destination, written in front of lwIP's pbuf without a copy (a chained one is copied into lwIP's heap). EAPOL
+  (0x888E) goes to a callback instead of lwIP, and `fm1wifi_net_eapol_send` sends the handshake's replies, for the
+  WPA2 code (7d's next step). DHCP start and stop, `fm1wifi_net_poll` for the timers, state, address and counters.
+- `sys_now()` (milliseconds) joins `firmware/wifi/fm1wifi_port.h`; the host test has its own clock.
+- `tests/run_host.sh`'s include rule for `firmware/wifi/` now admits lwIP's header names (`lwip/`, `lwip/priv/`,
+  `lwip/prot/`, `netif/`, `arch/cc.h`, `lwipopts.h`) and nothing else; `tools/build.py` compiles `fm1wifi_net.c`
+  with lwIP's include paths and exempts `wifi/lwip/src/` from the address-literal rule only (lwIP's TCP MSS
+  constant 0x02040000 looks like an XIP address), as for BearSSL.
+
+`tests/wifi_net.c` (508 checks; also clean under ASan/UBSan) plays the AP, a DHCP server and two pinging hosts as
+802.11 data frames: DISCOVER retried after 2 and 4 s while the server is silent, OFFER (broadcast), REQUEST with
+options 50 and 54, ACK (unicast) gives 192.168.4.23/24 and the gateway, a gratuitous ARP; ARP requests for our
+address answered, others not; ICMP echo answered in plain, QoS and QoS+HT control frames, 56 and 1,400 bytes
+(chained), and from a host lwIP has to ARP for first, with the IP and ICMP checksums and every 802.11 header field
+checked; a bad ICMP checksum not answered; 15 kinds of frame dropped; EAPOL to the callback and not to lwIP, and
+out; a send hook that refuses; DHCP stop sends a RELEASE (after ARPing for the server); down, and a restart on
+another BSSID; 300 pings answered in a row (the pools do not run dry). 15 deliberate bugs planted by hand in
+`fm1wifi_net.c`: 14 caught; the one missed restores the Ethernet header in a pbuf after sending, which lwIP never
+reads again.
+
+**Size** (JieLi clang `-Os`, objects not linked): RAM 6,839 B, all static (lwIP's heap `MEM_SIZE` 4,096, the receive
+pool 4 x 512 B, ARP table 4 entries; `lwipopts.h` and `firmware/wifi/lwip/README.md` have the breakdown); code and
+read-only data 14,959 B without `--gc-sections` (lwIP 13,411, `fm1wifi_net.c` 1,548). Not added to the firmware
+build: lwIP's files need `string.h`, and the C library's `memcmp` (plus `memmove`, `strlen`, `strncmp`, `atoi`
+unless `--gc-sections` drops their users), which `firmware/src/libc.c` does not have yet.
+
+**Decided** (chosen by the colony; xero can change it): upstream lwIP rather than the SDK's; no TCP yet (UDP is
+there; TCP is the files `tcp*.c` from the same tag when song transfer needs it); no IP fragmentation or reassembly;
+`DHCP_DOES_ARP_CHECK` off (no ARP probe of the offered address); protected frames dropped, so the driver must hand
+frames already decrypted by the MAC with the Protected bit cleared; the TX sequence number counted here, which the
+hardware may replace.
+
+**Open.** Untested on an FM-1 (it needs received frames: stages 4-6), not linked into OPLBOX and not on the WiFi page
+yet. Stack depth in `fm1wifi_net_input` is not measured [unchecked]. The FM-1 test (an address from the hotspot,
+ping answered) is stage 7's hardware part.
+
+### 7h. Stages 4-6, frames, scans and joining an open network — built, host-tested, waiting for the FM-1
+
+xero (2026-10-26): "can you get a few steps going here? i'm tired of doing this one by one". Stages 4, 5 and 6 are
+built together so one FM-1 run tests all of them (docs/WIFI_STAGE4.md).
+
+- **Built.** `fm1wifi.c`: the MAC's 22 defaults and the address, the RX FIFO read and the TX FIFO write through the
+  WL30 host block's DMA (registers, bits and limits read from `wl_sdio`/`wl_usb_to_sdio` as facts), bounded waits,
+  a per-channel scan driver and the station's driver. `fm1wifi_frame.c` (new, pure): the RX descriptor and
+  beacon/probe-response parser, the scan list, the TX image, probe request / authentication / association /
+  deauthentication frames, and the station's state machine (timeouts, beacon loss, deauthentication, leaving,
+  rejoining). The WiFi page runs the link, a passive and an active scan, joins the open network OPLBOX, stays 2 s,
+  leaves and rejoins; pages 5-10 show each step, the scan list, the first four frames' bytes, the core's counters and
+  the join. The address comes from the flash part's unique ID (no settings sector needed). The crash record names
+  the new steps (`WIFI AT RX READ`, `TX SEND`, ...).
+- **Tests.** `tests/wifi_frame.c` (65 checks: parser, scan list, TX image, frames byte for byte, station) and
+  `tests/wifi_link.c` (92 checks: the DMA register by register, passive and active scans against scripted access
+  points in the register model, a join and what ends it, every wait bounded, the crash record during a DMA). The
+  page runs on the host against the made-up core, an RX DMA that never finishes and a refused association.
+- **Untested on hardware**: all of it. In particular whether frames reach the FIFO with the receive path as set up
+  (no IRQ, no 0x0328), whether the RXWI and the trailer are rt2800's, what RSSI0 means, whether `PBF_DBG` lets the TX
+  gate open, whether a frame goes out at CCK 1 Mbit/s, and whether an AP answers. Page 5's first FAIL and pages 7-9
+  are for that.
+- **Not on the page yet**: stage 7 (IP over lwIP) and stage 8 (the WPA2 handshakes), both host-built; they join once
+  an open join works on the FM-1.
 
 ## 8. Bluetooth LE MIDI on code we can ship — stage 0 done (the map)
 

@@ -7,17 +7,21 @@
  * diagnostic snapshot, and a RAM pattern check (run on xero's FM-1 on 2026-10-26: MAC_CSR0 00300100).
  * Stage 3: the radio's power-up and calibration (docs/WIFI_STAGE3.md), a channel, the TX power, the receiver's
  * ADC peak, a channel survey (the false CCA count and busy time JieLi's channel select reads). Its first run on an FM-1 (2026-10-26) crashed (docs/WIFI_STAGE3.md "First run on an FM-1").
+ * Stages 4-6 (docs/WIFI_STAGE4.md): the MAC's defaults and address, the frame FIFOs (one received frame, one frame
+ * sent), a passive or active scan of one channel, and joining an open network as a station; the frames themselves
+ * are fm1wifi_frame.h's. Not run on an FM-1 yet.
  */
 #pragma once
 #include <stdint.h>
 #include "fm1wifi_regs.h"
 
-/* OK; ENOTYET: not built yet (the frame FIFOs, stages 4-5); ERANGE: an argument out of range, nothing done;
- * EBUS: the core answered nothing a working one would (reads of 0 or all ones); ETIMEOUT: a bounded wait ran
- * out; ESTATE: the core is not powered up (its window is never touched then). */
+/* OK; ENOTYET: not built yet; ERANGE: an argument out of range, nothing done; EBUS: the core answered nothing a
+ * working one would (reads of 0 or all ones); ETIMEOUT: a bounded wait ran out; ESTATE: the core (or the radio, or
+ * the link) is not up (its window is never touched then); EFRAME: a frame the FIFO gave does not hold together
+ * (a length word of 0 or past 4088, a descriptor longer than the frame). */
 enum { FM1WIFI_OK = 0, FM1WIFI_ENOTYET = -1, FM1WIFI_ERANGE = -2, FM1WIFI_EBUS = -3, FM1WIFI_ETIMEOUT = -4,
-       FM1WIFI_ESTATE = -5 };
-const char *fm1wifi_strerror(int err);   /* "OK", "NOT YET", "RANGE", "NO ANSWER", "TIMEOUT", "OFF" */
+       FM1WIFI_ESTATE = -5, FM1WIFI_EFRAME = -6 };
+const char *fm1wifi_strerror(int err);   /* "OK", "NOT YET", "RANGE", "NO ANSWER", "TIMEOUT", "OFF", "BAD FRAME" */
 
 /* CPU-side registers by index; an index past the block reads 0 / writes nothing. Usable without power-up. */
 uint32_t fm1wifi_wla_rd(unsigned n);
@@ -43,7 +47,7 @@ int fm1wifi_is_up(void);
 
 /* The MAC registers (function 1 addresses: MAC_CSR0, MAC_SYS_CTRL, ...), through the core's window. Only once
  * powered up (else FM1WIFI_ESTATE); an address not word-aligned or past the window is FM1WIFI_ERANGE. The two
- * frame FIFO addresses go through the DMA engine instead: FM1WIFI_ENOTYET until stages 4-5. */
+ * frame FIFO addresses go through the DMA engine instead (fm1wifi_rx_read, fm1wifi_tx_send): FM1WIFI_ENOTYET here. */
 int fm1wifi_mac_rd(uint32_t addr, uint32_t *v);
 int fm1wifi_mac_wr(uint32_t addr, uint32_t v);
 
@@ -160,10 +164,82 @@ typedef struct {
 } fm1wifi_survey;
 int fm1wifi_channel_survey(unsigned ch, unsigned ms, fm1wifi_survey *s);
 
+/* ---- stages 4-6: the frames (docs/WIFI_STAGE4.md; the formats and the station are fm1wifi_frame.h's)
+ *
+ * After fm1wifi_radio_up. Every wait is bounded (FM1WIFI_DMA_TRIES reads 1 us apart for a DMA, FM1WIFI_TXQ_TRIES
+ * 10 us apart for room in the TX queue): FM1WIFI_ETIMEOUT, never a hang. The library's clock for the scan and the
+ * station is the time it spends in the port's delay. */
+#include "fm1wifi_frame.h"
+#define FM1WIFI_DMA_TRIES 1000u
+#define FM1WIFI_TXQ_TRIES 1000u
+
+/* The link: the MAC's 22 defaults (MACRegTable, as JieLi's NICInitializeAsic writes them after wfhw_init; docs/
+ * WIFI_STAGE4.md "The MAC's defaults"), the address mac in MAC_ADDR_DW0/1 (the MAC keeps unicast frames to it and
+ * ACKs them), no BSSID, channel ch. FM1WIFI_ESTATE before fm1wifi_radio_up. */
+int fm1wifi_link_up(const uint8_t mac[6], unsigned ch);
+int fm1wifi_link_is_up(void);
+int fm1wifi_set_bssid(const uint8_t bssid[6]);      /* MAC_BSSID_DW0/1 (0: all zero) */
+/* Channel 1-13 as the survey switches it (WF_CON7, TX_BAND_CFG, TX_PIN_CFG; fm1wifi_channel_survey) */
+int fm1wifi_tune(unsigned ch);
+
+/* 1 when a received frame waits in the RX FIFO (the WL30 host block's 0x04 bit 17, what JieLi's receive handler
+ * tests), 0 when not or the link is not up. */
+int fm1wifi_rx_ready(void);
+/* Read one frame from the RX FIFO into buf (word-aligned, cap >= FM1WIFI_RX_BUF bytes): JieLi's register 0x0324 = 2,
+ * a 4-byte DMA for the length word N, then a DMA of N + 4 (the frame and its trailer); the length word and the
+ * trailer are put into CPU order. *n gets N + 8, what fm1wifi_rx_parse takes. FM1WIFI_EFRAME for a length word of 0
+ * or past FM1WIFI_RX_LEN_MAX (the frame is then not read: the FIFO's state is unknown); ETIMEOUT for a DMA that does
+ * not finish. */
+int fm1wifi_rx_read(uint8_t *buf, uint32_t cap, uint32_t *n);
+/* Send the image fm1wifi_tx_image built (img word-aligned, dma_len its return value): wait for room in the TX queue
+ * as JieLi's usb_submit_urb does (docs/WIFI_STAGE4.md "The TX FIFO"), then the DMA from img + 4. */
+int fm1wifi_tx_send(uint8_t *img, uint32_t dma_len);
+
+/* Evidence for the WiFi page: the WL30 host block's 0x04 and TXRXQ_PCNT as they read now, and the statistics
+ * counters (which clear when read) added up since the last fm1wifi_counters_clear. */
+typedef struct {
+    uint32_t host04, txrxq;
+    uint32_t crc_err, phy_err, rx_dup, rx_overflow;    /* RX_STA_CNT0, RX_STA_CNT2 */
+    uint32_t tx_fail, tx_ok, tx_retry, tx_underflow;   /* TX_STA_CNT0, CNT1, CNT2 */
+} fm1wifi_counters;
+void fm1wifi_counters_clear(fm1wifi_counters *c);  /* reads the counters once to clear them */
+int fm1wifi_counters_add(fm1wifi_counters *c);
+
+/* What the frame functions below saw: counts, the first frames' first FM1WIFI_RAW_LEN bytes as the FIFO gave them
+ * (length word, RXWI, the header's start), whatever they parse to. Clear it (all zero) before the first call. */
+#define FM1WIFI_RAW_N 4u
+#define FM1WIFI_RAW_LEN 36u
+typedef struct {
+    uint32_t frames;          /* frames read from the FIFO */
+    uint32_t bad;             /* of those, ones fm1wifi_rx_parse refused */
+    uint32_t beacons, probe_resps, to_us;   /* beacons, probe responses, frames for our address */
+    uint32_t tx, tx_err;      /* frames sent; sends that failed */
+    int rx_err, tx_errno;     /* the first receive / send error (FM1WIFI_OK: none) */
+    uint8_t n_raw;
+    uint8_t raw_ch[FM1WIFI_RAW_N];
+    uint16_t raw_n[FM1WIFI_RAW_N];   /* bytes the frame had (N + 8) */
+    uint8_t raw[FM1WIFI_RAW_N][FM1WIFI_RAW_LEN];
+} fm1wifi_frames;
+
+/* One channel of a scan: tune to ch, for an active scan send a probe request for any network (and one for ssid, if
+ * given: a hidden network answers only that), then listen for ms milliseconds (1-1000), every beacon and probe
+ * response into l. FM1WIFI_OK, or the first error (a failed probe request does not stop the listening). */
+int fm1wifi_scan_channel(unsigned ch, unsigned ms, int active, const char *ssid, fm1wifi_scan_list *l, fm1wifi_frames *fr);
+/* Join b as the station s (fm1wifi_sta_start): tune to b's channel, set the BSSID, then run the station until it is
+ * UP or DOWN, at most ms milliseconds (still AUTH or ASSOC then). FM1WIFI_OK unless the hardware failed. */
+int fm1wifi_join(fm1wifi_sta *s, const fm1wifi_bss *b, unsigned ms, fm1wifi_frames *fr);
+/* Stay joined for ms milliseconds: the station counts the BSS's beacons and goes DOWN on a deauthentication,
+ * a disassociation or a lost beacon. */
+int fm1wifi_listen(fm1wifi_sta *s, unsigned ms, fm1wifi_frames *fr);
+/* Leave the BSS: the deauthentication frame, the station DOWN (fm1wifi_sta_leave). */
+int fm1wifi_leave(fm1wifi_sta *s, fm1wifi_frames *fr);
+/* The address the link uses (fm1wifi_link_up's mac). */
+const uint8_t *fm1wifi_link_mac(void);
+
 /* ---- where a crash happened: the step the library is in and its last register write
  *
- * fm1wifi_power_up, _power_down, _diag_read, _radio_up, _set_channel, _set_power, _adc_peak, _rx_probe and
- * _channel_survey set fm1wifi_where
+ * fm1wifi_power_up, _power_down, _diag_read, _radio_up, _set_channel, _set_power, _adc_peak, _rx_probe,
+ * _channel_survey, _link_up, _set_bssid, _tune, _rx_read, _tx_send and _counters_* set fm1wifi_where
  * before each of their steps (step, then magic) and clear magic when they return; every CPU-side register write
  * the library makes (the radio's analog controls, JL_WL, the core's window) records its address and value just
  * before it is made. So a crash handler that finds magic ==
@@ -193,6 +269,8 @@ enum {
     FM1WIFI_STEP_RF_DONE, FM1WIFI_STEP_PA, FM1WIFI_STEP_RF_GAIN, FM1WIFI_STEP_VGA0, FM1WIFI_STEP_PHY_INIT_A2,
     FM1WIFI_STEP_AGC2, FM1WIFI_STEP_PHY_INIT_B2, FM1WIFI_STEP_CFR1, FM1WIFI_STEP_RAPP, FM1WIFI_STEP_RAM_TABLE,
     FM1WIFI_STEP_BSB_AUTO, FM1WIFI_STEP_CHANNEL6, FM1WIFI_STEP_MCS_GAIN, FM1WIFI_STEP_SET_CHANNEL,
-    FM1WIFI_STEP_SET_POWER, FM1WIFI_STEP_ADC_PEAK, FM1WIFI_STEP_RX_PROBE, FM1WIFI_STEP_SURVEY, FM1WIFI_STEP_N
+    FM1WIFI_STEP_SET_POWER, FM1WIFI_STEP_ADC_PEAK, FM1WIFI_STEP_RX_PROBE, FM1WIFI_STEP_SURVEY,
+    FM1WIFI_STEP_LINK_UP, FM1WIFI_STEP_SET_BSSID, FM1WIFI_STEP_TUNE, FM1WIFI_STEP_RX_READ, FM1WIFI_STEP_TX_SEND,
+    FM1WIFI_STEP_COUNTERS, FM1WIFI_STEP_N
 };
 const char *fm1wifi_step_name(uint32_t step);   /* "RF_INIT", "TX LO I", ...: at most 18 characters; "?" past the list */
