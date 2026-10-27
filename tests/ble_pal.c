@@ -169,8 +169,9 @@ int main(void)
           "the SCAN_RSP: type 4, our address, the host's scan response data");
     check(pal_fm1_state()->resp_late == 0, "the response was put in before T_IFS");
     check(C.adv_scan_rsp == 0, "the advertising PDU still on the channels after the SCAN_REQ, not the response");
-    /* the response is kept in its buffer: with no interrupt (the PAL polled from the loop, as on the FM-1 now) a later
-     * SCAN_REQ is answered from it, though Cordio hands it over too late for T_IFS */
+    /* each advertising event reloads the response from Cordio's operation. With no interrupt (the PAL polled from the
+     * loop, as on the FM-1 now), a later SCAN_REQ gets the response armed for that event, though Cordio hands it over
+     * too late for T_IFS */
     {
         bb_air polled = AIR;
         uint32_t late = pal_fm1_state()->resp_late;
@@ -182,7 +183,7 @@ int main(void)
         run_us(100000);
         bbm.air = &AIR;
         check(C.scan_rsp == 1 && C.rsp_n == 2 + 6 + 8 && (C.rsp[0] & 0xF) == 4 && !memcmp(C.rsp + 10, "OPLBOX", 6),
-              "polled from the loop: a second SCAN_REQ answered with the kept SCAN_RSP");
+              "polled from the loop: a second SCAN_REQ answered with the SCAN_RSP armed for that event");
         check(pal_fm1_state()->resp_late == late + 1u && pal_fm1_state()->stuck == 0,
               "polled: Cordio's response counted late, every operation still completed");
         /* the host changes the scan response while advertising goes on: the next SCAN_REQ, still polled (Cordio's own
