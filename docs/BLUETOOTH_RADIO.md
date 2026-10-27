@@ -397,7 +397,11 @@ ADV_DIRECT_IND), bit 5 is where `set_tx_pdu_channel_selection_algorithm` (not re
 6-byte advertiser address, which software copies in** (from the entity's local address); the advertising data follows;
 and the length byte counts both (`adv_len + 6`). ADV_DIRECT_IND payload = advertiser address then initiator address (length 12).
 `ble_hw_tx(buffer, index)` writes the offset of `buffer + 0x14` to TXPTR0 or TXPTR1 (only when the length is nonzero),
-TXAHDR = `((hdr >> 2) & 0x30) | (hdr & 0xF)` and TXDHDR = a mix of header bits 5-4, 9 and bit 2 of the old value, from IR. The
+TXAHDR = `((hdr >> 2) & 0x30) | (hdr & 0xF)` and **TXDHDR = `length << 8 | (old TXDHDR & 4) | ((hdr >> 6) & 8) | ((hdr >> 4) & 3)`**
+(from IR, read 2026-10-27 from the `ble_hw_tx` body's stores: `length` is the buffer's byte at +0x12, 0 when the length is 0),
+for advertising buffers as much as for data ones: the PDU's length goes into TXDHDR bits 15-8, as the received length comes
+back in RXDHDR bits 15-8 (E.5). [unchecked] whether the hardware takes the length from TXDHDR or from +0x12; JieLi writes both.
+`ble_hw_tx` is called with the buffer index the hardware will send next: see "TX and RX toggles" below. The
 scan response is TX buffer 1 with type 4 and length `scan_rsp_len + 6`; for ADV_DIRECT_IND buffer 1 is a second copy.
 
 **E.5 RX buffers** (`struct ble_rx`, allocated 0x14 + 0xFF for advertising): offset 0x00 list head (software); **0x08 a 16-bit word
@@ -421,6 +425,22 @@ and copies the fields above. RXSTAT: bit 8 is "this packet acknowledges ours" (`
 clamps the level to 0..`bt_get_pwr_max_level()` and to `rf.field0 >> 12` (the chip's maximum BLE level, 0 at reset), and writes
 **0x120 and 0x128 = 0x10 + level** as 32-bit words. `ble_agc_normal_set` writes a software byte (+0x1D0) from a field of the block
 (bits 13-8 of the word at 0x13C) and no register. Both are called at open with level 25 for AGC and the maximum for power.
+
+**TX and RX toggles** (from IR, read 2026-10-27: `__set_hw_frame_init_4_2`, `ble_event_irq_handler`, `ble_rx_irq_handler`).
+TXTOG (+0x0E) and RXTOG (+0x10) are written by software once, 0 at open, and never again; both handlers read them. The event
+handler, in the advertising state, re-points the two TX buffers at the end of every event: the advertising PDU with
+`ble_hw_tx(..., TXTOG & 1)` and the second PDU (the scan response) with index `(TXTOG & 1) ^ 1`. The receive handler takes the
+RX buffers in the order `RXTOG & 1`, then the other. So the hardware changes TXTOG and RXTOG [from use: the bit table is
+unchecked], and bit 0 of TXTOG names the TX buffer it sends next. Two consequences for a driver: (1) after each advertising
+event the advertising PDU must be at TXPTR[TXTOG & 1], or the next event sends the scan response (or whatever the other
+buffer holds) as its advertisement; (2) a change of TXTOG is the hardware's own record that it sent a buffer, the only
+transmit evidence in the IR (there is no transmit interrupt: D.4 has the event-done and packet-received bits only).
+
+**The TX power level** (`cpu/wl82/liba/btctrler.a` `RF.c.o` `bt_max_pwr_set`, from IR; `apps/common/config/user_cfg.c`, SDK
+source): `bt_max_pwr_set(pwr, pg_pwr, iq_pwr, ble_pwr)` stores `ble_pwr << 12 | (iq_pwr & 0xF) << 8 | pg_pwr << 4 | (pwr & 0xF)`
+as `rf` field 0, so `rf.field0 >> 12` in E.7 is the BLE level the application set. The SDK's applications call it with
+`ble_power` = 6 unless the configuration store holds another value (user_cfg.c: "0-11", default 6), so JieLi's BLE advertises at
+TXPWR = 0x16. Level 0 (0x10), which a driver that reads `rf.field0` as 0 at reset ends up with, is the lowest level.
 
 ### F. Channels and the PLL table
 
