@@ -125,7 +125,7 @@ for line in open(PAGES):
         n, text = line.split(" ble page ", 1)[1].rstrip("\n").split(": ", 1)
         if not text.startswith("PLAY: PAGE") and text:
             drawn.append(text)
-start = drawn.index("BLUETOOTH TEST (STAGE 5)   1/13")              # the run's page 1, then PLAY through to page 13
+start = drawn.index("BLUETOOTH TEST (STAGE 5)   1/14")              # the run's page 1, then PLAY through to page 14
 text = [t for t in rep["text"].split("\n") if t]
 first = text[:text.index("STEPS IN FULL: NAME, RESULT, MS, NOTE")]
 check(drawn[start:start + len(first)] == first, "the report's text is not the pages' text:\n" +

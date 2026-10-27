@@ -2670,11 +2670,11 @@ static void wifi_page(void)
 
 
 /* ---- the Bluetooth test page (docs/BLUETOOTH_PAGE.md): the steps of fm1ble_test.h, one line each, then each step's
- * evidence and the counters, 13 pages; its report (ble_sysex.c) is those pages' text, then the counters and the steps'
+ * evidence and the counters, 14 pages; its report (ble_sysex.c) is those pages' text, then the counters and the steps'
  * raw bytes. Built like the WiFi page's: a run asked for over USB opens it and starts as PLAY does. */
 #define BLE_CTR_PAGES (FM1BLE_N_CTR / 8u)        /* 8 counters a page */
-#define BLE_PAGES (1u + FM1BLE_STEPS + BLE_CTR_PAGES)   /* 1 list, 8 steps, 4 of counters: 13 */
-#define BLE_TEXT_MAX 3072u
+#define BLE_PAGES (1u + FM1BLE_STEPS + BLE_CTR_PAGES)   /* 1 list, 8 steps, 5 of counters: 14 */
+#define BLE_TEXT_MAX 4096u                       /* 3072 cut the FM-1's report at 122afe3 (13 pages) */
 #define BLE_REPORT_MAX (WR_HEAD + BLE_TEXT_MAX + 2u + 4u * FM1BLE_N_CTR + FM1BLE_STEPS * (6u + FM1BLE_RAW))
 static uint8_t ble_rep[BLE_REPORT_MAX] __attribute__((section(".pool")));
 static fm1ble_run ble_run __attribute__((section(".pool")));

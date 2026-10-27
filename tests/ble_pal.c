@@ -95,6 +95,7 @@ int main(void)
     pal_fm1_cfg pc;
     uint8_t buf[40], data[31], nd;
     uint16_t handle = 0xFFFF;
+    uint32_t late0 = 0;
     int i, k;
 
     bb_model_reset();
@@ -136,10 +137,20 @@ int main(void)
      * each, in a rotated order */
     check(C.nchan >= 6 && C.chan_order[0] + C.chan_order[1] + C.chan_order[2] == 114 && C.chan_order[0] != C.chan_order[1] &&
           C.chan_order[1] != C.chan_order[2] && C.chan_order[3] == C.chan_order[0], "each event: 37, 38 and 39 once each, the same order every event");
-    /* inside an event Cordio puts the next channel the scheduler's setup delay (2 ms here) after the last one's end: the
-     * packet goes when Cordio said, not when the PAL was asked, and well inside the 10 ms the specification allows */
-    check(C.nchan >= 3 && C.chan_t[1] - C.chan_t[0] >= 2000u && C.chan_t[1] - C.chan_t[0] < 10000u &&
-          C.chan_t[2] - C.chan_t[1] >= 2000u && C.chan_t[2] - C.chan_t[1] < 10000u, "the packets of an event 2 to 10 ms apart, at Cordio's times");
+    /* the hardware hops inside one event (the advertising the FM-1 put on the air at 122afe3): 37, 38, 39 in that order
+     * whatever channel Cordio asked for first, well inside the 10 ms the specification allows between them */
+    check(C.nchan >= 3 && C.chan_order[0] == 37 && C.chan_order[1] == 38 && C.chan_order[2] == 39 &&
+          C.chan_t[1] > C.chan_t[0] && C.chan_t[1] - C.chan_t[0] < 10000u && C.chan_t[2] > C.chan_t[1] &&
+          C.chan_t[2] - C.chan_t[1] < 10000u, "an event's packets on 37, 38, 39 in order, under 10 ms apart");
+    check(bbm.one_chan == 0, "no one-channel advertising event (hop 0: never heard from the FM-1, on 38 and 39 never ended)");
+    {
+        const pal_fm1_stats *st = pal_fm1_state();
+        check(st->adv_events >= 3 && st->adv_covered == 2u * st->adv_events && st->adv_ops == 3u * st->adv_events,
+              "one hardware event for each of Cordio's events: its other two packets go in it");
+        check(st->adv_ended == st->adv_events, "the baseband ended every advertising event (its flag)");
+        check(st->adv_done[0] == st->adv_events && st->adv_done[1] == st->adv_events && st->adv_done[2] == st->adv_events,
+              "every one of Cordio's packets completed, as many on 37, 38 and 39");
+    }
     check(C.last_adv_n == 2 + 6 + nd && (C.last_adv[0] & 0xF) == 0 && !memcmp(C.last_adv + 2, PERIPH, 6) &&
           !memcmp(C.last_adv + 8, data, nd), "the ADV_IND on the air: header, our address, the host's data");
     check(pal_fm1_state()->stuck == 0 && pal_fm1_state()->refused == 0, "no operation stuck or refused");
@@ -157,6 +168,24 @@ int main(void)
     check(C.rsp_n == 2 + 6 + 8 && (C.rsp[0] & 0xF) == 4 && !memcmp(C.rsp + 2, PERIPH, 6) && !memcmp(C.rsp + 10, "OPLBOX", 6),
           "the SCAN_RSP: type 4, our address, the host's scan response data");
     check(pal_fm1_state()->resp_late == 0, "the response was put in before T_IFS");
+    /* the response is kept in its buffer: with no interrupt (the PAL polled from the loop, as on the FM-1 now) a later
+     * SCAN_REQ is answered from it, though Cordio hands it over too late for T_IFS */
+    {
+        bb_air polled = AIR;
+        uint32_t late = pal_fm1_state()->resp_late;
+        polled.irq = 0;
+        bbm.air = &polled;
+        C.want_scan = 1;
+        C.scan_rsp = 0;
+        C.rsp_n = 0;
+        run_us(100000);
+        bbm.air = &AIR;
+        check(C.scan_rsp == 1 && C.rsp_n == 2 + 6 + 8 && (C.rsp[0] & 0xF) == 4 && !memcmp(C.rsp + 10, "OPLBOX", 6),
+              "polled from the loop: a second SCAN_REQ answered with the kept SCAN_RSP");
+        check(pal_fm1_state()->resp_late == late + 1u && pal_fm1_state()->stuck == 0,
+              "polled: Cordio's response counted late, every operation still completed");
+        late0 = pal_fm1_state()->resp_late;
+    }
 
     /* a central connects */
     g_nev = 0;
@@ -170,6 +199,8 @@ int main(void)
         check((g_ev[k][14] | g_ev[k][15] << 8) == CONN_ITVL && (g_ev[k][18] | g_ev[k][19] << 8) == 200, "the interval and timeout the central asked for");
     }
     check(C.events >= 6 && C.heard >= 6, "connection events: the peripheral listens and answers T_IFS after the central");
+    check(pal_fm1_state()->adv_conn_ind == 1, "the CONNECT_IND ended its advertising event");
+    check(pal_fm1_state()->conn_ended >= 6 && pal_fm1_state()->conn_rx >= 6, "the PAL counts the connection events ended and their packets");
     check(C.chan_bad == 0 && C.aa_bad == 0, "every event on the channel CSA #1 gives, with the connection's access address and CRC init");
     check(C.events >= 3 && C.chan_seq[0] == CONN_HOP && C.chan_seq[1] == 2 * CONN_HOP && C.chan_seq[2] == 3 * CONN_HOP,
           "the first channels: hop, 2 hop, 3 hop");
@@ -201,7 +232,7 @@ int main(void)
               "the central gets it in one data PDU, LLID 2");
         check(find_ev(0, 0x13, 0) >= 0, "Number Of Completed Packets to the host once it was acknowledged");
     }
-    check(pal_fm1_state()->resp_late == 0 && pal_fm1_state()->stuck == 0, "every response in time, no operation stuck");
+    check(pal_fm1_state()->resp_late == late0 && pal_fm1_state()->stuck == 0, "every response in time, no operation stuck");
 
     /* the central ends it: LL_TERMINATE_IND, remote user terminated */
     g_nev = 0;

@@ -112,8 +112,11 @@ static void counters(fm1ble_run *r)
     r->ctr[FM1BLE_C_RX_STAT] = (uint32_t)d->rx_stat[0] | (uint32_t)d->rx_stat[1] << 16;
     r->ctr[FM1BLE_C_RX_TYPE] = d->rx_last_type;
     r->ctr[FM1BLE_C_RX_LEN] = d->rx_last_len;
-    /* the PAL's (pal_fm1.h): operations armed, receive completions, responses too late for T_IFS, operations the baseband
-     * never ended, the most the scheduler's timer fired late; and the advertising operations that ended, per channel */
+    /* the PAL's (pal_fm1.h): Cordio's operations, receive completions, responses too late for T_IFS, operations the
+     * baseband never ended, the most the scheduler's timer fired late; Cordio's advertising packets completed, per channel;
+     * the hardware advertising events armed, the packets that went in one already armed, the events the baseband ended
+     * and the ones a CONNECT_IND ended; connection events the baseband ended and the packets received in them; operations
+     * the driver refused; and the entity's EVTCOUNT word, which the hardware writes */
     r->ctr[FM1BLE_C_PAL_ADV_OPS] = p->adv_ops;
     r->ctr[FM1BLE_C_PAL_CONN_OPS] = p->conn_ops;
     r->ctr[FM1BLE_C_PAL_RX_OK] = p->rx_ok;
@@ -121,11 +124,20 @@ static void counters(fm1ble_run *r)
     r->ctr[FM1BLE_C_PAL_RESP_LATE] = p->resp_late;
     r->ctr[FM1BLE_C_PAL_STUCK] = p->stuck;
     r->ctr[FM1BLE_C_PAL_TIMER_LATE_US] = p->timer_late_us;
-    r->ctr[FM1BLE_C_PAL_DONE_37] = d->op_done[0];
-    r->ctr[FM1BLE_C_PAL_DONE_38] = d->op_done[1];
-    r->ctr[FM1BLE_C_PAL_DONE_39] = d->op_done[2];
+    r->ctr[FM1BLE_C_PAL_DONE_37] = p->adv_done[0];
+    r->ctr[FM1BLE_C_PAL_DONE_38] = p->adv_done[1];
+    r->ctr[FM1BLE_C_PAL_DONE_39] = p->adv_done[2];
     r->ctr[FM1BLE_C_TXPWR] = g_b.txpwr;
     r->ctr[FM1BLE_C_RAM_END] = d->ram_end;
+    r->ctr[FM1BLE_C_PAL_ADV_EVENTS] = p->adv_events;
+    r->ctr[FM1BLE_C_PAL_ADV_COVERED] = p->adv_covered;
+    r->ctr[FM1BLE_C_PAL_ADV_ENDED] = p->adv_ended;
+    r->ctr[FM1BLE_C_PAL_ADV_CONN_IND] = p->adv_conn_ind;
+    r->ctr[FM1BLE_C_PAL_CONN_ENDED] = p->conn_ended;
+    r->ctr[FM1BLE_C_PAL_CONN_RX] = p->conn_rx;
+    r->ctr[FM1BLE_C_PAL_REFUSED] = p->refused;
+    if (g_b.blk)
+        r->ctr[FM1BLE_C_EVTCOUNT] = (uint32_t)(g_b.blk[g_b.entity + FM1BLE_E_EVTCOUNT] | g_b.blk[g_b.entity + FM1BLE_E_EVTCOUNT + 1u] << 8);
 }
 
 /* the addresses: made-up static random ones (the FM-1 has no device address: docs/BLUETOOTH_RADIO.md PalCfgLoadData),

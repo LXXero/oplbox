@@ -31,13 +31,13 @@ unchanged; SAVE on the Bluetooth page returns to the WiFi page's first screen, S
 
 ## The page
 
-Thirteen pages, PLAY turns them, the last one back to the first:
+Fourteen pages, PLAY turns them, the last one back to the first:
 
 | Page | Shows |
 | --- | --- |
 | 1 | the eight steps, one line each: name, PASS / FAIL / SKIP (`--` before it ran), the first 20 characters of the note |
 | 2-9 | one step each: the result and its time in ms, the note (two lines of 32 characters), how many bytes of evidence it kept and the first 40 of them, 10 to a line |
-| 10-13 | the 32 counters, 8 to a page, as 32-bit hex |
+| 10-14 | the 40 counters, 8 to a page, as 32-bit hex |
 
 A step that cannot run because an earlier one failed is SKIP, with the note `skipped: an earlier step failed`; with a
 wait of 0 the connect and MIDI steps are SKIP with `skipped: no wait for a central`. SAVE during a run leaves at once and
@@ -70,10 +70,16 @@ The counters (`fm1ble_ctr_name`, `FM1BLE_CTR_NAMES` in fm1ble_test.h, the tool's
 last power-up), `tx_flips` (events after which TXTOG had changed), `rx_packets`, `rx_scan_req`, `rx_conn_ind`, `rx_other`,
 `pending_last`, `bb_err`, `air_trials` (bit n: trial n showed it sent), `txtog`, `rearm_used`, `adv_err`, `rx_hdr`,
 `rx_stat`, `rx_type`, `rx_len`; the PAL's (`firmware/ble/cordio_port/pal_fm1.c`): `pal_adv_ops` and `pal_conn_ops`
-(operations armed), `pal_rx_ok` and `pal_rx_timeout` (receive completions given to Cordio), `pal_resp_late` (responses asked
-for after their event had ended, too late for T_IFS), `pal_stuck` (operations the baseband never ended), `pal_timer_late_us`
-(the most the scheduler's timer fired late), `pal_done_37`, `_38`, `_39` (advertising operations that ended, per channel);
-then `txpwr` (the stack's TX level) and `ram_end` (0x2FCBC as read back). The PAL runs from the main loop in this build: a
+(Cordio's operations), `pal_rx_ok` and `pal_rx_timeout` (receive completions given to Cordio), `pal_resp_late` (responses
+asked for after their event had ended, too late for T_IFS), `pal_stuck` (operations the baseband never ended),
+`pal_timer_late_us` (the most the scheduler's timer fired late), `pal_done_37`, `_38`, `_39` (Cordio's advertising packets
+completed, per channel); then `txpwr` (the stack's TX level) and `ram_end` (0x2FCBC as read back); then the PAL's
+`pal_adv_events` (hardware advertising events armed, each over 37-39), `pal_adv_covered` (Cordio's packets that went in an
+event already armed: two per event when all is well), `pal_adv_ended` (advertising events the baseband's flag ended),
+`pal_adv_conn_ind` (advertising events a CONNECT_IND ended), `pal_conn_ended` and `pal_conn_rx` (connection events the
+baseband ended, packets received in them), `pal_refused` (operations the driver refused), and `evtcount` (the entity's
+EVTCOUNT word, which the hardware writes). Up to 122afe3 the firmware sent the first 32, and `pal_done_37..39` counted the
+driver's one-channel events that ended. The PAL runs from the main loop in this build: a
 connection that fails with `pal_resp_late` above 0 needs the receive interrupt (docs/BLUETOOTH_CORDIO.md). The firmware at
 48ea034 and before sent 24 counters, the PAL's two to a word; the tool reads such a report by its count, with those names.
 

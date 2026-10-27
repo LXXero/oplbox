@@ -67,7 +67,8 @@ typedef struct {
     uint32_t tx_flips;          /* events after which TXTOG had changed: the hardware's record that it sent a buffer (E.4) */
     uint16_t txtog;             /* TXTOG as last read */
     uint32_t ram_end;           /* 0x2FCBC as read back after fm1ble_bb_init (JieLi writes it and never reads it: D.1) */
-    uint32_t op_done[3];        /* fm1ble_op_adv events that ended, per channel 37, 38, 39 */
+    uint32_t op_adv_done;       /* fm1ble_op_adv events (37, 38 and 39) the baseband ended */
+    uint32_t op_conn_done;      /* fm1ble_op_conn events the baseband ended */
 } fm1ble_diag;
 
 /* The driver's state. The caller owns it and the RAM block (word aligned, at least FM1BLE_BLOCK_SIZE bytes; the whole
@@ -86,6 +87,7 @@ typedef struct {
     uint8_t rearm, hop;
     uint8_t op_on, op_chan, op_state;   /* fm1ble_op_*: an operation armed, its channel, its state code (2 or 7) */
     uint8_t op_slot;            /* the TX slot (TXTOG & 1 when armed) the advertising PDU went into; the response takes the other */
+    uint8_t op_rsp;             /* TX buffer 1 holds the scan response fm1ble_op_resp put in */
     uint8_t txpwr;              /* the transmit power level in both TXPWR words */
     uint8_t adv_type;           /* fm1ble_adv_start's PDU type, for re-pointing the buffers after each event */
     uint16_t slots;             /* the interval in slots, for re-arming */
@@ -129,16 +131,17 @@ const uint8_t *fm1ble_rx_last(const fm1ble *b, uint8_t *n, uint8_t *type);
 
 /* ---- One packet at a time, for Cordio's PAL (firmware/ble/cordio_port/pal_fm1.c, PAL_NEEDED.md)
  *
- * Cordio hands the baseband one packet with a time; the baseband runs a whole event from a parameter block. These calls
- * make each of Cordio's operations a one-channel event of its own on the open link (fm1ble_bb_init), our design from
- * the facts, nothing JieLi does:
- *   - an advertising packet (channel 37-39): state 2 with the channel map holding that channel alone, the PDU in TX
- *     buffer 0 and the response (SCAN_RSP) in buffer 1;
+ * Cordio hands the baseband one packet with a time; the baseband runs a whole event from a parameter block. On the open
+ * link (fm1ble_bb_init), our design from the facts:
+ *   - an advertising event: state 2 over channels 37, 38 and 39 (the hardware hops), armed as fm1ble_adv_start arms it
+ *     (the only advertising a central heard from the FM-1, at 122afe3; one-channel events, hop 0, were never heard, and
+ *     on 38 and 39 never ended), the PDU in TX buffer 0 and the response (SCAN_RSP) in buffer 1. The PAL serves Cordio's
+ *     three per-channel packets with one such event;
  *   - a connection event as the peripheral (channel 0-36): state 7 on a fixed channel (index 6 = channel | 0x2000, as
  *     the direct test sets one, K), the master's packet into an RX buffer, the response from TX buffer 0.
  * The hardware turns around by itself after T_IFS (150 us) and sends the response buffer: fm1ble_op_resp must fill it
- * before then, which is why the PAL fills it from the receive interrupt. [measure on FM-1] every one of: a one-channel
- * map, state 7 with a fixed channel, the response read at T_IFS rather than at the start of the event, the header
+ * before then, which is why the PAL fills it from the receive interrupt. [measure on FM-1] every one of: state 7 with a
+ * fixed channel, the response read at T_IFS rather than at the start of the event, the header
  * words of a data PDU (TXDHDR, RXDHDR: written as RXDHDR's layout in E.5 says), the window's unit (taken as us).
  * PDUs are Cordio's: two header bytes (the first: type or LLID/NESN/SN/MD, the second: the length), then the payload. */
 
@@ -157,14 +160,17 @@ int fm1ble_op_chan(fm1ble *b, uint32_t aa, uint32_t crc, uint8_t chan);
 /* The transmit power level for both TX buffers (E.7: 0x10 + level, at most FM1BLE_TXPWR_MAX; FM1BLE_TXPWR_LEVEL from
  * fm1ble_bb_init on). For fm1ble_adv_start's advertising as much as for the operations. */
 void fm1ble_op_power(fm1ble *b, uint8_t level);
-/* An advertising packet on the channel set (37-39), sent delay_us from now (625 us slots and a bit offset, at least one
- * slot). The PDU goes into the TX slot TXTOG & 1 names (the one the hardware sends next), the response into the other. FM1BLE_ESTATE before fm1ble_bb_init or while fm1ble_adv_start's advertising runs, FM1BLE_EARG for a data
- * channel or a PDU over 39 bytes. */
+/* An advertising event on 37, 38 and 39, its first packet in the slot delay_us falls in (whole 625 us slots, no bit
+ * offset, as fm1ble_adv_start arms). The PDU (it starts with AdvA, which becomes the local address the hardware matches
+ * requests against) goes into the TX slot TXTOG & 1 names (the one the hardware sends next); the other slot holds the
+ * last scan response fm1ble_op_resp put in, or the PDU again until there is one. A channel must be set (37-39: which one
+ * does not matter, the event covers all three). FM1BLE_ESTATE before fm1ble_bb_init or while fm1ble_adv_start's
+ * advertising runs, FM1BLE_EARG for a data channel or a PDU under 8 or over 39 bytes. */
 int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n);
 /* A connection event as the peripheral on the channel set (0-36): listen from delay_us from now for window_us. */
 int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
-/* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event, buffer 0 in a connection event. At
- * most 37 bytes of payload (the buffers' size, E.4). */
+/* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event (kept for the next events' SCAN_REQs),
+ * buffer 0 in both TX slots in a connection event. At most 37 bytes of payload (the buffers' size, E.4). */
 int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n);
 /* The event off: anchor counter stopped, the link's interrupts off. No wait (it may run from an interrupt). */
 void fm1ble_op_stop(fm1ble *b);

@@ -14,10 +14,13 @@
 
 /* The air, for the PAL's tests (air set): what a central does in each event, and the interrupt handler the baseband
  * raises (IRQs 45 and 29, called at once: an interrupt that runs within T_IFS, the assumption fm1ble.h names). The
- * model runs an advertising event (state 2) as: the PDU of the TX slot TXTOG & 1 names on the channel in anchor index 6
- * (length from TXDHDR, TXTOG changed after it), then, when the central answers, its request in RX buffer 0 (the receive
- * flag), and for a SCAN_REQ the SCAN_RSP from the other slot T_IFS after it; a connection event (state 7) as: the central's packet received when it starts inside the window
- * (WINCNTL, us), then T_IFS after its end the PDU of TX buffer 0 (header TXDHDR0 bits 4-0, length bits 15-8); the event
+ * model runs an advertising event (state 2) as: on each channel of anchor index 6 (from the first, by the hop increment,
+ * to the map's end) the PDU of the TX slot TXTOG & 1 names (length from TXDHDR), then, when the central answers, its
+ * request in RX buffer 0 (the receive flag), for a SCAN_REQ the SCAN_RSP from the other slot T_IFS after it, a
+ * CONNECT_IND ending the event; TXTOG changes once after the event. A one-channel event (hop 0) does what the FM-1 did at
+ * 122afe3: on 37 it ends having sent nothing, on 38 and 39 it never ends; a connection event (state 7) as: the central's packet received when it starts inside the window
+ * (WINCNTL, us), then T_IFS after its end the PDU of the TX slot TXTOG & 1 names (header TXDHDR bits 4-0, length bits 15-8), TXTOG
+ * changed after it; the event
  * flag at the end of either. Times are on the model's clock, in us. */
 typedef struct {
     int (*adv)(void *ctx, uint64_t t, uint8_t chan, const uint8_t *pdu, int n, uint8_t *req);    /* returns the request's length, 0: none */
@@ -53,7 +56,8 @@ typedef struct {
     uintptr_t hi;                       /* the high half of host pointers, since the bus address is 32 bits */
     const bb_air *air;                  /* set: events run on the air (above), one-shot, at slots x 625 + bit offset */
     uint32_t air_events, air_missed;    /* events run; connection events whose packet fell outside the window */
-    uint32_t tx_sent;                   /* advertising PDUs the air sent (each changes TXTOG) */
+    uint32_t tx_sent;                   /* advertising PDUs the air sent (TXTOG changes once an event) */
+    uint32_t one_chan;                  /* one-channel advertising events (hop 0): the shape the FM-1 never sent (122afe3) */
 } bb_model;
 
 extern bb_model bbm;

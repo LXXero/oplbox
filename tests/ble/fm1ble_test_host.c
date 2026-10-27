@@ -84,7 +84,7 @@ static void finish(fm1ble_run *r, int i)
         break;
     case FM1BLE_STEP_ADV_SET: note(s, "4 commands accepted"); r->ctr[FM1BLE_C_TXPWR] = 6; break;
     case FM1BLE_STEP_ADV_AIR: note(s, "37 advertising events in 1 s"); r->ctr[FM1BLE_C_EVENTS] = 37; r->ctr[FM1BLE_C_TX_FLIPS] = 37;
-        r->ctr[FM1BLE_C_AIR_TRIALS] = 7; break;
+        r->ctr[FM1BLE_C_AIR_TRIALS] = 7; r->ctr[FM1BLE_C_PAL_ADV_EVENTS] = 12; break;
     case FM1BLE_STEP_CONNECT:
         if (!g_connect) {
             s->result = FM1BLE_FAIL;
