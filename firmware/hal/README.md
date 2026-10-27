@@ -11,3 +11,5 @@ helper from one of them.
 - `fm1wifi_port_bsp.c`: the port of the WiFi library (`firmware/wifi/`, fm1wifi) on felucca-bsp: its register
   accesses, delays and the WiFi bits of `CLK_CON1`. It holds nothing of OPLBOX's, so another FM-1 firmware on
   felucca-bsp can use it as is (`firmware/wifi/README.md`).
+- `fm1_rand.h`: the chip's random number register (`JL_RAND` in JieLi's `WL82.h`), read for the WPA2 SNonces
+  (`platform_random`).

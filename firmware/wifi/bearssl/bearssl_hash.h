@@ -31,8 +31,10 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#ifndef BR_LIBC_DECLARED
 void *memcpy(void *dst, const void *src, size_t len);
 void *memset(void *dst, int c, size_t len);
+#endif
 
 #ifdef __cplusplus
 extern "C" {

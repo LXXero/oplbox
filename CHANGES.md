@@ -1,5 +1,15 @@
 # Unreleased
 
+- WiFi stage 8 on the test page (docs/WIFI_STAGE8.md): the run joins a WPA2-PSK network instead of an open OPLBOX
+  hotspot. `tools/fm1_wifi_report.py --ssid NAME --psk-from-nm CONNECTION --run` (or `--psk-file`, mode 600) sends the
+  network over SysEx 0x64; the FM-1 keeps it in RAM only, never shows or reports the passphrase, and caches the PMK
+  beside it. `firmware/wifi/fm1wifi_wpa.c` runs the authentication and association with our RSN element, the 4-way
+  and group key handshakes over EAPOL data frames, and loads the keys into the MAC's key tables in JieLi's layout so
+  CCMP runs in hardware. The page has eleven pages: page 5's steps are RADIO, SURVEY, LINK, PASSIVE, ACTIVE, JOIN,
+  4-WAY, GROUP KEY, STAY 2S, REJOIN, page 11 shows the handshake and the key tables as read back, and the USB report
+  carries the EAPOL frames and 39 more counters. Host-tested against a WPA2 AP in the register model; not run on an
+  FM-1 yet.
+
 - Bluetooth HCI host: a transport that refuses every send no longer keeps a start waiting forever. A refused command
   send now counts towards the 2 s command timeout, so the start fails at that command with TIMEOUT. Before, each
   refusal set the wait back to 0. `tests/ble_hci.c` has the case, and `tests/ble_mutants.py` puts the old behaviour

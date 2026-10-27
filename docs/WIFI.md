@@ -398,6 +398,7 @@ The addresses, checked against Linux's `rt2800.h`:
 | 0x1134, 0x1328, 0x132C, 0x1704 | `CH_BUSY_STA`, `TX_PIN_CFG`, `TX_BAND_CFG`, `RX_STA_CNT1` | the channel select: `RT30xx_ChipSwitchChannel` (`rt30xx.c`) sets `TX_BAND_CFG` bits 2-1 to 2 (`BG`) and writes `TX_PIN_CFG` = 0x00050302 on every channel switch; `UpdateChannelInfo` (`ap_autoChSel.c`) reads `RX_STA_CNT1` (bits 15-0, the false CCA count) and `CH_BUSY_STA` after 200 ms on each channel (docs/WIFI_STAGE3.md "Receive level per channel") |
 | 22 registers of `MACRegTable` | `BCN_OFFSET0/1`, `LEGACY_BASIC_RATE` (0x13F), `HT_BASIC_RATE`, `RX_FILTER_CFG` (0x17F97), `TX_LINK_CFG`, `MAX_LEN_CFG`, `TX_RTY_CFG` (0x47D01F0F), `AUTO_RSP_CFG`, the six `*_PROT_CFG`, `TXOP_CTRL_CFG`, `TX_RTS_CFG`, `EXP_ACK_TIME`, `TXOP_HLDR_ET`, `PWR_PIN_CFG` | `NICInitializeAsic` (`rtmp_init.c`): all 22 addresses are named in rt2800.h. The values are not from rt2800.h (which has none); they are below |
 | 0x4000, 0x6000, 0x6800, 0x6C00, 0x7000 | `PAIRWISE_KEY_TABLE_BASE`, `MAC_IVEIV_TABLE_BASE`, `MAC_WCID_ATTRIBUTE_BASE`, `SHARED_KEY_TABLE_BASE`, `SHARED_KEY_MODE_BASE` | `AsicAddPairwiseKeyEntry`, `AsicUpdateWCIDIVEIV`, `AsicUpdateWcidAttributeEntry`, `AsicAddSharedKeyEntry`: the MAC encrypts and decrypts in hardware |
+| 0x1800 | `MAC_WCID_BASE` | the peer's address per WCID (rt2800.h `struct mac_wcid_entry`): the MAC looks a received frame's transmitter up there, and so finds its pairwise key (stage 8) |
 | 0x1100, 0x1104, 0x1330, 0x1334, 0x1338, 0x1348 | `XIFS_TIME_CFG`, `BKOFF_SLOT_CFG`, `TX_SW_CFG0/1/2`, `TX_TIMEOUT_CFG` | `wf_sifs_reset` (JieLi's values) |
 | 0x0308, 0x030C, 0x0324, 0x0328 | none: JieLi's own | 0x0308 = 0x9407 in `wfhw_init` and `wf_phy_init`; 0x030C = 30 then 0 in `wf_phy_mac_rst`; 0x0328 written around `request_irq` in `wfhw_iqr_init`; 0x0324 written in the receive handler `sdio_recv_int_hdl` |
 | function 1, address 0 (write) and 12 (read) | none | frame data: `usb_submit_urb` writes TX frames to address 0, `sdio_recv_int_hdl` reads RX frames from 12 |
@@ -780,8 +781,11 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   GTK KDE checks; it hands TK and GTK to the caller and writes no register. `tests/wifi_eapol.c` replays the
   4-way handshake recorded in Wireshark's `wpa-Induction.pcap` byte for byte, runs a made-up AP for the group key
   handshake and rekeys, and checks the refusals. No Annex J vector for the PTK or the EAPOL-Key MIC could be
-  sourced [unchecked]. Untested on hardware and not on the WiFi page; the keys into the MAC's tables and the PMK
-  cache are still to do.
+  sourced [unchecked].
+- Built on the WiFi page (docs/WIFI_STAGE8.md): `firmware/wifi/fm1wifi_wpa.c` joins a WPA2-PSK network (our RSNE,
+  the handshakes over EAPOL data frames, the keys into the MAC's tables in JieLi's layout, CCMP in hardware), the
+  network and its passphrase set over USB and kept in RAM with the PMK cached beside them (not in the settings sector
+  yet). Host-tested against a WPA2 AP in the register model; not run on an FM-1 yet.
 
 ### Stage 9: OPLBOX integration (needs FM-1)
 

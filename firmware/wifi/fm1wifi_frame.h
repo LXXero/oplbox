@@ -35,6 +35,8 @@
 #define FM1WIFI_RXD_MY_BSS (1u << 7)
 #define FM1WIFI_RXD_CRC_ERROR (1u << 8)
 #define FM1WIFI_RXD_L2PAD (1u << 14)                    /* 2 bytes between a header whose length is not a multiple of 4 and the body */
+#define FM1WIFI_RXD_CIPHER_ERR (3u << 9)                /* rt2800usb.h RXD_W0_CIPHER_ERROR: 1 ICV, 2 MIC, 3 key; 0 none */
+#define FM1WIFI_RXD_DECRYPTED (1u << 16)                /* the MAC decrypted the frame and took its IV and MIC off */
 
 typedef struct {
     const uint8_t *frame;     /* the 802.11 header, inside the caller's buffer */
@@ -111,6 +113,11 @@ const fm1wifi_bss *fm1wifi_scan_find(const fm1wifi_scan_list *l, const char *ssi
 #define FM1WIFI_TX_BUF (FM1WIFI_TX_HDR + FM1WIFI_TX_FRAME_MAX + 8u)
 #define FM1WIFI_TX_ACK 1u          /* the frame is unicast: the MAC waits for the ACK and retries (TXWI ACK) */
 #define FM1WIFI_TX_OFDM6 2u        /* send at OFDM 6 Mbit/s; default CCK 1 Mbit/s, long preamble */
+/* The MAC encrypts the frame with the key of WCID FM1WIFI_TX_WCID's (stage 8): JieLi's word's WIV 0 (the MAC inserts
+ * the IV from its IV/EIV table), the TXWI's WCID that entry (rt2800lib.c rt2800_write_tx_data, rt2800usb.c). The
+ * frame has its Protected bit set and no IV or MIC: the MAC adds both. */
+#define FM1WIFI_TX_CRYPT 4u
+#define FM1WIFI_TX_WCID(w) (((unsigned)(w) & 0xFFu) << 8)
 /* Build the image of frame (len bytes) into img (word-aligned, FM1WIFI_TX_BUF bytes). Returns the DMA length
  * (len + 26), or 0 when len is 0 or above FM1WIFI_TX_FRAME_MAX. */
 uint32_t fm1wifi_tx_image(uint8_t *img, const uint8_t *frame, uint32_t len, unsigned flags);
@@ -130,6 +137,23 @@ uint32_t fm1wifi_auth_open(uint8_t *f, const uint8_t sa[6], const uint8_t bssid[
 uint32_t fm1wifi_assoc_req(uint8_t *f, const uint8_t sa[6], const fm1wifi_bss *b, const uint8_t *ies, uint32_t n_ies,
                            uint16_t seq);   /* ies: further elements (the RSN element for WPA2), or 0 */
 uint32_t fm1wifi_deauth(uint8_t *f, const uint8_t sa[6], const uint8_t bssid[6], uint16_t reason, uint16_t seq);
+
+/* ---- data frames (stage 8): EAPOL to and from the AP */
+
+#define FM1WIFI_FC_TO_DS 0x0100u
+#define FM1WIFI_FC_FROM_DS 0x0200u
+#define FM1WIFI_FC_PROTECTED 0x4000u
+#define FM1WIFI_ETH_EAPOL 0x888Eu
+#define FM1WIFI_EAPOL_MAX 512u          /* the longest EAPOL PDU sent or taken */
+/* An EAPOL PDU (n bytes, at most FM1WIFI_EAPOL_MAX) to the AP: a data frame To DS (address 1 the BSSID, 2 sa, 3 the
+ * BSSID: the AP is the authenticator), RFC 1042 LLC/SNAP, ethertype 0x888E. protect sets the Protected bit (send it
+ * with FM1WIFI_TX_CRYPT). f holds 32 + n bytes. Returns its length, 0 when n is 0 or too long. */
+uint32_t fm1wifi_eapol_frame(uint8_t *f, const uint8_t sa[6], const uint8_t bssid[6], const uint8_t *pdu, uint32_t n,
+                             int protect, uint16_t seq);
+/* The EAPOL PDU in f when f is a data frame (or QoS data) From DS, from bssid (address 2) to sa (address 1), with
+ * RFC 1042 LLC/SNAP and ethertype 0x888E, sent in the clear or decrypted by the MAC (FM1WIFI_RXD_DECRYPTED with no
+ * cipher error): its length, *pdu its first byte. 0 for anything else. */
+uint32_t fm1wifi_eapol_pdu(const fm1wifi_rx *f, const uint8_t bssid[6], const uint8_t sa[6], const uint8_t **pdu);
 
 /* ---- the station (stage 6) */
 

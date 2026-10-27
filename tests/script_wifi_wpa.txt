@@ -1,0 +1,57 @@
+# t(ms) what ...   : the WiFi page joining a WPA2 network (stage 8, docs/WIFI_STAGE8.md), driven over USB SysEx as
+# tools/fm1_wifi_report.py --ssid TESTWPA2 --run does it, against tests/wifi/aps_wpa.txt (HOST_WIFI_MODEL).
+# "usb 64 HEX": the network: ssid_len SSID pass_len passphrase ("TESTWPA2", "oplbox-host-passphrase"); the reply
+# "USB reply 64: status ssid_len". tests/run_host.sh checks the pages, and that the passphrase is in none of the
+# output, the report or the reply.
+# a bad request first: a 7-character passphrase
+100 usb 64 0854455354575041320770617373776F7264
+200 usb 64 085445535457504132166F706C626F782D686F73742D70617373706872617365
+250 usb 63
+# while it runs the network cannot change
+251 usb 64 085445535457504132166F706C626F782D686F73742D70617373706872617365
+3000 is 0 88 0 1
+3000 usb 62 000000
+# the pages: PLAY ten times, from page 1 to 11
+3100 btn 12
+3200 btn 12
+3300 btn 12
+3400 btn 12
+3500 btn 12
+3600 btn 12
+3700 btn 12
+3800 btn 12
+3900 btn 12
+4000 btn 12
+# a second run: the PMK from the cache
+4100 usb 63
+7000 usb 62 000000
+7100 btn 12
+7200 btn 12
+7300 btn 12
+7400 btn 12
+7500 btn 12
+7600 btn 12
+7700 btn 12
+7800 btn 12
+7900 btn 12
+8000 btn 12
+# the wrong passphrase: the AP refuses msg 2
+8100 usb 64 0854455354575041321077726F6E672D70617373706872617365
+8150 usb 63
+13000 usb 62 000000
+13100 btn 12
+13200 btn 12
+13300 btn 12
+13400 btn 12
+13500 btn 12
+13600 btn 12
+13700 btn 12
+13800 btn 12
+13900 btn 12
+14000 btn 12
+# forget it: the next run tries the open OPLBOX
+14100 usb 64 00
+14150 usb 63
+17000 usb 62 000000
+17100 btn 9
+17200 end

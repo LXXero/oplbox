@@ -96,9 +96,9 @@ drawn = []
 for line in open(PAGES):
     if " wifi page " in line and ": " in line.split(" wifi page ", 1)[1]:
         n, text = line.split(" wifi page ", 1)[1].rstrip("\n").split(": ", 1)
-        if n != "9" and text:
+        if not text.startswith("PLAY: PAGE") and text:
             drawn.append(text)
-start = drawn.index("WIFI TEST (STAGE 6)   1/10")                      # the run's page 1, then PLAY to page 10
+start = drawn.index("WIFI TEST (STAGE 8)   1/11")                      # the run's page 1, then PLAY to page 11
 pages = drawn[start:start + 200]
 text = [t for t in rep["text"].split("\n") if t]
 first = text[:text.index("ALL NETWORKS: SSID, BSSID, CH, RSSI, SECURITY, P: PROBED")]
@@ -147,6 +147,55 @@ old = PipeBackend("--serve", "--old")                         # a firmware that 
 rc, out, err = tool(old, "--read")
 check(rc == 4 and "no reply" in err, f"--read from a firmware without the report: exit {rc} {err}")
 old.stop()
+
+# --ssid: the network command, the passphrase from a file (only when no one else can read it) or from NetworkManager,
+# never printed; refusals before anything is sent; --forget. The fake FM-1 writes what it got to WIFI_NET_OUT.
+netout = os.path.join(OUT, "wifi_net.txt")
+os.environ["WIFI_NET_OUT"] = netout
+if os.path.exists(netout):
+    os.remove(netout)
+pw = "host test passphrase"
+pf = os.path.join(OUT, "wifi.psk")
+with open(pf, "w") as f:
+    f.write(pw + "\n")
+os.chmod(pf, 0o644)
+dev = PipeBackend("--serve-wifi", REPORT)
+rc, out, err = tool(dev, "--ssid", "TESTWPA2", "--psk-file", pf, "--read")
+check(rc == 2 and "chmod 600" in err and not os.path.exists(netout), f"--psk-file readable by others: exit {rc} {err}")
+os.chmod(pf, 0o600)
+rc, out, err = tool(dev, "--ssid", "TESTWPA2", "--psk-file", pf, "--run")
+check(rc == 0 and "network TESTWPA2 set" in out and "WiFi test run 1" in out, f"--ssid --psk-file --run: exit {rc} {err}")
+check(os.path.exists(netout) and open(netout).read().split() == [b"TESTWPA2".hex(), pw.encode().hex()],
+      "--psk-file: the FM-1 did not get the SSID and the passphrase")
+check(pw not in out + err, "--psk-file: the passphrase was printed")
+nm = os.path.join(OUT, "nmcli-bin")
+os.makedirs(nm, exist_ok=True)
+with open(os.path.join(nm, "nmcli"), "w") as f:
+    f.write(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{nm}/args'\n"
+            "[ \"$6\" = 'Home WiFi' ] || { echo 'Error: no such connection profile.' >&2; exit 10; }\n"
+            "printf 'nm passphrase 1\\n'\n")
+os.chmod(os.path.join(nm, "nmcli"), 0o755)
+path0 = os.environ["PATH"]
+os.environ["PATH"] = nm + os.pathsep + path0
+rc, out, err = tool(dev, "--ssid", "TESTWPA2", "--psk-from-nm", "Home WiFi")
+check(rc == 0 and open(os.path.join(nm, "args")).read() == "-s\n-g\n802-11-wireless-security.psk\nconnection\nshow\nHome WiFi\n",
+      f"--psk-from-nm: exit {rc} {err}, nmcli's arguments")
+check(open(netout).read().split()[1] == b"nm passphrase 1".hex() and "nm passphrase" not in out + err,
+      "--psk-from-nm: the FM-1 did not get NetworkManager's passphrase, or it was printed")
+rc, out, err = tool(dev, "--ssid", "TESTWPA2", "--psk-from-nm", "Office")
+check(rc == 2 and "no such connection" in err, f"--psk-from-nm with no such connection: exit {rc} {err}")
+os.environ["PATH"] = path0
+os.remove(netout)
+with open(pf, "w") as f:
+    f.write("short\n")
+rc, out, err = tool(dev, "--ssid", "TESTWPA2", "--psk-file", pf)
+check(rc == 2 and "8-63" in err and not os.path.exists(netout), f"a 5-character passphrase: exit {rc} {err}")
+rc, out, err = tool(dev, "--ssid", "X" * 33, "--psk-file", pf)
+check(rc == 2 and "1-32" in err and not os.path.exists(netout), f"a 33-byte SSID: exit {rc} {err}")
+rc, out, err = tool(dev, "--forget")
+check(rc == 0 and "forgotten" in out and open(netout).read().split() == [], f"--forget: exit {rc} {err}")
+dev.stop()
+del os.environ["WIFI_NET_OUT"]
 
 # the decoder refuses what is not a whole version-1 report
 for broken, what in [(b"OPLX" + raw[4:], "not a WiFi report"), (raw[:4] + b"\x02" + raw[5:], "version 2"),

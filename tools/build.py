@@ -170,11 +170,16 @@ def build_app():
             ("cc", *CFLAGS, "-Ifirmware/wifi", "-c", FW / "wifi" / "fm1wifi.c", "-o", OUT / "fm1wifi.o"),
             ("cc", *CFLAGS, "-Ifirmware/wifi", "-c", FW / "wifi" / "fm1wifi_frame.c", "-o", OUT / "fm1wifi_frame.o"),
             ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-c", FW / "hal" / "fm1wifi_port_bsp.c", "-o", OUT / "fm1wifi_port_bsp.o")]
+    # stage 8 (docs/WIFI_STAGE8.md): the WPA2 station, the EAPOL handshakes, the key primitives and their BearSSL subset
+    wpa = [FW / "wifi" / "fm1wifi_wpa.c", FW / "wifi" / "wpa_eapol.c", FW / "wifi" / "wpa_crypto.c",
+           *sorted((FW / "wifi" / "bearssl").glob("*.c"))]
+    wpa_objs = [OUT / ("wpa_" + s.stem + ".o") for s in wpa]
+    cmds += [("cc", *CFLAGS, "-Ifirmware/wifi", "-c", s, "-o", o) for s, o in zip(wpa, wpa_objs)]
     tc_all(*cmds)
     elf = OUT / "oplbox.elf"
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o",
        OUT / "fm1_isr.o", OUT / "oplbox.o", OUT / "dbopl2.o", OUT / "fm1wifi.o", OUT / "fm1wifi_frame.o",
-       OUT / "fm1wifi_port_bsp.o", "-o", elf)
+       OUT / "fm1wifi_port_bsp.o", *wpa_objs, "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin", "ramcode.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),
@@ -211,8 +216,8 @@ def build_app():
 
 # ---- the WiFi library (firmware/wifi/, docs/WIFI.md): every file compiled alone with the app's flags and only its
 # own directory on the include path, so a dependency on OPLBOX or the bsp fails here, and its size is known
-# against the budget there. fm1wifi.c and fm1wifi_frame.c are linked (the WiFi test page); the rest (WPA2) not until
-# stage 8 calls it.
+# against the budget there. fm1wifi.c, fm1wifi_frame.c and stage 8's WPA2 files (fm1wifi_wpa.c, wpa_eapol.c,
+# wpa_crypto.c, bearssl/) are linked (the WiFi test page); fm1wifi_net.c (IP) not yet.
 # fm1wifi_net.c (stage 7) also gets lwIP's headers and options (wifi/lwip/, still inside the library); the vendored
 # lwIP sources themselves are not compiled here (they need the C library's string.h: wifi/lwip/README.md).
 # Object sizes without --gc-sections: an upper bound.
@@ -232,7 +237,7 @@ def build_wifi():
                 code += int(p[2], 16)
             elif len(p) > 3 and re.match(r"\.(data|bss)", p[1]):
                 data += int(p[2], 16)
-    return f"firmware/wifi/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (fm1wifi.c and fm1wifi_frame.c linked, the rest not yet)"
+    return f"firmware/wifi/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (fm1wifi_net.c not linked yet)"
 
 
 # ---- the BLE HCI layer (firmware/ble/, docs/BLUETOOTH.md stage 1): compiled alone with the app's flags and only its

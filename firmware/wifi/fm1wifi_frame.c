@@ -156,15 +156,17 @@ const fm1wifi_bss *fm1wifi_scan_find(const fm1wifi_scan_list *l, const char *ssi
 
 uint32_t fm1wifi_tx_image(uint8_t *img, const uint8_t *frame, uint32_t len, unsigned flags)
 {
-    uint32_t w0, w1, i;
+    uint32_t w0, w1, i, crypt;
     if (!len || len > FM1WIFI_TX_FRAME_MAX) return 0;
+    crypt = (flags & FM1WIFI_TX_CRYPT) != 0;
     put32(img, len + 22u);                                       /* JieLi's word: the DMA starts after it */
-    put32(img + 4, 1u | TX_QSEL_EDCA << 1);                      /* WIV, QSEL */
+    put32(img + 4, (crypt ? 0u : 1u) | TX_QSEL_EDCA << 1);       /* WIV (0: the MAC's IV), QSEL */
     w0 = TX_OP_BACKOFF << 8 | ((flags & FM1WIFI_TX_OFDM6) ? 1u << 30 : 0u);   /* MCS 0: CCK 1 or OFDM 6 Mbit/s */
-    w1 = (flags & FM1WIFI_TX_ACK ? FM1WIFI_TXWI_W1_ACK : 0u) | 0xFFu << 8 | len << 16;   /* WCID 255: no entry */
+    w1 = (flags & FM1WIFI_TX_ACK ? FM1WIFI_TXWI_W1_ACK : 0u) | (crypt ? (flags >> 8 & 0xFFu) : 0xFFu) << 8 |
+         len << 16;                                              /* WCID: the key's entry, or 255 (no entry) */
     put32(img + 8, w0);
     put32(img + 12, w1);
-    put32(img + 16, 0);                                          /* IV, EIV: no hardware encryption yet */
+    put32(img + 16, 0);                                          /* IV, EIV: 0, the MAC inserts its own (WIV 0) */
     put32(img + 20, 0);
     copy(img + FM1WIFI_TX_HDR, frame, len);
     for (i = FM1WIFI_TX_HDR + len; i < 4u + len + 26u; i++) img[i] = 0;
@@ -239,6 +241,38 @@ uint32_t fm1wifi_deauth(uint8_t *f, const uint8_t sa[6], const uint8_t bssid[6],
     uint32_t n = mgmt(f, FM1WIFI_FC_DEAUTH, DUR_ACK_1M, bssid, sa, bssid, seq);
     put16(f + n, reason);
     return n + 2u;
+}
+
+/* ---- data frames: EAPOL */
+
+static const uint8_t SNAP[6] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00 };   /* RFC 1042 LLC/SNAP, then the ethertype */
+
+uint32_t fm1wifi_eapol_frame(uint8_t *f, const uint8_t sa[6], const uint8_t bssid[6], const uint8_t *pdu, uint32_t n,
+                             int protect, uint16_t seq)
+{
+    uint32_t h;
+    if (!n || n > FM1WIFI_EAPOL_MAX) return 0;
+    h = mgmt(f, FM1WIFI_FC_DATA, DUR_ACK_1M, bssid, sa, bssid, seq);
+    put16(f, FM1WIFI_FC_DATA | FM1WIFI_FC_TO_DS | (protect ? FM1WIFI_FC_PROTECTED : 0u));
+    copy(f + h, SNAP, 6);
+    f[h + 6] = (uint8_t)(FM1WIFI_ETH_EAPOL >> 8); f[h + 7] = (uint8_t)FM1WIFI_ETH_EAPOL;
+    copy(f + h + 8, pdu, n);
+    return h + 8u + n;
+}
+
+uint32_t fm1wifi_eapol_pdu(const fm1wifi_rx *f, const uint8_t bssid[6], const uint8_t sa[6], const uint8_t **pdu)
+{
+    uint32_t kind = FM1WIFI_FC_KIND(f->fc);
+    *pdu = 0;
+    if (!f->frame || (kind != FM1WIFI_FC_DATA && kind != FM1WIFI_FC_QOS_DATA)) return 0;
+    if ((f->fc & (FM1WIFI_FC_TO_DS | FM1WIFI_FC_FROM_DS)) != FM1WIFI_FC_FROM_DS) return 0;
+    if (!same(f->frame + 4, sa, 6) || !same(f->frame + 10, bssid, 6)) return 0;
+    if ((f->fc & FM1WIFI_FC_PROTECTED) && (!(f->info & FM1WIFI_RXD_DECRYPTED) || (f->info & FM1WIFI_RXD_CIPHER_ERR)))
+        return 0;
+    if (f->body_len < 8u + 4u || !same(f->body, SNAP, 6) || ((uint32_t)f->body[6] << 8 | f->body[7]) != FM1WIFI_ETH_EAPOL)
+        return 0;
+    *pdu = f->body + 8;
+    return f->body_len - 8u;
 }
 
 /* ---- the station */

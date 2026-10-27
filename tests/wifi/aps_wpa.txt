@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Stage 8 (docs/WIFI_STAGE8.md), loaded after core_model.txt: the WPA2-PSK network TESTWPA2 (tests/wifi/sdio_model.h
+# "ap ... psk="), whose AP runs the 4-way handshake, a group key handshake 700 ms after it and a protected broadcast
+# every 300 ms; beside it the open OPLBOX and a second WPA2 network with no passphrase given here (not joined).
+reg 0x3043c 0x000000e0
+ap ch=6 bssid=02:00:00:00:00:06 ssid=OPLBOX sec=open rssi=-40
+ap ch=6 bssid=02:00:00:00:00:66 ssid=TESTWPA2 sec=wpa2 psk=oplbox-host-passphrase rssi=-57 rekey=700 bcast=300
+ap ch=11 bssid=02:00:00:00:00:6b ssid=TESTWPA2-G sec=wpa2 rssi=-70

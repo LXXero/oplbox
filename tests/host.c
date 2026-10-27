@@ -83,6 +83,9 @@ static int settings_save(const void *p, uint32_t n)
     return 0;
 }
 
+/* platform.c platform_random: a fixed sequence here, so a run's frames are the same every time */
+static uint32_t platform_random(void) { static uint32_t x = 0x0B1B0Cu; x = x * 1664525u + 1013904223u; return x; }
+
 /* the flash part's unique ID (platform.c platform_uid): a made-up one, the same every run */
 static int platform_uid(uint8_t *dst)
 {
@@ -115,7 +118,7 @@ static void app_usb_cmd(const uint8_t *d, uint32_t n);
  * other state (oplbox.c host_cell: 99, 98, 97, 96). "T usb CMD [HEX]" hands the app a SysEx frame in the updater's
  * framing (cmd CMD, the body HEX bytes) as the platform does, from platform_poll; its replies are printed */
 typedef struct { uint32_t t, keys; int btn; uint8_t st, d1, d2; int enc, clicks; int chk; uint32_t o, r, c, v, v2;
-                 uint32_t usb, usb_n; uint8_t body[32]; } host_ev_t;
+                 uint32_t usb, usb_n; uint8_t body[128]; } host_ev_t;
 enum { CHK_SAVE = 1, CHK_SAME, CHK_DIFFERS, CHK_NOTE, CHK_EMPTY, CHK_IS, CHK_WITHIN };
 static const host_ev_t SCRIPT0[] = {
     {200, 1u << 7, -1, 0, 0, 0},                                /* C4 */
@@ -135,7 +138,7 @@ static const uint32_t SHOT[] = {3000, 9000, 12500};
 static void read_script(const char *path)
 {
     static host_ev_t ev[4096];
-    char line[256], what[16];
+    char line[512], what[16];
     FILE *f = fopen(path, "r");
     uint32_t n = 0;
     if (!f) { perror(path); exit(1); }
@@ -148,8 +151,8 @@ static void read_script(const char *path)
         else if (!strcmp(what, "btn")) { sscanf(line, "%*u %*s %d", &e.btn); }
         else if (!strcmp(what, "enc")) { sscanf(line, "%*u %*s %d %d", &e.enc, &e.clicks); }
         else if (!strcmp(what, "usb")) {
-            char hex[80] = "";
-            sscanf(line, "%*u %*s %x %79s", &a, hex);
+            char hex[300] = "";
+            sscanf(line, "%*u %*s %x %299s", &a, hex);
             e.usb = 0x100u | (a & 0xFFu);
             while (e.usb_n < sizeof e.body && sscanf(hex + 2u * e.usb_n, "%2x", &b) == 1) e.body[e.usb_n++] = (uint8_t)b;
         }
@@ -226,7 +229,7 @@ static void platform_poll(void)                 /* one call = one millisecond */
             host_failed += !ok;
         } else if (script[step].usb) {         /* 00 59 cmd len24 body ~sum(body), as ota_service hands it over */
             const host_ev_t *e = &script[step];
-            uint8_t d[48];
+            uint8_t d[160];
             uint32_t i, sum = 0;
             d[0] = 0; d[1] = 0x59; d[2] = (uint8_t)e->usb; d[3] = (uint8_t)e->usb_n; d[4] = d[5] = 0;
             for (i = 0; i < e->usb_n; i++) { d[6 + i] = e->body[i]; sum += e->body[i]; }

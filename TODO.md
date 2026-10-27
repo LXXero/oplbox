@@ -431,7 +431,7 @@ The shared key table (16 × 32 B) ends at 0x6E00, not at the mode table's 0x7000
 - The HAL is not linked into the firmware until stage 2 calls it.
 
 **Open.** What the SDIO host's registers do (stage 2). The clock-block register 0x10010 that `wf_clk_rst_init` writes
-and `MAC_WCID_BASE` (0x1800, needed by stage 8) are not in the header yet. The 0x30F00 and 0x0300-range addresses
+is not in the header yet (`MAC_WCID_BASE`, 0x1800, is since stage 8). The 0x30F00 and 0x0300-range addresses
 come from `wl_rf_common.a` as facts, not code; whether stages 1 and 3 may rest on that archive was task 3's to settle (settled in 7c: facts only).
 `tools/wifi_ir.py` and the extracted tables (the rest of stage 1) are not built.
 
@@ -615,9 +615,21 @@ handshake); each has a check now.
 caller's RAM. Stack: `wpa_eapol_rx` about 0.9 KB at its deepest (its own 324-byte frame, then the PRF's or the MIC's
 HMAC contexts, about 0.4 KB) [unchecked on the device]. It uses only `memcpy` and `memset` from the C library.
 
-**Open.** Loading the keys into the MAC's tables (0x4000-0x7000), caching the PMK per SSID in the WiFi settings
-sector, the frames carrying EAPOL to and from the MAC (stages 5-7), and timing on the FM-1 are the rest of stage 8.
-Joining xero's WPA2 network is its hardware check.
+**Built: the join (stage 8 on the page, docs/WIFI_STAGE8.md).** xero (2026-10-27, after the first FM-1 run found
+only WPA2 networks): "i dont get why we cant just get wpa working". `firmware/wifi/fm1wifi_wpa.c` joins a WPA2-PSK
+network: our RSN element in the association request, the handshakes over EAPOL data frames, the keys into the MAC's
+tables (`fm1wifi_key_*` in `fm1wifi.c`, JieLi's layout: the AP at WCID 1, the GTK on WCID 0), group msg 2 encrypted by
+the MAC. The network comes over USB (SysEx 0x64, `tools/fm1_wifi_report.py --ssid NAME --psk-from-nm CONNECTION`),
+in RAM only, with its PMK cached beside it; the passphrase is never drawn, reported or written to flash. The page's
+steps are RADIO, SURVEY, LINK, PASSIVE, ACTIVE, JOIN, 4-WAY, GROUP KEY, STAY 2S, REJOIN, and page 11 (new) has the
+PMK time, the EAPOL frames seen, the key tables read back and what the MAC decrypted; the report adds the EAPOL frames
+and 39 counters. Host-tested (`tests/wifi_wpa.c` 73 checks, eight key-table mutants caught; the simulator against a
+WPA2 AP in the register model; the tool's `--psk-file` / `--psk-from-nm`). **Not run on an FM-1 yet.**
+
+**Open.** The FM-1 run (`python3 tools/fm1_wifi_report.py --ssid TESTWPA2 --psk-from-nm <connection> --run --out
+DIR`): whether the key tables read back, whether the MAC encrypts with WIV 0 and counts the PN itself, whether its
+RXD bits are rt2800usb's, the PMK time that sets `WPA_PMK_STEP`. The PMK cache is in RAM (the settings sector is stage
+9's); no PMF, WPA3 or TKIP.
 
 ### 7e. Stage 2, first contact, as a standalone library — built, run on xero's FM-1
 
@@ -844,8 +856,8 @@ built together so one FM-1 run tests all of them (docs/WIFI_STAGE4.md).
   against the pages the simulator draws, the commands through `slot_reply`'s framing, the tool against
   `wifi_sysex.c` on a pipe, a run driven over USB in the simulator); not yet run on an FM-1. The pages stay as the
   fallback.
-- **Not on the page yet**: stage 7 (IP over lwIP) and stage 8 (the WPA2 handshakes), both host-built; they join once
-  an open join works on the FM-1.
+- **Stage 8 on the page** (7d, docs/WIFI_STAGE8.md): the run joins the WPA2 network set over USB, eleven pages now.
+  Host-tested, not run on an FM-1 yet. **Not on the page yet**: stage 7 (IP over lwIP), host-built.
 
 ## 8. Bluetooth LE MIDI on code we can ship — stage 0 done (the map), stage 1 done (HCI, host only)
 

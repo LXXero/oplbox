@@ -91,6 +91,7 @@ static void accessors(void)
     check(SHARED_KEY_ENTRY(16) == 0x6E00u && SHARED_KEY_ENTRY(16) <= SHARED_KEY_MODE_BASE,
           "shared key table: 16 x 32 bytes, below the shared key mode table");
     check(SHARED_KEY_MODE_ENTRY(15) == 0x703Cu, "shared key mode table: 16 x 4 bytes");
+    check(MAC_WCID_ENTRY(256) == 0x2000u, "WCID table: 256 x 8 bytes");
 }
 
 #define R(x) { #x, (uint32_t)(x) },
@@ -113,7 +114,7 @@ static const struct { const char *name; uint32_t v; } regs[] = {
     R(RX_STA_CNT1_FALSE_CCA) R(MAC_BSSID_DW0) R(MAC_BSSID_DW1) R(RX_STA_CNT0) R(RX_STA_CNT2) R(TX_STA_CNT0)
     R(TX_STA_CNT1) R(TX_STA_CNT2)
     R(PAIRWISE_KEY_TABLE_BASE) R(MAC_IVEIV_TABLE_BASE) R(MAC_WCID_ATTRIBUTE_BASE) R(SHARED_KEY_TABLE_BASE)
-    R(SHARED_KEY_MODE_BASE)
+    R(SHARED_KEY_MODE_BASE) R(MAC_WCID_BASE)
     R(FM1_WF_REG_0308) R(FM1_WF_REG_030C) R(FM1_WF_REG_0324) R(FM1_WF_REG_0328) R(FM1_WF_REG_0434)
     R(FM1_WF_TX_FIFO) R(FM1_WF_RX_FIFO)
     R(FM1_BBP_CCA_STROBE) R(FM1_BBP_CCA_ADDR) R(FM1_BBP_CCA_DATA)

@@ -13,6 +13,7 @@
  *   screen              240 x 240, lcd_fill, draw_text_box with FONT_S (16 px) / FONT_L (32 px) (gfx.c)
  *   settings            one 4 KiB flash sector with a CRC (settings_load / settings_save)
  *   unique ID           the flash part's factory ID (platform_uid), for the WiFi address
+ *   random              the chip's random number register and the timer (platform_random), for the WiFi page
  *   crash screen        the fault's registers (and the app's note), then a reboot
  *
  * The app (dinghy.c) includes this file first and supplies:
@@ -44,6 +45,7 @@ enum { ENC_SELECT = 0, ENC_ALGORITHM = 1, ENC_KNOB1 = 2, ENC_KNOB2 = 3, ENC_KNOB
 #include "fm1_audio.h"
 #include "fm1_adc.h"
 #include "bootguard.h"
+#include "fm1_rand.h"
 
 #ifndef APP_NAME
 #define APP_NAME "DINGHY"
@@ -167,6 +169,9 @@ static int platform_uid(uint8_t *dst)
     irq_restore(f);
     return rc ? -1 : 0;
 }
+
+/* the chip's random number register (hal/fm1_rand.h) mixed with the timer: for the WiFi page's SNonces */
+static uint32_t platform_random(void) { return fm1_rand32() ^ fm1_ticks() * 2654435761u; }
 
 static int settings_load(void *p, uint32_t n)   /* 0: loaded; else p is untouched */
 {

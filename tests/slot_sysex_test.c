@@ -9,7 +9,8 @@
  *                              firmware without slot transfer (the handshake only)
  *   slot_sysex_test --serve-wifi FILE [edit|running]   a fake FM-1 for tests/wifi_report_tool.py: FILE is the report a
  *                              run makes; no run yet until the run command, which takes 3 report polls (edit: EDIT is
- *                              open; running: a run is already going on)
+ *                              open; running: a run is already going on). With WIFI_NET_OUT set, the network command's
+ *                              SSID and passphrase are written there as hex, one line each (what the test compares)
  *   slot_sysex_test --dump N FILE   built-in song N (0..) as a .CMF file
  */
 #include <stdint.h>
@@ -70,6 +71,7 @@ static void say(const char *m) { said = m; }
 static uint32_t wifi_report_state(void);
 static const uint8_t *wifi_report(uint32_t *n, uint32_t *serial);
 static int wifi_run_ask(uint32_t *run);
+static int wifi_net_set(const uint8_t *ssid, uint32_t ns, const char *pass, uint32_t np);
 static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint8_t *data, uint32_t nd)
 {
     return slot_reply(cmd, head, nh, data, nd);
@@ -88,6 +90,28 @@ static uint32_t wifi_report_state(void)
     return wreq ? (uint32_t)WR_RUNNING : wstate;
 }
 static const uint8_t *wifi_report(uint32_t *n, uint32_t *serial) { *n = wrep_n; *serial = wrep_serial & 0xFFFFu; return wrep; }
+static uint8_t wnet[100];                      /* the network as the command handed it: ssid_len ssid pass_len pass */
+static uint32_t wnet_n, wnet_sets;
+static int wifi_net_set(const uint8_t *ssid, uint32_t ns, const char *pass, uint32_t np)
+{
+    const char *path = getenv("WIFI_NET_OUT");
+    if (wreq || wstate == WR_RUNNING) return WIFI_E_RUNNING;
+    wnet[0] = (uint8_t)ns; memcpy(wnet + 1, ssid, ns);
+    wnet[1 + ns] = (uint8_t)np; memcpy(wnet + 2 + ns, pass, np);
+    wnet_n = 2 + ns + np;
+    wnet_sets++;
+    if (path) {
+        FILE *f = fopen(path, "w");
+        if (f) {
+            for (uint32_t i = 0; i < ns; i++) fprintf(f, "%02x", ssid[i]);
+            fputc('\n', f);
+            for (uint32_t i = 0; i < np; i++) fprintf(f, "%02x", (uint8_t)pass[i]);
+            fputc('\n', f);
+            fclose(f);
+        }
+    }
+    return WIFI_OK;
+}
 static int wifi_run_ask(uint32_t *run)
 {
     if (wreq || wstate == WR_RUNNING) { *run = (wruns + wreq) & 0xFFFFu; return WIFI_E_RUNNING; }
@@ -409,8 +433,45 @@ static void test_wifi(void)
     CHECK(reply_n == 16u && reply[6] == WIFI_E_REQ, "a short report request is not refused");
     send(WIFI_CMD_RUN, (const uint8_t *)"\0", 1);
     CHECK(reply_n == 10u && reply[6] == WIFI_E_REQ && !wreq, "a run command with a body is not refused");
-    send(0x64, 0, 0);
+    send(0x65, 0, 0);
     CHECK(reply_n == 0u, "an unknown command is answered");
+
+    /* the network (0x64): taken whole, the reply status and the SSID's length only; every refusal */
+    {   static const uint8_t NET[] = { 8, 'X', 'N', 'E', 'T', 'W', 'O', 'R', 'K', 12, 's', 'e', 'c', 'r', 'e', 't', ' ', 'p', 'a', 's', 's', '!' };
+        uint8_t bad[100];
+        uint32_t k, sets;
+        send(WIFI_CMD_NET, NET, sizeof NET);
+        CHECK(reply_n == 9u && reply[2] == WIFI_CMD_NET && reply[6] == WIFI_OK && reply[7] == 8u, "the network is not taken");
+        CHECK(wnet_n == sizeof NET && !memcmp(wnet, NET, sizeof NET), "the network handed over is not the one sent");
+        for (k = 0; k + 4u <= reply_n; k++) CHECK(memcmp(reply + k, "secr", 4), "the reply carries the passphrase");
+        sets = wnet_sets;
+        memcpy(bad, NET, sizeof NET); bad[9] = 7;                                    /* 7 characters */
+        send(WIFI_CMD_NET, bad, sizeof NET - 5);
+        CHECK(reply_n == 9u && reply[6] == WIFI_E_REQ && reply[7] == 0u, "a 7-character passphrase is not refused");
+        memset(bad, 'a', sizeof bad); bad[0] = 8; bad[9] = 64;                        /* 64 characters */
+        send(WIFI_CMD_NET, bad, 10 + 64);
+        CHECK(reply_n == 9u && reply[6] == WIFI_E_REQ, "a 64-character passphrase is not refused");
+        memcpy(bad, NET, sizeof NET); bad[12] = 0x7F;                                 /* not printable */
+        send(WIFI_CMD_NET, bad, sizeof NET);
+        CHECK(reply_n == 9u && reply[6] == WIFI_E_REQ, "a passphrase with DEL in it is not refused");
+        memset(bad, 'a', sizeof bad); bad[0] = 33; bad[34] = 8;                       /* a 33-byte SSID */
+        send(WIFI_CMD_NET, bad, 35 + 8);
+        CHECK(reply_n == 9u && reply[6] == WIFI_E_REQ, "a 33-byte SSID is not refused");
+        send(WIFI_CMD_NET, NET, sizeof NET - 1);                                      /* lengths not the body's */
+        CHECK(reply_n == 9u && reply[6] == WIFI_E_REQ, "a cut-short network is not refused");
+        memcpy(bad, NET, sizeof NET); bad[sizeof NET] = 'x';
+        send(WIFI_CMD_NET, bad, sizeof NET + 1);
+        CHECK(reply_n == 9u && reply[6] == WIFI_E_REQ, "a network with a byte after it is not refused");
+        send(WIFI_CMD_NET, 0, 0);
+        CHECK(reply_n == 9u && reply[6] == WIFI_E_REQ, "an empty network command is not refused");
+        CHECK(wnet_sets == sets, "a refused network reached the app");
+        send(WIFI_CMD_RUN, 0, 0);                                                     /* while a run is going on */
+        send(WIFI_CMD_NET, NET, sizeof NET);
+        CHECK(reply_n == 9u && reply[6] == WIFI_E_RUNNING && wnet_sets == sets, "the network changed while a run went on");
+        wifi_run_ends();
+        send(WIFI_CMD_NET, (const uint8_t *)"\0", 1);                                 /* forget it */
+        CHECK(reply_n == 9u && reply[6] == WIFI_OK && reply[7] == 0u && wnet_n == 2u && wnet[0] == 0u, "the network is not forgotten");
+    }
     CHECK(max_wire <= 640u, "a message of %u bytes", max_wire);
 }
 
