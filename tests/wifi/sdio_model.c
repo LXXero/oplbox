@@ -376,7 +376,7 @@ struct sdio_model {
     int nq;
     uint8_t bbp[256], win[4][256];
     uint32_t clk;
-    int bad, raw_off, trims, in_trim;
+    int bad, raw_off, wlog_off, frames_dropped, trims, in_trim;
     int hang_tune, hang_measure, hang_anl, hang_after, measures;
     unsigned poll[N_POLL], poll_max;
     wifi_fix log, wlog;
@@ -429,6 +429,7 @@ const wifi_fix *sdio_model_log(const sdio_model *m) { return &m->log; }
 const wifi_fix *sdio_model_wlog(const sdio_model *m) { return &m->wlog; }
 void sdio_model_wlog_clear(sdio_model *m) { wifi_fix_free(&m->wlog); }
 void sdio_model_raw_log(sdio_model *m, int on) { m->raw_off = !on; }
+void sdio_model_wlog_on(sdio_model *m, int on) { m->wlog_off = !on; }
 void sdio_model_zero(sdio_model *m)
 {
     memset(m->ana, 0, sizeof m->ana);
@@ -589,6 +590,7 @@ static void log_rec(sdio_model *m, int kind, uint32_t addr, uint32_t val)
 
 static void wlog_rec(sdio_model *m, int kind, uint32_t addr, uint32_t val)
 {
+    if (m->wlog_off) return;
     wifi_rec *r = fix_add(&m->wlog);
     r->kind = kind;
     r->addr = addr;
@@ -822,8 +824,11 @@ static unsigned channel_now(const sdio_model *m)
     return v >= 1u && v <= 13u ? v : 0u;
 }
 
+#define FRAME_LOG_MAX 65536   /* frame records kept; later ones are counted, not kept */
+
 static void frame_rec(sdio_model *m, int tx, unsigned ch, const uint8_t *f, unsigned n)
 {
+    if (m->frames.n >= FRAME_LOG_MAX) { m->frames_dropped++; return; }   /* a silent-server run sends a DISCOVER per step: 1.5 million records, 1.4 GB */
     wifi_rec *r = fix_add(&m->frames);
     r->kind = WIFI_REC_FRAME;
     r->write = tx;

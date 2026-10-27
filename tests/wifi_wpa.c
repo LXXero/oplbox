@@ -313,6 +313,7 @@ static sdio_model *core(const char *script)
     snprintf(path, sizeof path, "%s/core_model.txt", dir);
     if (sdio_model_load(m, path, stderr) || sdio_model_script(m, script, "test", stderr)) exit(1);
     sdio_model_raw_log(m, 0);
+    sdio_model_wlog_on(m, 0);
     sdio_model_use(m);
     if (fm1wifi_radio_up(&fm1wifi_cal_default, &r) != FM1WIFI_OK || fm1wifi_link_up(ME, 1) != FM1WIFI_OK) {
         fprintf(stderr, "FAIL: radio and link up\n");

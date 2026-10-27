@@ -11,6 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import limits
+
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "firmware/ble"
 
@@ -104,8 +107,10 @@ def main():
         subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-O1", "-w", "-I" + str(d), "-o", str(exe),
                         str(ROOT / "tests/ble_midi.c"), str(f)], check=True)
         try:
-            r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
+            r = limits.run([str(exe)], capture_output=True, text=True, timeout=60)
             code, err = r.returncode, r.stderr
+            if code < 0:                                          # killed by a signal, e.g. the memory limit
+                code, err = None, "killed (signal %d)" % -code
         except subprocess.TimeoutExpired:
             code, err = None, "hung"
         caught = code == 1 and "FAIL" in err

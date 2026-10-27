@@ -149,6 +149,7 @@ uint8_t sdio_model_bbp(const sdio_model *m, uint8_t reg);
 int sdio_model_bad(const sdio_model *m);   /* accesses outside the WiFi blocks, or not word-aligned */
 const wifi_fix *sdio_model_wlog(const sdio_model *m);   /* the write log (stage 3) */
 void sdio_model_wlog_clear(sdio_model *m);
+void sdio_model_wlog_on(sdio_model *m, int on);          /* the write log on (default) or off (long runs: it grew to 4.8 GB in wifi_ip) */
 void sdio_model_zero(sdio_model *m);   /* every register 0 (the trace starts from there), the windows too */
 void sdio_model_raw_log(sdio_model *m, int on);          /* the full log on (default) or off (long runs) */
 uint8_t sdio_model_win(const sdio_model *m, unsigned w, uint8_t a);   /* a window register, unlogged */
@@ -157,7 +158,7 @@ int sdio_model_in_trim(const sdio_model *m);
 unsigned sdio_model_polls(const sdio_model *m);   /* the longest run of busy answers to one wait */
 /* fn(ctx, addr, v) at every fm1wifi_port_wr32, before the model takes the write (NULL: none) */
 void sdio_model_on_wr(sdio_model *m, void (*fn)(void *ctx, uint32_t addr, uint32_t v), void *ctx);
-const wifi_fix *sdio_model_frames(const sdio_model *m);   /* frames sent (tx) and handed to the library (rx) */
+const wifi_fix *sdio_model_frames(const sdio_model *m);   /* frames sent (tx) and handed to the library (rx); the first 65536 only */
 uint64_t sdio_model_now_us(const sdio_model *m);          /* the model's clock */
 /* access point i (in script order), WPA2: the 4-way handshake done and the station still joined, group key handshakes
  * finished, station frames refused, the PTK it agreed (or NULL) */
