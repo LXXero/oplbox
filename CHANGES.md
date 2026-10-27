@@ -1,5 +1,14 @@
 # Unreleased
 
+- Bluetooth LE MIDI, first diagnostic build (docs/BLUETOOTH.md "Cordio path as built", docs/BLUETOOTH_CORDIO.md,
+  docs/BLUETOOTH_RADIO.md, docs/BLUETOOTH_PAGE.md): no JieLi binary in the image. The host is Apache NimBLE (peripheral
+  subset, our polled port) and the controller is Arm Cordio's LE link layer, both vendored unchanged; the chip's radio
+  driver `firmware/ble/fm1ble.c` is ours, written from facts read out of `btctrler.a`'s IR (`tools/ble_ir.py`). A
+  Bluetooth test page (HOME on the WiFi page, or `tools/fm1_ble_report.py --run` over SysEx 0x65/0x66) runs the radio and
+  baseband power-up and one connectable ADV_IND advertisement named OPLBOX straight from the driver, and reports one line per
+  step with raw evidence. Host-tested against a register model written from the same facts; NOT run on an FM-1. Not
+  built: the chip's Cordio PAL, so the HCI, connect and MIDI steps report SKIP.
+
 - WiFi stage 8 on the test page (docs/WIFI_STAGE8.md): the run joins a WPA2-PSK network instead of an open OPLBOX
   hotspot. `tools/fm1_wifi_report.py --ssid NAME --psk-from-nm CONNECTION --run` (or `--psk-file`, mode 600) sends the
   network over SysEx 0x64; the FM-1 keeps it in RAM only, never shows or reports the passphrase, and caches the PMK

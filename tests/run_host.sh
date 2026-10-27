@@ -351,7 +351,7 @@ import hashlib, sys
 from pathlib import Path
 d = Path("firmware/ble/cordio")
 want = dict(reversed(l.split(None, 1)) for l in (d / "SHA256SUMS").read_text().splitlines())
-have = {str(p.relative_to(d)) for p in d.rglob("*") if p.is_file() and p.name != "SHA256SUMS"}
+have = {str(p.relative_to(d)) for p in d.rglob("*") if p.is_file() and p.name not in ("SHA256SUMS", "README.md")}
 bad = [f for f in sorted(want) if not (d / f).is_file() or hashlib.sha256((d / f).read_bytes()).hexdigest() != want[f]]
 bad += [f"{f} (not in SHA256SUMS)" for f in sorted(have - set(want))]
 if bad: sys.exit("FAIL: firmware/ble/cordio differs from Cordio 3656312: " + ", ".join(bad))
