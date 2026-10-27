@@ -537,19 +537,62 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
    to show").
 5. **Test page, USB report, tool: done and host-tested; the run uses the stack.** docs/BLUETOOTH_PAGE.md;
    `tools/fm1_ble_report.py --run --out DIR` over SysEx 0x66 (report) and 0x67 (run); `tests/ble_report_tool.py`. Eight steps
-   (radio, block, hci, adv_set, adv_air, connect, midi_in, midi_out), one line each with raw bytes, 24 counters (20-23 the
+   (radio, block, hci, adv_set, adv_air, connect, midi_in, midi_out), one line each with raw bytes, 32 counters (20-29 the
    PAL's); a failed step's note says what to do next. The firmware's run (`firmware/ble/fm1ble_test.c`) does the driver's
-   own advertising first (the step-4 proof: `adv_set`, `adv_air`, unchanged) and then brings up the stack on the same radio
-   (`hci`, `connect`, `midi_in`, `midi_out`). `tests/ble_stack.c run` runs it on the air with the central: every step PASS.
+   own advertising first, in three air trials from their own addresses (`adv_set`, `adv_air`), and then brings up the stack
+   on the radio of the trial that sent (`hci`, `connect`, `midi_in`, `midi_out`). `tests/ble_stack.c run` runs it on the air with the central: every step PASS.
    The host build's page and tool tests run a scripted fake (`tests/ble/fm1ble_test_host.c`).
-6. **Size: in the app.** The app links the test run, the driver, the PAL, Cordio, NimBLE and `ble_libc.c`: 525,904 B of
-   581,564 B and 93,764 B of 98,304 B of RAM (Cordio's 3 KB heap and the C library's 3 KB heap are in the pool, app.ld's
+6. **Size: in the app.** The app links the test run, the driver, the PAL, Cordio, NimBLE and `ble_libc.c`: 526,880 B of
+   581,564 B and 93,860 B of 98,304 B of RAM (Cordio's 3 KB heap and the C library's 3 KB heap are in the pool, app.ld's
    zeroed region outside the 96 KB), with WiFi's stages 4-9 in the same image.
 
-The next FM-1 run, by the control session over USB: `python3 tools/fm1_ble_report.py --run --wait 30 --out DIR`, then a
-phone's BLE MIDI app connecting to "OPLBOX" and playing a note. What the report settles: `adv_air` (the driver advertises),
-`hci` (Cordio runs on the chip), and from the PAL's counters whether its operations end (`pal_late_resp_stuck` high half)
-and whether responses were in time (its low half): the first thing a connection needs is the receive interrupt.
+### The first FM-1 run (48ea034) and what changed
+
+The control session flashed 48ea034 (FM-1_960 on xryzen's USB) and ran `fm1_ble_report.py --run` twice (90 s and 45 s
+waits), while xlap (BlueZ 5.87, one floor down) scanned with `bluetoothctl scan le`. Both runs: radio PASS, block FAIL
+("block address does not read back"), hci PASS, adv_set PASS, adv_air PASS, connect FAIL, the MIDI steps SKIP; xlap heard
+about 100 devices and never C2:46:4D:31:00:01. The raw evidence, read against docs/BLUETOOTH_RADIO.md:
+
+- **block**: 0x2FC84 read back the block's address (0x01C16040); 0x2FCBC (the end) read 0. JieLi's `le_hw_init` writes
+  0x2FCBC and nothing in `btctrler.a` reads it, so a register that reads 0 is not a sign the write failed [unchecked]. The
+  step now passes on the start address and keeps the end's readback as the counter `ram_end`.
+- **adv_air** passed on the event flag alone: 4 events in the driver's 400 ms window (the hardware's anchor counter repeats
+  every 100 ms by itself), then 2569 during the stack. Nothing showed a packet left. Of Cordio's 7695 one-channel
+  advertising operations 2565 ended (one in three) and 5130 never did (`pal_stuck`); every one ended in a receive timeout.
+- **Why nothing a central takes went out**, from the IR (BLUETOOTH_RADIO.md E.4, "TX and RX toggles", "The TX power level"):
+  the driver never put the PDU's length in TXDHDR (it stayed 1 from the open: length 0); it never moved the ADV_IND to
+  the TX slot TXTOG names, which the hardware changes, so after a first packet the other buffer went out; and it used TX
+  level 0, the lowest, where the SDK uses 6. All three are fixed (`fm1ble.c` `tx_slot`, `adv_slots`, `FM1BLE_TXPWR_LEVEL`).
+- The tool printed the PAL's packed counters under names of an older layout (`midi_out` 7695 was `pal_ops_adv_conn`
+  0x1E0F). The counters are now 32 separate words with the firmware's names in the tool (held equal by
+  `tests/ble_report_tool.py`, which also reads the recorded report `tests/ble/report_48ea034.bin` with that firmware's names).
+
+What is still a guess, and what only a run shows: whether the chip takes the length from TXDHDR or from the buffer (JieLi
+writes both; we now do too), whether TXTOG changes for each advertising packet or only around a scan response (the run
+counts its changes per trial; a central that hears the trials while `tx_flips` stays 0 means TXTOG is not the transmit
+record), which variant of the power-up puts a carrier out, why two in three of Cordio's one-channel operations never end
+(the counters `pal_done_37`, `_38`, `_39` say which channels end), and the whole receive side.
+
+### The next FM-1 run
+
+From xryzen, the FM-1 on its USB, xlap as the central (a few metres away is enough):
+
+```
+python3 tools/fm1_ble_report.py --run --wait 30 --central xlap --out DIR
+```
+
+`--central xlap` runs `tools/ble_central.py` there over ssh during the run (docs/BLUETOOTH_PAGE.md "A central on the
+bench"): it scans, connects to the stack, sends a Note On through BlueZ's MIDI port and captures the FM-1's, with no hands
+on either machine. What a good run shows, in this order:
+
+1. `adv_air` PASS "sent, trials 0 1 2" (or a subset), and the central's lines for C2:46:4D:31:00:10, :11, :12 "seen" with an
+   RSSI: the driver's own ADV_IND is on the air. The trials it did not hear say which power-up or level does not transmit.
+2. The central sees C2:46:4D:31:00:01 (the stack, via Cordio) and connects: `connect` PASS.
+3. `midi_in` PASS with 90 3C 64 as evidence (the central's Note On through the GATT write).
+4. `midi_out` PASS, and the central's "heard from the FM-1: Note on 0, note 60, velocity 100".
+
+If 1 passes and 2 does not, the counters `pal_done_37..39` and `pal_stuck` say which of Cordio's operations end; a
+connection that starts and drops needs the receive interrupt (`pal_resp_late` above 0: docs/BLUETOOTH_CORDIO.md).
 
 ## Open questions
 

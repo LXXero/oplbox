@@ -5,13 +5,17 @@ firmware/src/ble_sysex.c (with slot_sysex.c, wifi_sysex.c and ota.c, as oplbox.c
 REPORT, the report the simulator's Bluetooth page built (HOST_BLE_REPORT, tests/ble/fm1ble_test_host.c's made-up run).
 Also checks that the report's text is the pages' text the simulator drew (PAGES: its output, "ble page N: ..." lines),
 the step records, a report with a failed step (FAILREPORT: SKIP after it), and the tool's decoder on broken reports.
-Exit 1 when a check fails.
+Also: the tool's counter names against the firmware's (firmware/ble/fm1ble_test.h FM1BLE_CTR_NAMES) and its trial
+addresses against the run's (fm1ble_test.h, fm1ble_test.c), the first FM-1 run's report (tests/ble/report_48ea034.bin,
+recorded from the device at oplbox 48ea034: 24 counters, two of the PAL's in a word) read with that firmware's names, and
+--run --central local with the stand-in BlueZ tools of tests/ble/fake_bluez/. Exit 1 when a check fails.
 
   tests/ble_report_tool.py build/host/slot_sysex_test REPORT PAGES FAILREPORT OUTDIR
 """
 import io
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -22,7 +26,8 @@ import fm1_slot  # noqa: E402
 import fm1_ble_report as br  # noqa: E402
 
 fm1_slot.DELAY.update(reply=1.0, idle=3.0)
-br.DELAY.update(reply=1.0, poll=0.01)
+br.DELAY.update(reply=1.0, poll=0.01, central=0.1)
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 BIN, REPORT, PAGES, FAIL, OUT = sys.argv[1:6]
 bad = []
 
@@ -89,6 +94,27 @@ def tool(backend, *argv):
     return rc, out.getvalue(), err.getvalue()
 
 
+# the tool's names are the firmware's, and its addresses the run's
+hdr = open(os.path.join(ROOT, "firmware/ble/fm1ble_test.h")).read()
+names = re.findall(r'"([a-z0-9_]+)"', hdr[hdr.index("#define FM1BLE_CTR_NAMES"):].split("\n\n")[0])
+check(names == br.COUNTERS, f"the tool's counters are not the firmware's FM1BLE_CTR_NAMES:\n  tool     {br.COUNTERS}\n  firmware {names}")
+first = int(re.search(r"#define FM1BLE_TRIAL_ADDR0\s+0x([0-9A-Fa-f]+)u", hdr).group(1), 16)
+ntr = int(re.search(r"#define FM1BLE_TRIALS\s+(\d+)", hdr).group(1))
+src = open(os.path.join(ROOT, "firmware/ble/fm1ble_test.c")).read()
+addr = [int(x, 16) for x in re.search(r"g_addr\[6\] = \{([^}]*)\}", src).group(1).replace("0x", "").split(",")]
+mac = lambda b: ":".join(f"{x:02X}" for x in reversed(b))  # noqa: E731
+check(br.STACK_ADDR == mac(addr) and [a for a, _ in br.TRIALS] == [mac([first + k] + addr[1:]) for k in range(ntr)],
+      f"the tool's addresses are not the run's: {br.STACK_ADDR} {br.TRIALS}")
+
+# the first FM-1 run's report, from the device: the 24 counters of that firmware, by their own names
+old = br.decode(open(os.path.join(ROOT, "tests/ble/report_48ea034.bin"), "rb").read())
+oc = old["counters"]
+check(oc["events"] == 2569 and oc["events_v0"] == 4 and oc["pal_adv_ops"] == 7695 and oc["pal_conn_ops"] == 0 and
+      oc["pal_rx_timeout"] == 7695 and oc["pal_stuck"] == 5130 and oc["pal_timer_late_us"] == 293 and "midi_out" not in oc,
+      f"the 48ea034 report's counters: {oc}")
+check([s["result"] for s in old["steps"]][:2] == ["pass", "fail"] and br.air_trials(old) is None,
+      "the 48ea034 report: block FAIL, no air trials in it")
+
 raw = open(REPORT, "rb").read()
 rep = br.decode(raw)
 
@@ -99,7 +125,7 @@ for line in open(PAGES):
         n, text = line.split(" ble page ", 1)[1].rstrip("\n").split(": ", 1)
         if not text.startswith("PLAY: PAGE") and text:
             drawn.append(text)
-start = drawn.index("BLUETOOTH TEST (STAGE 5)   1/12")              # the run's page 1, then PLAY through to page 12
+start = drawn.index("BLUETOOTH TEST (STAGE 5)   1/13")              # the run's page 1, then PLAY through to page 13
 text = [t for t in rep["text"].split("\n") if t]
 first = text[:text.index("STEPS IN FULL: NAME, RESULT, MS, NOTE")]
 check(drawn[start:start + len(first)] == first, "the report's text is not the pages' text:\n" +
@@ -108,9 +134,9 @@ check(len(first) > 80, f"the report holds {len(first)} page lines")
 full = text[len(first) + 1:len(first) + 9]
 check([f.split()[0] for f in full] == br.STEPS and all(f.split()[1] == "PASS" for f in full), f"steps in full: {full}")
 check(text[-1] == "ADDRESS 02:46:4D:31:00:01", f"the address line: {text[-1]}")
-check(rep["counters"]["att_mtu"] == 185 and rep["counters"]["adv_events"] == 37 and rep["counters"]["midi_in"] == 1,
-      f"counters: {rep['counters']}")
-check(len(rep["counters"]) == 24 and list(rep["counters"])[:2] == ["radio_regs_ok", "radio_regs_bad"], "counter names")
+check(rep["counters"]["pal_rx_ok"] == 185 and rep["counters"]["events"] == 37 and rep["counters"]["air_trials"] == 7 and
+      rep["counters"]["pal_done_39"] == 3, f"counters: {rep['counters']}")
+check(list(rep["counters"]) == br.COUNTERS, "counter names")
 st = {s["step"]: s for s in rep["steps"]}
 check([s["step"] for s in rep["steps"]] == br.STEPS and all(s["result"] == "pass" for s in rep["steps"]),
       f"steps: {[(s['step'], s['result']) for s in rep['steps']]}")
@@ -133,7 +159,7 @@ check(rc == 0 and "Bluetooth test run 1" in out and "CONNECT  PASS" in out, f"--
 check(open(wait_out).read() == "3\n", "--wait 3: the FM-1 was not told 3 s")
 check(open(os.path.join(d, "report.txt")).read() == rep["text"], "--out: report.txt is not the report's text")
 check(open(os.path.join(d, "report.bin"), "rb").read()[10:] == raw[10:], "--out: report.bin is not the report")
-check("att_mtu 185" in open(os.path.join(d, "counters.txt")).read() and "hci_status 00000000" in open(os.path.join(d, "counters.txt")).read(),
+check("pal_rx_ok 185" in open(os.path.join(d, "counters.txt")).read() and "ram_end 01C16940" in open(os.path.join(d, "counters.txt")).read(),
       "--out: counters.txt")
 files = sorted(f for f in os.listdir(d) if f.startswith("step-"))
 check(files == ["step-1-radio.bin", "step-3-hci.bin", "step-6-connect.bin", "step-7-midi_in.bin", "step-8-midi_out.bin"],
@@ -143,6 +169,14 @@ rc, out, err = tool(dev, "--run", "--out", d)
 check(rc == 0 and open(wait_out).read() == "20\n", f"--run without --wait: exit {rc} {err}, told {open(wait_out).read()!r}")
 rc, out, err = tool(dev, "--read")
 check(rc == 0 and "Bluetooth test run 2" in out, f"--read after the runs: exit {rc} {err}")
+# --central local: the central (tools/ble_central.py, on the stand-in BlueZ tools) during the run, its result in the output
+os.environ.update(FAKE_BLUEZ_STATE=os.path.join(OUT, "fake_bluez_report"), FAKE_BLUEZ_MODE="ok",
+                  PATH=os.path.join(ROOT, "tests/ble/fake_bluez") + os.pathsep + os.environ["PATH"])
+os.makedirs(os.environ["FAKE_BLUEZ_STATE"], exist_ok=True)
+rc, out, err = tool(dev, "--run", "--wait", "3", "--timeout", "20", "--central", "local", "--out", d)
+check(rc == 0 and "CENTRAL (tools/ble_central.py)" in out and "C2:46:4D:31:00:01  the stack (Cordio, NimBLE): seen" in out and
+      "connect: yes; MIDI port: 128:0" in out, f"--central local: exit {rc} {err}\n{out}")
+check(os.path.exists(os.path.join(d, "central.json")) and "central.json" in out, "--central --out: central.json")
 dev.stop()
 
 dev = PipeBackend("--serve-ble", REPORT, "edit")
@@ -174,7 +208,7 @@ res = [s["result"] for s in frep["steps"]]
 check(res == ["pass", "pass", "fail", "skip", "skip", "skip", "skip", "skip"], f"failed run's results: {res}")
 ftext = frep["text"].split("\n")
 check("HCI      FAIL MADE-UP FAILURE (HOS" in ftext and "ADV_SET  SKIP SKIPPED: AN EARLIER " in ftext, f"failed run's text: {ftext[:12]}")
-check(any(t.startswith("hci FAIL") and "made-up failure" in t for t in ftext) and frep["counters"]["hci_status"] == 0x12,
+check(any(t.startswith("hci FAIL") and "made-up failure" in t for t in ftext) and frep["counters"]["bb_err"] == 0x12,
       "failed run: the full note and the status counter")
 out = io.StringIO()
 br.show(frep, out)

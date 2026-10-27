@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# A stand-in for alsa-utils' aseqsend, for tests/ble_central_tool.py: keeps what it was asked to send.
+import os
+import sys
+with open(os.path.join(os.environ["FAKE_BLUEZ_STATE"], "sent"), "w") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")

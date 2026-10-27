@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# A stand-in for alsa-utils' aseqdump, for tests/ble_central_tool.py: -l lists the ports (BlueZ's port for the FM-1 while
+# fake bluetoothctl says it is connected), -p waits for fake aseqsend's Note On and answers with the FM-1's.
+import os
+import sys
+import time
+st = os.environ["FAKE_BLUEZ_STATE"]
+if sys.argv[1:] == ["-l"]:
+    print(" Port    Client name                      Port name")
+    print("  0:0    System                           Timer")
+    print("  0:1    System                           Announce")
+    print(" 14:0    Midi Through                     Midi Through Port-0")
+    if os.path.exists(os.path.join(st, "port")):
+        print("128:0    OPLBOX                           OPLBOX Bluetooth")
+    sys.exit(0)
+if sys.argv[1] == "-p":
+    print(f"Waiting for data at port {sys.argv[2]}. Press Ctrl+C to end.", flush=True)
+    print("Source  Event                  Ch  Data", flush=True)
+    for _ in range(200):
+        if os.path.exists(os.path.join(st, "sent")):
+            print(f"{sys.argv[2]:>6}   Note on                 0, note 60, velocity 100", flush=True)
+            break
+        time.sleep(0.02)
+    time.sleep(60)

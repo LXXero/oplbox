@@ -1,5 +1,18 @@
 # Unreleased
 
+- Bluetooth, after the first FM-1 run (48ea034, docs/BLUETOOTH.md "The first FM-1 run"): nothing went on the air that
+  a central took. The driver now puts each advertising PDU's length in TXDHDR (it sent length 0), keeps the ADV_IND in
+  the TX slot the hardware's TXTOG names after every event (the other buffer went out instead), and transmits at level 6,
+  the SDK's (it used level 0, the lowest). The test run advertises in three 3 s air trials from their own addresses
+  (C2:46:4D:31:00:10, :11, :12: without the shared radio's init, with it, with it at level 11), so a central's scan says
+  which reached the air; `adv_air` passes only when TXTOG changed or a packet came in, not on the event timer alone. The
+  block step no longer fails on 0x2FCBC reading 0 (JieLi never reads it). The page has 13 screens and 32 counters (the
+  PAL's no longer two to a word); `tools/fm1_ble_report.py` prints them under the firmware's names (it had an older
+  layout's: `midi_out` 7695 was the PAL's advertising operations) and reads the 48ea034 report with that firmware's.
+  `tools/ble_central.py` is a BlueZ central for the bench (scan, connect, a Note On each way over BlueZ's ALSA MIDI
+  port); `fm1_ble_report.py --run --central xlap` runs it over ssh during the run. Host-tested only (the central on
+  stand-ins for bluetoothctl and alsa-utils); not run on an FM-1 or a real BlueZ.
+
 - Bluetooth LE MIDI, first diagnostic build (docs/BLUETOOTH.md "Cordio path as built", docs/BLUETOOTH_CORDIO.md,
   docs/BLUETOOTH_RADIO.md, docs/BLUETOOTH_PAGE.md): no JieLi binary in the image. The host is Apache NimBLE (peripheral
   subset, our polled port) and the controller is Arm Cordio's LE link layer, both vendored unchanged; the chip's radio
