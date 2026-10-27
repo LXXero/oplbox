@@ -126,10 +126,12 @@ networks heard (SSID, channel, RSSI, security, `P` when it answered a probe), pa
 frames' bytes in hex, page 9 the core's FIFO and counter registers and the FM-1's WiFi address, page 10 the join in
 detail, page 11 the WPA2 handshake and key tables. The run joins the WPA2 network set from a computer
 (`python3 tools/fm1_wifi_report.py --ssid NAME --psk-from-nm CONNECTION --run`; the FM-1 keeps it in RAM only), or
-without one the open network OPLBOX.
+without one the open network OPLBOX. Pages 12-14 are stage 9 (docs/WIFI_STAGE9.md): after the WPA2
+join, an address by DHCP, ARP for the gateway, 10 pings to it and 10 s answering pings from the network
+(`--run --ping` pings the FM-1 from the computer meanwhile).
 
-Read back everything on all eleven pages: from a computer the FM-1 is plugged into, `python3 tools/fm1_wifi_report.py`
-prints the last run's report (all eleven pages as text, every network, the counters) and `--run` starts a run first, with
+Read back everything on all 14 pages: from a computer the FM-1 is plugged into, `python3 tools/fm1_wifi_report.py`
+prints the last run's report (all 14 pages as text, every network, the counters) and `--run` starts a run first, with
 no button pressed (refused in EDIT; `--out DIR` also writes each received frame's bytes; docs/WIFI_STAGE4.md "Reading
 the results over USB"). Without a computer, a photo of each page is enough. What would look wrong: `RESULT` other than OK (the word after `AT` says which
 step stopped: PHY, PLL, TRIM, RF, TABLE), `BBP 0` still `00`, a PLL bank of 0 or 127, a middle bank of 15 (the scan

@@ -71,5 +71,7 @@ lwIP allocates only from these, and nothing calls `malloc`.
 - `sys_now()`, the port's millisecond clock (`../fm1wifi_port.h`).
 - Stack depth in `fm1wifi_net_input` (an echo reply is sent from inside it) is not measured [unchecked].
 
-`tools/build.py` compiles `../fm1wifi_net.c` with these include paths on every build (no C library header needed
-there), but not the files in `src/`, and nothing links either yet.
+`tools/build.py` links all of it into the app (stage 9, docs/WIFI_STAGE9.md): `../fm1wifi_net.c` and
+`../fm1wifi_ip.c` with these include paths, the files in `src/` with `-isystem` on the toolchain's `pi32v2/include`
+for `string.h`. With `--gc-sections` only `memcpy`, `memset` and `memcmp` are left of the C library, all three in
+`firmware/bsp/chip/libc.c`; the link fails if anything else is wanted. Linked cost: docs/WIFI_STAGE9.md "Size".
