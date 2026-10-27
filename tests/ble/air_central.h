@@ -21,6 +21,8 @@ extern const uint8_t CENTRAL[6];
 typedef struct {
     int want_scan, want_conn;           /* answer the next advertising packet with a SCAN_REQ / CONNECT_IND */
     uint32_t adv_seen[3];               /* ADV_IND heard on 37, 38, 39 */
+    uint32_t adv_from[256];             /* ADV_IND heard, by the first (least significant) byte of the advertiser address */
+    uint32_t adv_short;                 /* ADV_IND too short for its address, or its length byte not the PDU's */
     uint8_t last_adv[40];
     int last_adv_n;
     uint8_t chan_order[16];

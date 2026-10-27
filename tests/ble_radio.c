@@ -105,6 +105,9 @@ static void power_up(void)
           e16(FM1BLE_E_WIDEN1) == 0x51E7u && e16(FM1BLE_E_IFSCNT) == 0x8295u && e16(FM1BLE_E_RFPRIOCNTL) == 0x101u &&
           e16(FM1BLE_E_RFPRIOSTAT) == 1 && e16(FM1BLE_E_RXMAXBUF) == 0xFFu && e16(FM1BLE_E_TXPTR0) == 1 && e16(FM1BLE_E_TXDHDR1) == 1,
           "the entity at open: E.3's values (advertising access address 0x8E89BED6, CRC init 0x555555, ...)");
+    check(e16(FM1BLE_E_TXPWR0) == 0x16u && e16(FM1BLE_E_TXPWR1) == 0x16u && B.txpwr == 6,
+          "TX power: 0x10 + 6, the SDK's BLE level (0x10, level 0, is the lowest: the first FM-1 run's)");
+    check(bb_model_reg(FM1BLE_BB_RAM_END) == B.d.ram_end, "ram_end: 0x2FCBC as read back");
     {
         const uint8_t *e = B.blk + B.entity;
         check(e[FM1BLE_E_CHTAB2 + 0] == 2 && e[FM1BLE_E_CHTAB2 + 10] == 22 && e[FM1BLE_E_CHTAB2 + 11] == 26 && e[FM1BLE_E_CHTAB2 + 36] == 76,
@@ -163,6 +166,8 @@ static void advertising(void)
           "buffer 1: SCAN_RSP (type 4, TxAdd), the address, the scan response data");
     check(e16(FM1BLE_E_TXPTR0) == B.tx[0] + 0x14u && e16(FM1BLE_E_TXPTR1) == B.tx[1] + 0x14u, "TXPTR0 and TXPTR1: the payloads' offsets");
     check(e16(FM1BLE_E_TXAHDR0) == 0x10u && e16(FM1BLE_E_TXAHDR1) == (((0x44u >> 2) & 0x30u) | 4u), "TXAHDR: ((hdr >> 2) & 0x30) | (hdr & 0xF)");
+    check(e16(FM1BLE_E_TXDHDR0) == (a.nadv + 6u) << 8 && e16(FM1BLE_E_TXDHDR1) == (a.nrsp + 6u) << 8,
+          "TXDHDR: the PDU's length in bits 15-8 for both advertising buffers (it stayed 1, length 0, at 48ea034)");
     check(e16(FM1BLE_E_RXPTR0) == B.rx[0] + 0x14u && e16(FM1BLE_E_RXPTR1) == B.rx[1] + 0x14u, "RXPTR0 and RXPTR1");
     check(e16(FM1BLE_E_LOCALADR) == 0x0001u && e16(FM1BLE_E_LOCALADR + 2) == 0x4D31u && e16(FM1BLE_E_LOCALADR + 4) == 0xC246u,
           "LOCALADR: the address as three little-endian words");
@@ -191,6 +196,17 @@ static void advertising(void)
     }
     check(fm1ble_adv_stop(&B) == FM1BLE_OK, "stop");
     check(!bbm.armed && bbm.ax[FM1BLE_AX_CNT_HI] == 0 && (bb_model_reg(FM1BLE_BB_IRQ_EN) & 0x101u) == 0, "stopped: counter off, interrupts off");
+
+    /* TXTOG left odd by the hardware (an earlier link): the advertising PDU goes into slot 1, the scan response into 0 */
+    B.blk[B.entity + FM1BLE_E_TXTOG] = 1;
+    fm1ble_op_power(&B, 30);
+    check(B.txpwr == FM1BLE_TXPWR_MAX && e16(FM1BLE_E_TXPWR0) == 0x10u + FM1BLE_TXPWR_MAX, "op_power: at most level 11");
+    check(fm1ble_adv_start(&B, &a) == FM1BLE_OK && e16(FM1BLE_E_TXPTR1) == B.tx[0] + 0x14u && e16(FM1BLE_E_TXPTR0) == B.tx[1] + 0x14u &&
+          e16(FM1BLE_E_TXDHDR1) == (a.nadv + 6u) << 8 && e16(FM1BLE_E_TXAHDR0) == 0x14u && B.d.tx_flips == 1,
+          "TXTOG odd: ADV_IND in slot 1, SCAN_RSP in slot 0, the change counted");
+    fm1ble_adv_stop(&B);
+    B.blk[B.entity + FM1BLE_E_TXTOG] = 0;
+    fm1ble_op_power(&B, FM1BLE_TXPWR_LEVEL);
 
     /* ADV_NONCONN_IND: no random delay, no second buffer */
     make_adv(&a, 2);
@@ -235,6 +251,12 @@ static void polling(void)
         fm1ble_poll(&B);
     }
     check(B.d.events >= 8 && B.d.events <= 11 && B.d.rearms == 0, "repeating hardware: about ten events in a second, none re-armed by the driver");
+    check(B.d.tx_flips == B.d.events && B.d.tx_flips == bbm.tx_sent, "a TXTOG change after every event, counted");
+    {
+        uint32_t sl = e16(FM1BLE_E_TXTOG) & 1u;
+        check(e16(sl ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0) == B.tx[0] + 0x14u && e16(sl ? FM1BLE_E_TXPTR0 : FM1BLE_E_TXPTR1) == B.tx[1] + 0x14u,
+              "after each event the ADV_IND is in the slot TXTOG names, the scan response in the other (JieLi's event handler)");
+    }
     check(bb_model_reg(FM1BLE_BB_IRQ_PEND) == 0, "every flag cleared");
 
     /* a received packet: SCAN_REQ in buffer 0, CONNECT_IND in buffer 1 */
@@ -309,12 +331,13 @@ static void run_to_end(uint32_t wait_ms, void (*inject)(uint32_t t))
 
 static int g_injected;
 
-/* a CONNECT_IND of made-up bytes once the stack advertises (after 1.5 s), while one of its operations is armed */
+/* a CONNECT_IND of made-up bytes once the stack advertises, while one of its operations is armed */
 static void inject_conn(uint32_t t)
 {
     static uint8_t conn[34];
     int i;
-    if (t >= 1500 && bbm.armed && !g_injected) {
+    (void)t;
+    if (R.step[FM1BLE_STEP_HCI].result == FM1BLE_PASS && bbm.armed && !g_injected) {
         g_injected = 1;
         for (i = 0; i < 34; i++)
             conn[i] = (uint8_t)(0x40 + i);
@@ -322,9 +345,11 @@ static void inject_conn(uint32_t t)
     }
 }
 
+static uint32_t raw16(int step, int k) { return R.step[step].raw[2 * k] | R.step[step].raw[2 * k + 1] << 8; }
+
 static void test_runs(void)
 {
-    /* the baseband repeats its events */
+    /* the baseband repeats its events and sends (TXTOG changes): every trial shows it */
     bb_model_reset();
     bbm.repeat = 1;
     run_to_end(1000, NULL);
@@ -333,35 +358,55 @@ static void test_runs(void)
     check(R.step[FM1BLE_STEP_BLOCK].result == FM1BLE_PASS && R.step[FM1BLE_STEP_BLOCK].nraw == 32, "block: PASS");
     check(R.step[FM1BLE_STEP_HCI].result == FM1BLE_PASS && R.bdaddr[0] == 0xC2 && R.bdaddr[5] == 0x01,
           "hci: PASS, NimBLE started Cordio over the PAL and read its address (C2:46:4D:31:00:01)");
-    check((R.ctr[20] & 0xFFFFu) >= 3 && (R.ctr[22] >> 16) == 0, "pal counters: advertising operations armed and ended, none stuck");
+    check(R.ctr[FM1BLE_C_PAL_ADV_OPS] >= 3 && R.ctr[FM1BLE_C_PAL_STUCK] == 0, "pal counters: advertising operations armed and ended, none stuck");
+    check(R.ctr[FM1BLE_C_PAL_DONE_37] >= 1 && R.ctr[FM1BLE_C_PAL_DONE_38] >= 1 && R.ctr[FM1BLE_C_PAL_DONE_39] >= 1,
+          "pal counters: operations ended on each advertising channel");
     check(R.step[FM1BLE_STEP_ADV_SET].result == FM1BLE_PASS && R.step[FM1BLE_STEP_ADV_SET].nraw == 21, "adv_set: PASS, the 21 bytes of advertising data");
-    check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "repeat"), "adv_air: PASS, events repeat on their own");
+    check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS && !strcmp(R.step[FM1BLE_STEP_ADV_AIR].note, "sent, trials 0 1 2"),
+          "adv_air: PASS, every trial sent");
+    check(R.step[FM1BLE_STEP_ADV_AIR].nraw == 34 && raw16(FM1BLE_STEP_ADV_AIR, 0) >= 25 && raw16(FM1BLE_STEP_ADV_AIR, 1) == raw16(FM1BLE_STEP_ADV_AIR, 0) &&
+          raw16(FM1BLE_STEP_ADV_AIR, 3) >= 25 && raw16(FM1BLE_STEP_ADV_AIR, 6) >= 25,
+          "adv_air's evidence: per trial events (about 30 in 3 s) and as many TXTOG changes, then the hardware's words");
+    check(R.ctr[FM1BLE_C_AIR_TRIALS] == 7 && R.ctr[FM1BLE_C_VARIANT] == 1 && R.ctr[FM1BLE_C_TXPWR] == FM1BLE_TXPWR_LEVEL &&
+          bbm.rf_common_calls == 1, "counters: all three trials, the stack on variant 1 (the shared init ran once) at level 6");
     check(R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_FAIL && strstr(R.step[FM1BLE_STEP_CONNECT].note, "no SCAN_REQ"), "connect: FAIL, nobody came");
     check(R.step[FM1BLE_STEP_MIDI_IN].result == FM1BLE_SKIP && R.step[FM1BLE_STEP_MIDI_OUT].result == FM1BLE_SKIP, "the MIDI steps: SKIP");
-    check(R.ctr[2] == 0 && R.ctr[4] >= 3 && R.ctr[14] == 0 && R.ctr[12] >= 3, "counters: variant 0, events, no re-arm");
+    check(R.ctr[FM1BLE_C_REARM_USED] == 0, "no re-arm needed");
     check(bb_model_reg(FM1BLE_WL_CON0) == 0, "the run leaves the radio off");
 
     /* the hardware raises one flag per arming: the run turns re-arming on */
     bb_model_reset();
     run_to_end(0, NULL);
-    check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "re-arms") && R.ctr[14] == 1,
-          "one flag per arming: adv_air PASS, the driver re-arms (counter says so)");
+    check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "re-armed") &&
+          R.ctr[FM1BLE_C_REARM_USED] == 1, "one flag per arming: adv_air PASS, the driver re-arms (counter says so)");
     check(R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_SKIP, "wait 0: connect SKIP");
 
-    /* the baseband only runs after the shared radio's init: the second variant */
+    /* the baseband only runs after the shared radio's init: trials 1 and 2 */
     bb_model_reset();
     bbm.repeat = 1;
     bbm.needs_common = 1;
     run_to_end(0, NULL);
-    check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS && R.ctr[2] == 1 && R.ctr[3] == 1 && bbm.rf_common_calls == 1,
-          "no events without the shared init: the run retries with it and passes (variant 1)");
-    check(R.ctr[12] == 0 && R.ctr[13] >= 3, "events_v0 is 0, events_v1 counted");
+    check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "trials 1 2") && R.ctr[FM1BLE_C_AIR_TRIALS] == 6 &&
+          R.ctr[FM1BLE_C_VARIANT] == 1 && R.ctr[FM1BLE_C_RF_COMMON] == 1 && bbm.rf_common_calls == 1,
+          "no events without the shared init: trials 1 and 2 send, the stack runs on variant 1");
+    check(raw16(FM1BLE_STEP_ADV_AIR, 0) == 0 && raw16(FM1BLE_STEP_ADV_AIR, 3) >= 25, "trial 0's events 0, trial 1's counted");
 
-    /* a silent baseband: both variants fail */
+    /* events, but nothing sent (the first FM-1 run's look): adv_air fails; the stack still runs for its evidence */
+    bb_model_reset();
+    bbm.repeat = 1;
+    bbm.no_tx = 1;
+    run_to_end(0, NULL);
+    check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_FAIL && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "TXTOG never changed") &&
+          R.ctr[FM1BLE_C_AIR_TRIALS] == 0 && R.ctr[FM1BLE_C_TX_FLIPS] == 0,
+          "events without a TXTOG change: adv_air FAIL (the event timer alone does not pass it)");
+    check(raw16(FM1BLE_STEP_ADV_AIR, 0) >= 25 && raw16(FM1BLE_STEP_ADV_AIR, 1) == 0, "its evidence: events, no changes");
+    check(R.step[FM1BLE_STEP_HCI].result == FM1BLE_PASS, "the stack still comes up (hci PASS)");
+
+    /* a silent baseband: no trial has an event */
     bb_model_reset();
     bbm.silent = 1;
     run_to_end(1000, NULL);
-    check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_FAIL && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "either variant"), "silent: adv_air FAIL after both variants");
+    check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_FAIL && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "any trial"), "silent: adv_air FAIL after every trial");
     check(R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_SKIP && bbm.rf_common_calls == 1, "connect SKIP; the shared init was tried once");
     check(R.state == FM1BLE_DONE, "and the run ends");
 
@@ -374,12 +419,13 @@ static void test_runs(void)
           "a CONNECT_IND Cordio refuses (made-up parameters): connect FAIL says it was received");
     check(R.step[FM1BLE_STEP_CONNECT].nraw == 34 && R.step[FM1BLE_STEP_CONNECT].raw[0] == 0x40 && R.step[FM1BLE_STEP_CONNECT].raw[33] == 0x40 + 33,
           "with its payload as raw evidence");
-    check(R.ctr[8] == 1 && R.ctr[18] == 5 && R.ctr[19] == 34, "counters: one CONNECT_IND, type 5, length 34");
+    check(R.ctr[FM1BLE_C_RX_CONN_IND] == 1 && R.ctr[FM1BLE_C_RX_TYPE] == 5 && R.ctr[FM1BLE_C_RX_LEN] == 34, "counters: one CONNECT_IND, type 5, length 34");
     check(R.step[FM1BLE_STEP_MIDI_IN].result == FM1BLE_SKIP, "the MIDI steps need a connection");
 
     /* names */
-    check(!strcmp(fm1ble_step_name(FM1BLE_STEP_ADV_AIR), "adv_air") && fm1ble_step_name(8) == NULL && fm1ble_ctr_name(24) == NULL &&
-          !strcmp(fm1ble_ctr_name(4), "events"), "step and counter names");
+    check(!strcmp(fm1ble_step_name(FM1BLE_STEP_ADV_AIR), "adv_air") && fm1ble_step_name(8) == NULL && fm1ble_ctr_name(FM1BLE_N_CTR) == NULL &&
+          !strcmp(fm1ble_ctr_name(FM1BLE_C_EVENTS), "events") && !strcmp(fm1ble_ctr_name(FM1BLE_C_TX_FLIPS), "tx_flips") &&
+          !strcmp(fm1ble_ctr_name(FM1BLE_C_RAM_END), "ram_end"), "step and counter names");
 }
 
 int main(void)

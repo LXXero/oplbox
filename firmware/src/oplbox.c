@@ -2670,9 +2670,10 @@ static void wifi_page(void)
 
 
 /* ---- the Bluetooth test page (docs/BLUETOOTH_PAGE.md): the steps of fm1ble_test.h, one line each, then each step's
- * evidence and the counters, 12 pages; its report (ble_sysex.c) is those pages' text, then the counters and the steps'
+ * evidence and the counters, 13 pages; its report (ble_sysex.c) is those pages' text, then the counters and the steps'
  * raw bytes. Built like the WiFi page's: a run asked for over USB opens it and starts as PLAY does. */
-#define BLE_PAGES 12u                           /* 1 list, 8 steps, 3 of counters (8 each) */
+#define BLE_CTR_PAGES (FM1BLE_N_CTR / 8u)        /* 8 counters a page */
+#define BLE_PAGES (1u + FM1BLE_STEPS + BLE_CTR_PAGES)   /* 1 list, 8 steps, 4 of counters: 13 */
 #define BLE_TEXT_MAX 3072u
 #define BLE_REPORT_MAX (WR_HEAD + BLE_TEXT_MAX + 2u + 4u * FM1BLE_N_CTR + FM1BLE_STEPS * (6u + FM1BLE_RAW))
 static uint8_t ble_rep[BLE_REPORT_MAX] __attribute__((section(".pool")));
@@ -2719,7 +2720,7 @@ static char *ble_upper(char *d, const char *s, uint32_t max)   /* s upper-cased,
     return d;
 }
 
-/* page 0 lists the steps, 1-8 show one step's evidence, 9-11 the counters */
+/* page 0 lists the steps, 1-8 show one step's evidence, 9-12 the counters */
 static void ble_show(uint32_t page, const fm1ble_run *r)
 {
     char s[48], *p;
@@ -2727,8 +2728,8 @@ static void ble_show(uint32_t page, const fm1ble_run *r)
     if (!ble_cap) lcd_fill(0, 0, 240, 240, C_BLACK);
     if (page == 0u) p = cat(s, "BLUETOOTH TEST (STAGE 5)");
     else if (page <= FM1BLE_STEPS) { p = catu(cat(s, "STEP "), page); p = ble_upper(cat(p, " "), fm1ble_step_name((int)page - 1), 12); }
-    else p = cat(catu(cat(s, "COUNTERS "), page - FM1BLE_STEPS), "/3");
-    p = cat(p, "   "); p = catu(p, page + 1u); cat(p, "/12");
+    else { p = catu(cat(s, "COUNTERS "), page - FM1BLE_STEPS); p = catu(cat(p, "/"), BLE_CTR_PAGES); }
+    p = cat(p, "   "); p = catu(p, page + 1u); catu(cat(p, "/"), BLE_PAGES);
     ble_line(0, s, C_ACC);
     if (page == 0u) {
         for (i = 0; i < FM1BLE_STEPS; i++) {

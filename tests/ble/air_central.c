@@ -10,8 +10,11 @@ central C;
 static int c_adv(void *ctx, uint64_t t, uint8_t chan, const uint8_t *pdu, int n, uint8_t *req)
 {
     (void)ctx;
+    if ((pdu[0] & 0xF) == 0 && (n < 8 || pdu[1] != n - 2))
+        C.adv_short++;
     if (chan >= 37 && chan <= 39 && n >= 8 && (pdu[0] & 0xF) == 0) {
         C.adv_seen[chan - 37]++;
+        C.adv_from[pdu[2]]++;
         memcpy(C.last_adv, pdu, (size_t)n);
         C.last_adv_n = n;
         if (C.nchan < 16) {

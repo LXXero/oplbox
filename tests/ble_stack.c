@@ -195,11 +195,15 @@ static int test_run(void)
     bbm.air = &AIR;
     g_run = 1;
     fm1ble_test_begin(&R, 0, 4000);
-    check(run_until(c_hci_done, 5000) && R.step[FM1BLE_STEP_HCI].result == FM1BLE_PASS, "the run: hci PASS (the stack on the radio)");
+    check(run_until(c_hci_done, 15000) && R.step[FM1BLE_STEP_HCI].result == FM1BLE_PASS, "the run: hci PASS (the stack on the radio)");
     for (k = 0; k < FM1BLE_STEP_HCI; k++)
         check(R.step[k].result == FM1BLE_PASS, fm1ble_step_name(k));
-    check(R.step[FM1BLE_STEP_ADV_SET].result == FM1BLE_PASS && R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS,
+    check(R.step[FM1BLE_STEP_ADV_SET].result == FM1BLE_PASS && R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS &&
+          !strcmp(R.step[FM1BLE_STEP_ADV_AIR].note, "sent (re-armed), trials 0 1 2"),
           "the driver's own advertising first: adv_set and adv_air PASS on the air (one event per arming: it re-arms)");
+    for (k = 0; k < FM1BLE_TRIALS; k++)
+        check(C.adv_from[FM1BLE_TRIAL_ADDR0 + k] >= 20, "the central heard each trial's ADV_IND, from its own address");
+    check(C.adv_short == 0, "and every one whole: header ADV_IND, the address and the data (no zero-length PDU)");
     C.want_conn = 1;
     check(run_until(c_conn_done, 3000) && R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_PASS, "the run: connect PASS");
     val = central_session();
@@ -211,7 +215,7 @@ static int test_run(void)
           "the run: midi_in PASS with the central's Note On (90 3C 64) as evidence");
     check(R.step[FM1BLE_STEP_MIDI_OUT].result == FM1BLE_PASS, "the run: midi_out PASS, the notification acknowledged");
     check(g_notes == 1 && g_note_n == 8 && g_note[5] == 0x90 && g_note[6] == 0x3C, "the central got the run's Note On");
-    check((R.ctr[22] & 0xFFFFu) == 0 && (R.ctr[22] >> 16) == 0, "pal counters: no response late, nothing stuck");
+    check(R.ctr[FM1BLE_C_PAL_RESP_LATE] == 0 && R.ctr[FM1BLE_C_PAL_STUCK] == 0, "pal counters: no response late, nothing stuck");
     check(ble_nimble_state()->disconnects == 1, "the run closed the connection before turning the radio off");
     printf("ble_stack run: %d checks, %s (steps' ms: hci %u, connect %u, midi_in %u, midi_out %u)\n", checks, bad ? "FAILED" : "all passed",
            (unsigned)R.step[FM1BLE_STEP_HCI].ms, (unsigned)R.step[FM1BLE_STEP_CONNECT].ms, (unsigned)R.step[FM1BLE_STEP_MIDI_IN].ms,

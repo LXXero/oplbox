@@ -18,7 +18,7 @@ enum {
     FM1BLE_STEP_BLOCK,      /* the baseband's RAM block set up and the baseband started (no interrupt storm) */
     FM1BLE_STEP_HCI,        /* the host reset the controller: Reset, Read Local Version, Read BD_ADDR, LE Read Buffer Size */
     FM1BLE_STEP_ADV_SET,    /* advertising set up and enabled: the controller accepted all four commands */
-    FM1BLE_STEP_ADV_AIR,    /* the baseband ran advertising events: the interrupt count grew over a second */
+    FM1BLE_STEP_ADV_AIR,    /* the baseband ran advertising events and says it sent: TXTOG changed, or a request came in */
     FM1BLE_STEP_CONNECT,    /* a central connected within the wait: LE Connection Complete, the interval, the MTU */
     FM1BLE_STEP_MIDI_IN,    /* a BLE-MIDI packet written by the central reached the app's MIDI input */
     FM1BLE_STEP_MIDI_OUT,   /* a notification went out and the controller handed its buffer back */
@@ -38,7 +38,37 @@ typedef struct {
     uint32_t ms;                /* milliseconds the step took, from the run's start to its end */
 } fm1ble_step;
 
-#define FM1BLE_N_CTR    24      /* counters behind the steps; names in fm1ble_ctr_name */
+#define FM1BLE_N_CTR    32      /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
+
+/* The counters, in the report's order. tools/fm1_ble_report.py has the same list (tests/ble_report_tool.py holds it to
+ * FM1BLE_CTR_NAMES); the firmware at 48ea034 and before sent 24 others (the tool reads those by their count). */
+enum {
+    FM1BLE_C_RADIO_REGS_OK, FM1BLE_C_RADIO_REGS_BAD, FM1BLE_C_VARIANT, FM1BLE_C_RF_COMMON,
+    FM1BLE_C_EVENTS, FM1BLE_C_TX_FLIPS, FM1BLE_C_RX_PACKETS, FM1BLE_C_RX_SCAN_REQ,
+    FM1BLE_C_RX_CONN_IND, FM1BLE_C_RX_OTHER, FM1BLE_C_PENDING_LAST, FM1BLE_C_BB_ERR,
+    FM1BLE_C_AIR_TRIALS, FM1BLE_C_TXTOG, FM1BLE_C_REARM_USED, FM1BLE_C_ADV_ERR,
+    FM1BLE_C_RX_HDR, FM1BLE_C_RX_STAT, FM1BLE_C_RX_TYPE, FM1BLE_C_RX_LEN,
+    FM1BLE_C_PAL_ADV_OPS, FM1BLE_C_PAL_CONN_OPS, FM1BLE_C_PAL_RX_OK, FM1BLE_C_PAL_RX_TIMEOUT,
+    FM1BLE_C_PAL_RESP_LATE, FM1BLE_C_PAL_STUCK, FM1BLE_C_PAL_TIMER_LATE_US, FM1BLE_C_PAL_DONE_37,
+    FM1BLE_C_PAL_DONE_38, FM1BLE_C_PAL_DONE_39, FM1BLE_C_TXPWR, FM1BLE_C_RAM_END
+};
+#define FM1BLE_CTR_NAMES \
+    "radio_regs_ok", "radio_regs_bad", "variant", "rf_common", \
+    "events", "tx_flips", "rx_packets", "rx_scan_req", \
+    "rx_conn_ind", "rx_other", "pending_last", "bb_err", \
+    "air_trials", "txtog", "rearm_used", "adv_err", \
+    "rx_hdr", "rx_stat", "rx_type", "rx_len", \
+    "pal_adv_ops", "pal_conn_ops", "pal_rx_ok", "pal_rx_timeout", \
+    "pal_resp_late", "pal_stuck", "pal_timer_late_us", "pal_done_37", \
+    "pal_done_38", "pal_done_39", "txpwr", "ram_end"
+
+/* The air trials (adv_air): the driver's own ADV_IND, each trial from its own static random address, so a central's
+ * scan (tools/ble_central.py) says which one reached the air. Trial 0: without the shared radio's init (variant 0), at
+ * FM1BLE_TXPWR_LEVEL; trial 1: with it (variant 1), the same level; trial 2: variant 1 at FM1BLE_TXPWR_MAX. The address
+ * is C2:46:4D:31:00:<FM1BLE_TRIAL_ADDR0 + trial>; the stack (Cordio, NimBLE) advertises from C2:46:4D:31:00:01. */
+#define FM1BLE_TRIALS       3
+#define FM1BLE_TRIAL_MS     3000u
+#define FM1BLE_TRIAL_ADDR0  0x10u
 
 enum { FM1BLE_IDLE, FM1BLE_RUNNING, FM1BLE_DONE };
 
