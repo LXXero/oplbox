@@ -15,7 +15,8 @@
  *        own group frames coming back (addr3 = own MAC), fragments, A-MSDUs, frames with the Protected bit (the
  *        driver hands frames decrypted, CCMP header and MIC removed and the bit cleared), LLC headers other than
  *        RFC 1042 SNAP.
- * Built and host-tested only (tests/wifi_net.c); not run on an FM-1, not linked into OPLBOX yet.
+ * Host-tested (tests/wifi_net.c); linked into OPLBOX's WiFi test page by stage 9 (fm1wifi_ip.c, docs/WIFI_STAGE9.md),
+ * not run on an FM-1 yet.
  */
 #pragma once
 #include <stdint.h>
@@ -65,6 +66,18 @@ int fm1wifi_net_state(void);
 /* The address, netmask and gateway, in network order as bytes (a.b.c.d is addr[0..3]); 0.0.0.0 when there is none.
  * Any pointer may be NULL. */
 void fm1wifi_net_addr(uint8_t addr[4], uint8_t mask[4], uint8_t gw[4]);
+
+/* ARP (stage 9, docs/WIFI_STAGE9.md): one ARP request for ip (broadcast to the AP), and a look-up of ip in lwIP's
+ * table: 1 with its MAC in mac when the table holds a reply for it, else 0. ESTATE without an address. */
+int fm1wifi_net_arp_request(const uint8_t ip[4]);
+int fm1wifi_net_arp_lookup(const uint8_t ip[4], uint8_t mac[6]);
+/* An ICMP echo request (RFC 792) to dst from our address: identifier id, sequence number seq, len bytes of data
+ * (0, 1, 2, ... modulo 256; at most FM1WIFI_NET_PING_MAX), TTL 64. lwIP sends it, after an ARP request when dst (or,
+ * off our subnet, the gateway) is not in its table yet; it then keeps this one packet until the reply. lwIP itself
+ * drops echo replies (no raw API here): whoever reads the frames sees them (fm1wifi_ip.c). ESTATE without an
+ * address, ERANGE for len, EMEM when lwIP's heap is full, ETX when the send failed. */
+#define FM1WIFI_NET_PING_MAX (FM1WIFI_NET_MTU - 28u)
+int fm1wifi_net_ping(const uint8_t dst[4], uint16_t id, uint16_t seq, unsigned len);
 
 /* Frames seen by fm1wifi_net_input and what became of them, for the WiFi page and the tests. */
 typedef struct {
