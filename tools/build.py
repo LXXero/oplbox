@@ -169,7 +169,9 @@ def build_app():
             # the WiFi library (firmware/wifi/, for the WiFi test page) and its port on felucca-bsp (hal/)
             ("cc", *CFLAGS, "-Ifirmware/wifi", "-c", FW / "wifi" / "fm1wifi.c", "-o", OUT / "fm1wifi.o"),
             ("cc", *CFLAGS, "-Ifirmware/wifi", "-c", FW / "wifi" / "fm1wifi_frame.c", "-o", OUT / "fm1wifi_frame.o"),
-            ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-c", FW / "hal" / "fm1wifi_port_bsp.c", "-o", OUT / "fm1wifi_port_bsp.o")]
+            ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-c", FW / "hal" / "fm1wifi_port_bsp.c", "-o", OUT / "fm1wifi_port_bsp.o"),
+            # the Bluetooth driver's port on felucca-bsp; the test run and the stack under it are build_ble's objects
+            ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-Ifirmware/ble", "-c", FW / "hal" / "fm1ble_port_bsp.c", "-o", OUT / "fm1ble_port_bsp.o")]
     # stage 8 (docs/WIFI_STAGE8.md): the WPA2 station, the EAPOL handshakes, the key primitives and their BearSSL subset
     wpa = [FW / "wifi" / "fm1wifi_wpa.c", FW / "wifi" / "wpa_eapol.c", FW / "wifi" / "wpa_crypto.c",
            *sorted((FW / "wifi" / "bearssl").glob("*.c"))]
@@ -179,7 +181,6 @@ def build_app():
     # ping, echo answers) and the vendored lwIP 2.1.3 subset (wifi/lwip/README.md). lwIP's own files include the C
     # library's string.h, so they alone get the toolchain's headers (-isystem); its functions come from libc.c
     lwip_inc = ["-Ifirmware/wifi/lwip/port", "-Ifirmware/wifi/lwip/src/include"]
-    libc_inc = "/opt/jieli/pi32v2/include" if use_docker() else str(toolchain() / "pi32v2" / "include")
     ip = [FW / "wifi" / "fm1wifi_net.c", FW / "wifi" / "fm1wifi_ip.c"]
     lwip = sorted([*(FW / "wifi" / "lwip" / "src" / "core").glob("*.c"),
                    *(FW / "wifi" / "lwip" / "src" / "core" / "ipv4").glob("*.c"),
@@ -187,13 +188,14 @@ def build_app():
     ip_objs = [OUT / (s.stem + ".o") for s in ip]
     lwip_objs = [OUT / ("lwip_" + s.stem + ".o") for s in lwip]
     cmds += [("cc", *CFLAGS, "-Ifirmware/wifi", *lwip_inc, "-c", s, "-o", o) for s, o in zip(ip, ip_objs)]
-    cmds += [("cc", *CFLAGS, "-Ifirmware/wifi", *lwip_inc, "-isystem", libc_inc, "-c", s, "-o", o)
+    cmds += [("cc", *CFLAGS, "-Ifirmware/wifi", *lwip_inc, *libc_inc(), "-c", s, "-o", o)
              for s, o in zip(lwip, lwip_objs)]
     tc_all(*cmds)
     elf = OUT / "oplbox.elf"
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o",
        OUT / "fm1_isr.o", OUT / "oplbox.o", OUT / "dbopl2.o", OUT / "fm1wifi.o", OUT / "fm1wifi_frame.o",
-       OUT / "fm1wifi_port_bsp.o", *wpa_objs, *ip_objs, *lwip_objs, "-o", elf)
+       OUT / "fm1wifi_port_bsp.o", OUT / "fm1ble_port_bsp.o", *BLE_APP_OBJS,
+       *wpa_objs, *ip_objs, *lwip_objs, "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin", "ramcode.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),
@@ -254,16 +256,35 @@ def build_wifi():
     return f"firmware/wifi/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (lwIP not counted here: build_app links it)"
 
 
-# ---- the BLE HCI layer (firmware/ble/, docs/BLUETOOTH.md stage 1): compiled alone with the app's flags and only its
-# own directory on the include path, like firmware/wifi/, and sized. Not linked: nothing calls it until a controller
-# runs (stage 4). Object sizes without --gc-sections: an upper bound.
+# ---- the BLE stack (firmware/ble/, docs/BLUETOOTH.md "Cordio path as built"): every file compiled alone with the app's
+# flags and sized. Not linked: nothing calls the stack until a controller runs. Object sizes without --gc-sections: an
+# upper bound. Two groups: our own files with only firmware/ble/ on the include path (hci.c, ble_midi.c: no C library
+# header, like firmware/wifi/); the NimBLE host (vendored, Apache-2.0, unchanged) and the test run, with the port's
+# configuration and the toolchain's own C library headers (string.h, assert.h: the BLE stacks use them, the app
+# does not) and our glue on it. The C library's functions come from the BSP's libc.c and firmware/ble/ble_libc.c.
 
-def build_ble():
-    srcs = sorted((FW / "ble").glob("*.c"))
-    out = OUT / "ble"
-    out.mkdir(parents=True, exist_ok=True)
-    objs = [out / f"{s.stem}.o" for s in srcs]
-    tc_all(*[("cc", *CFLAGS, "-Ifirmware/ble", "-c", s, "-o", o) for s, o in zip(srcs, objs)])
+def libc_inc():
+    """-isystem for the toolchain's newlib headers (as the compiler sees the toolchain: in the container, /opt/jieli)"""
+    return ["-isystem", ("/opt/jieli" if use_docker() else str(toolchain())) + "/pi32v2/include"]
+
+
+NIMBLE = FW / "ble" / "nimble"
+NIMBLE_INC = ["-Ifirmware/ble/nimble_port", "-Ifirmware/ble", "-Ifirmware/ble/nimble/nimble/include",
+              "-Ifirmware/ble/nimble/nimble/host/include", "-Ifirmware/ble/nimble/nimble/transport/include",
+              "-Ifirmware/ble/nimble/porting/nimble/include", "-Ifirmware/ble/nimble/nimble/host/services/gap/include",
+              "-Ifirmware/ble/nimble/nimble/host/services/gatt/include", "-Ifirmware/ble/nimble/nimble/host/util/include"]
+
+
+def nimble_sources():
+    host = sorted((NIMBLE / "nimble" / "host" / "src").glob("*.c"))
+    svc = sorted((NIMBLE / "nimble" / "host" / "services" / "gap" / "src").glob("*.c")) + \
+        sorted((NIMBLE / "nimble" / "host" / "services" / "gatt" / "src").glob("*.c"))
+    util = sorted((NIMBLE / "nimble" / "host" / "util" / "src").glob("*.c"))
+    port = [NIMBLE / "nimble" / "transport" / "src" / "transport.c", *sorted((NIMBLE / "porting" / "nimble" / "src").glob("*.c"))]
+    return [*host, *svc, *util, *port, FW / "ble" / "ble_nimble.c", FW / "ble" / "ble_nimble_npl.c"]
+
+
+def section_sizes(objs):
     code = data = 0
     for o in objs:
         for ln in tc("common/bin/objdump", "-h", o).splitlines():
@@ -272,7 +293,63 @@ def build_ble():
                 code += int(p[2], 16)
             elif len(p) > 3 and re.match(r"\.(data|bss)", p[1]):
                 data += int(p[2], 16)
-    return f"firmware/ble/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (not linked yet)"
+    return code, data
+
+
+BLE_APP_OBJS = []
+
+
+def build_ble():
+    out = OUT / "ble"
+    out.mkdir(parents=True, exist_ok=True)
+    own = [FW / "ble" / n for n in ("hci.c", "ble_midi.c")]
+    own_objs = [out / f"{s.stem}.o" for s in own]
+    tc_all(*[("cc", *CFLAGS, "-Ifirmware/ble", "-c", s, "-o", o) for s, o in zip(own, own_objs)])
+    nim = [FW / "ble" / "fm1ble_test.c", FW / "ble" / "fm1ble.c", FW / "ble" / "fm1ble_stack.c", *nimble_sources()]
+    nim_objs = [out / f"nimble_{s.stem}.o" for s in nim]
+    tc_all(*[("cc", *CFLAGS, *NIMBLE_INC, "-Ifirmware/ble/cordio_port", *libc_inc(), "-c", s, "-o", o) for s, o in zip(nim, nim_objs)])
+    # Cordio's LE controller (vendored, Apache-2.0), peripheral-only, with the port's WSF and HCI glue
+    cr = FW / "ble" / "cordio"
+    crp = FW / "ble" / "cordio_port"
+    cr_src = [cr / ln.strip() for ln in (crp / "SOURCES.txt").read_text().splitlines() if ln.strip()]
+    cr_inc = sorted({f"-I{h.parent.relative_to(SRC)}" for h in cr.rglob("*.h")})
+    cr_def = [f"-D{ln.strip()}" for ln in (crp / "DEFINES.txt").read_text().splitlines() if ln.strip()]
+    cr_all = [*cr_src, crp / "cordio_ctrl.c", crp / "cordio_wsf.c"]
+    cr_objs = [out / f"cordio_{s.stem}.o" for s in cr_all]
+    tc_all(*[("cc", *CFLAGS, "-fshort-enums", "-Wno-parentheses", *cr_inc, "-Ifirmware/ble", "-Ifirmware/ble/cordio_port", *cr_def, *libc_inc(), "-c", s, "-o", o)
+             for s, o in zip(cr_all, cr_objs)])
+    kc, kd = section_sizes(cr_objs)
+    # the chip's PAL (pal_fm1.c on the radio driver), compiled for the FM-1 CPU: its size, apart from the measuring link below
+    pal_obj = out / "cordio_pal_fm1.o"
+    tc_all(("cc", *CFLAGS, "-fshort-enums", *cr_inc, "-Ifirmware/ble", "-Ifirmware/ble/cordio_port", *cr_def, *libc_inc(), "-c",
+            crp / "pal_fm1.c", "-o", pal_obj))
+    pc, pd = section_sizes([pal_obj])
+    # the host stack linked with --gc-sections (the driver and the test run are in the app's own link), to measure what a build that carries it would add: the host stub PAL stands
+    # for the chip's (it counts, so its few bytes are in the number), the BSP's libc.c and ble_libc.c are the C library
+    extra = [(crp / "pal_stubs_host.c", [*cr_inc, "-Ifirmware/ble/cordio_port", "-fshort-enums", "-Wno-parentheses", *cr_def, *libc_inc()]),
+             (FW / "ble" / "ble_libc.c", ["-Ifirmware/ble"]),
+             (BSP / "chip" / "libc.c", [*BSP_INC])]
+    ex_objs = [out / f"measure_{src.stem}.o" for src, _ in extra]
+    tc_all(*[("cc", *CFLAGS, *fl, "-c", src, "-o", o) for (src, fl), o in zip(extra, ex_objs)])
+    elf = out / "ble_measure.elf"
+    tc("pi32v2/bin/ld", "--gc-sections", "-e", "ble_nimble_init", "-u", "cordio_ctrl_init", "-u", "ble_nimble_poll",
+       *own_objs, *[o for o in nim_objs if o.name not in ("nimble_fm1ble.o", "nimble_fm1ble_test.o", "nimble_fm1ble_stack.o")], *cr_objs, *ex_objs, "-o", elf)
+    lc = ld = 0
+    for ln in tc("common/bin/objdump", "-h", elf).splitlines():
+        p = ln.split()
+        if len(p) > 3 and re.match(r"\.(text|rodata)", p[1]):
+            lc += int(p[2], 16)
+        elif len(p) > 3 and re.match(r"\.(data|bss)", p[1]):
+            ld += int(p[2], 16)
+    oc, od = section_sizes(own_objs)
+    nc, nd = section_sizes(nim_objs)
+    # what the app links (build_app): the test run, the driver and the stack (NimBLE, Cordio, the chip's PAL) and
+    # ble_libc.c; the BSP's libc.c is the app's own (platform.c), the measuring objects and the stub PAL are not linked
+    BLE_APP_OBJS[:] = [*own_objs, *nim_objs, *cr_objs, pal_obj, out / "measure_ble_libc.o"]
+    return (f"firmware/ble/ alone: {len(own_objs)} objects {oc} B code+rodata, {od} B data+bss; "
+            f"NimBLE host and port: {len(nim_objs)} objects {nc} B code+rodata, {nd} B data+bss; "
+            f"Cordio controller: {len(cr_objs)} objects {kc} B code+rodata, {kd} B data+bss; the chip's PAL: {pc} B code+rodata, "
+            f"{pd} B data+bss; all linked with --gc-sections (stub PAL): {lc} B code+rodata, {ld} B data+bss")
 
 
 # ---- the WiFi trim's RAM code (docs/WIFI_STAGE3.md "What runs from RAM"): the radio's trim must not touch the flash,
@@ -329,6 +406,12 @@ def trim_ram_check(objs):
     return errors, f"WiFi trim RAM code: {n} references, all to RAM"
 
 
+# Immediates in the ROM's address range that are numbers, not addresses: (function, value), each read in its source.
+ROM_CHECK_CONSTANTS = {
+    ("LlSetConnOpFlags", 0xFFC3FB41),   # Cordio's ll_main_conn.c: ~flagAll, the mask of the connection flags it refuses
+}
+
+
 def check(img, syms, dis, rt):
     errors, notes = [], []
     m = re.search(r"^([0-9a-f]+) .*\s_start$", syms, re.M)
@@ -341,14 +424,18 @@ def check(img, syms, dis, rt):
         errors.append(f".ram_text contains calls: {rt_calls[:3]}")
     else:
         notes.append(f".ram_text: {len([ln for ln in rt.splitlines() if LINE.match(ln)])} insns, no calls")
+    fn = None
     for ln in dis.splitlines():     # nothing may call or load an address in the chip ROM
+        mf = re.match(r"^([A-Za-z_.$][\w.$]*):$", ln)   # this objdump writes a function as "name:"
+        if mf:
+            fn = mf.group(1)
         mm = LINE.match(ln)
         if not mm:
             continue
         for v in re.findall(r"= (-?\d+) <|call -?\d+ <[^:>]*: ([0-9a-f]+) >", mm.group(3)):
             val = (int(v[0]) & 0xFFFFFFFF) if v[0] else int(v[1], 16) & 0xFFFFFFFF
-            if 0xFFC00000 <= val < 0xFFD00000:
-                errors.append(f"reference to ROM address {val:#010x}")
+            if 0xFFC00000 <= val < 0xFFD00000 and (fn, val) not in ROM_CHECK_CONSTANTS:
+                errors.append(f"reference to ROM address {val:#010x} in {fn}")
     if len(img) > APP_SLOT:
         errors.append(f"image {len(img)} B exceeds the app slot")
 
@@ -376,9 +463,9 @@ def check(img, syms, dis, rt):
 #    mailbox, vectors), XIP 0x02000000-0x020FFFFF);
 #  - no inline asm, except the empty compiler barrier RING_PUBLISH() (emits no instruction);
 #  - no HAL register macro (a bsp/ or hal/ #define that is, or expands to, a volatile access).
-# The vendored BearSSL in wifi/bearssl/ and lwIP in wifi/lwip/src/ skip the address-literal rule only: their constants
-# (AES Rcon 0x02000000, lwIP's TCP MSS option 0x02040000) fall in the windows, and the other three rules still hold
-# there. So does wifi/fm1wifi_regs.h, the WiFi register
+# The vendored BearSSL in wifi/bearssl/, lwIP in wifi/lwip/src/, NimBLE in ble/nimble/ and Cordio in ble/cordio/ skip the
+# address-literal rule only: their constants (AES Rcon 0x02000000, lwIP's TCP MSS option 0x02040000, NimBLE's
+# 0x00010000 flags) fall in the windows, and the other three rules still hold there. So does wifi/fm1wifi_regs.h, the WiFi register
 # map: its addresses are numbers the library hands to its port (hal/fm1wifi_port_bsp.c makes the access), and
 # the other rules keep any access out of firmware/wifi/; and wifi/fm1wifi_tables.h, generated register values
 # (tools/wifi_ir.py) some of which look like addresses.
@@ -410,7 +497,8 @@ def mmio_check():
             for rx, what in ((MMIO_LIT, "register/window address"), (MMIO_CAST, "volatile pointer cast"),
                              (MMIO_ASM, "inline asm")):
                 if rx is MMIO_LIT and (f.parent == FW / "wifi" / "bearssl" or FW / "wifi" / "lwip" / "src" in f.parents or
-                                       f.name in ("fm1wifi_regs.h", "fm1wifi_tables.h")):
+                                       FW / "ble" / "nimble" in f.parents or FW / "ble" / "cordio" in f.parents or
+                                       f.name in ("fm1wifi_regs.h", "fm1wifi_tables.h", "fm1ble_regs.h")):
                     continue
                 m = rx.search(ln)
                 if m:
@@ -441,10 +529,11 @@ def main():
             print(f"warning: SDK {rel} differs from AC79NN_SDK_V1.2.1; the package will not match the reference")
     OUT.mkdir(parents=True, exist_ok=True)
     ota = build_loader()
+    ble_note = build_ble()                      # first: the app links its objects
     img, syms, dis, rt = build_app()
     errors, notes = check(img, syms, dis, rt)
     notes.append(build_wifi())
-    notes.append(build_ble())
+    notes.append(ble_note)
     trim_err, trim_note = trim_ram_check([OUT / "fm1wifi.o", OUT / "fm1wifi_port_bsp.o"])
     errors += trim_err
     if not trim_err:

@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# For tests/ble_nimble.c: a controller that refuses LE Set Advertising Parameters (Invalid HCI Command Parameters).
+nimble
+status 2006 12

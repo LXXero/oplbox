@@ -153,6 +153,54 @@ static uint64_t rd64(const uint8_t *p)
     return v;
 }
 
+/* The commands a full host asks beside the ones a minimal host needs (the "nimble" setting). 1: answered. */
+static int nimble_command(hci_model *m, uint16_t op, const uint8_t *a, uint8_t n)
+{
+    uint8_t r[70] = { 0 };
+    switch (op) {
+    case 0x1001:                                /* Read Local Version Information (7.4.1): HCI 5.0 (9), LMP 9 */
+        r[1] = 9; r[4] = 9;
+        wr16(r + 5, 0xFFFF);                    /* manufacturer: none assigned */
+        cmd_complete(m, op, r, 9);
+        return 1;
+    case 0x1002:                                /* Read Local Supported Commands (7.4.2): 64 bytes, none claimed */
+        cmd_complete(m, op, r, 65);
+        return 1;
+    case 0x1003:                                /* Read Local Supported Features (7.4.3): LE Supported, BR/EDR not */
+        r[1 + 4] = 0x60;
+        cmd_complete(m, op, r, 9);
+        return 1;
+    case 0x2003:                                /* LE Read Local Supported Features (7.8.3): connection parameters request */
+        r[1] = 0x02;
+        cmd_complete(m, op, r, 9);
+        return 1;
+    case 0x0C63:                                /* Set Event Mask Page 2 (7.3.69) */
+        if (n != 8)
+            badf(m, "command %04x with %u parameter bytes, the specification says 8", op, n);
+        cmd_complete(m, op, r, 1);
+        return 1;
+    case 0x2013: {                              /* LE Connection Update (7.8.18): handle, intervals, latency, timeout, CE */
+        uint8_t p[10] = { HCI_LE_CONN_UPDATE_COMPLETE };
+        if (n != 14)
+            badf(m, "command %04x with %u parameter bytes, the specification says 14", op, n);
+        if (m->conn == HCI_NO_CONN || (rd16(a) & 0x0FFF) != m->conn) {
+            cmd_status(m, op, 0x02);
+            return 1;
+        }
+        cmd_status(m, op, 0);
+        wr16(p + 2, m->conn);
+        wr16(p + 4, rd16(a + 4));               /* the central grants the largest interval asked */
+        wr16(p + 6, rd16(a + 6));
+        wr16(p + 8, rd16(a + 8));
+        if (le_on(m, 2))
+            evt(m, HCI_EV_LE_META, p, 10);
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
 static void command(hci_model *m, const uint8_t *p, uint16_t n)
 {
     uint16_t op;
@@ -250,6 +298,8 @@ static void command(hci_model *m, const uint8_t *p, uint16_t n)
         disconnected(m, HCI_ERR_LOCAL_HOST_TERM);
         break;
     default:
+        if (m->nimble && nimble_command(m, op, a, p[2]))
+            break;
         r[0] = HCI_ERR_UNKNOWN_COMMAND;
         cmd_complete(m, op, r, 1);
         break;
@@ -259,6 +309,28 @@ static void command(hci_model *m, const uint8_t *p, uint16_t n)
 /* The buffers it reported: its own LE ones, or the shared ones when it has none (7.8.2). */
 static uint16_t acl_len(const hci_model *m) { return m->buf_len && m->buf_count ? m->buf_len : m->shared_len; }
 static uint16_t acl_count(const hci_model *m) { return m->buf_len && m->buf_count ? m->buf_count : m->shared_count; }
+
+/* The "nimble" setting: the central accepts an L2CAP Connection Parameter Update Request (Vol 3 Part A 4.20: code 0x12,
+ * identifier, length 8, interval min and max, latency, timeout) with the Response (0x13, result 0, accepted) and
+ * moves the connection to the largest interval asked, as LE Connection Update Complete. */
+static void nimble_param_request(hci_model *m)
+{
+    uint8_t rsp[10], pkt[HCI_ACL_MAX], p[10] = { HCI_LE_CONN_UPDATE_COMPLETE };
+    const uint8_t *a = m->last + 4;
+    wr16(rsp, 6);
+    wr16(rsp + 2, L2CAP_CID_LE_SIG);
+    rsp[4] = 0x13;
+    rsp[5] = m->last[1];
+    wr16(rsp + 6, 2);
+    wr16(rsp + 8, 0);
+    out(m, HCI_ACL, pkt, hci_acl_pack(pkt, m->conn, HCI_PB_FIRST_FLUSH, rsp, 10));
+    wr16(p + 2, m->conn);
+    wr16(p + 4, rd16(a + 2));
+    wr16(p + 6, rd16(a + 4));
+    wr16(p + 8, rd16(a + 6));
+    if (le_on(m, 2))
+        evt(m, HCI_EV_LE_META, p, 10);
+}
 
 /* ACL data from the host: checked, then put back together as the central would. */
 static void acl(hci_model *m, const uint8_t *p, uint16_t n)
@@ -312,6 +384,8 @@ static void acl(hci_model *m, const uint8_t *p, uint16_t n)
         memcpy(m->last, m->l2 + 4, m->nlast);
         m->l2cap_from_host++;
         m->l2_on = 0;
+        if (m->nimble && m->last_cid == L2CAP_CID_LE_SIG && m->nlast == 12 && m->last[0] == 0x12)
+            nimble_param_request(m);
     }
 }
 
@@ -516,6 +590,8 @@ int hci_model_load(hci_model *m, const char *path)
             m->silent_op = (uint16_t)strtoul(w1, NULL, 16);
         } else if (!strcmp(w0, "sync")) {
             m->sync = 1;
+        } else if (!strcmp(w0, "nimble")) {
+            m->nimble = 1;
         } else {
             if (m->nsteps >= HCI_MODEL_STEPS) {
                 err = 1;

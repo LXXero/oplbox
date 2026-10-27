@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# For tests/ble_nimble.c (tests/ble/hci_model.h has the format): a central finds the host advertising, connects with
+# a 30 ms interval (the host asks for 15 ms or less and the model grants it), and later leaves. The test drives the
+# ATT traffic itself between the steps; it adds the later steps (a second connection, the leave) from files.
+nimble
+bufsize 27 2
+bdaddr 02:46:4d:31:00:01
+wait adv
+wait ms 20
+connect handle=0040 peer=c0:ff:ee:00:00:01 type=1 interval=24 latency=0 timeout=72

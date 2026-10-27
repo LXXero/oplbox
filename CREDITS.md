@@ -33,6 +33,12 @@ below). It stands on the work of the people and projects named here. Licences an
 - **JieLi AC79 SDK** (Apache-2.0): the boot files read from your SDK checkout at build time; `apps/common/net/wifi_conf.c`'s receive thresholds and RF RAM table, copied as numbers into `firmware/wifi/fm1wifi_tables.h`; and the WiFi radio's register facts (values, order, delays) that `tools/wifi_ir.py` reads out of `wl_rf_common.a` (no code taken; docs/WIFI.md).
 - **Linux rt2x00** `rt2800.h`, Ivo van Doorn and the rt2x00 authors (GPL-2.0-or-later), with the SDK's `WL82.h`/`hwi.h`: the WiFi register map in `firmware/wifi/fm1wifi_regs.h`.
 - **Linux** `include/linux/mmc/sdio.h` (v6.6): the SDIO CCCR addresses of the stage 1 header were cross-checked against it (facts only; nothing copied); they left with the SD command enumeration in stage 2, when it turned out the WiFi core is not enumerated (docs/WIFI.md).
+- **Apache NimBLE**, the Apache Software Foundation (Apache-2.0): the Bluetooth LE host (ATT, GATT, GAP, L2CAP and the HCI layer)
+  in `firmware/ble/nimble/`, used unchanged on OPLBOX's port.
+- **Cordio**, Packetcraft and Arm Limited (Apache-2.0), https://github.com/packetcraft-inc/stacks: the LE link layer
+  (controller), the WSF utilities and the PAL interface headers in `firmware/ble/cordio/`, used unchanged. The names
+  `lctrComputeAccessAddr`, `lctrComputeCrcInit` and others inside JieLi's closed `btctrler.a` are what showed the
+  controller's code is Cordio's; nothing of JieLi's code or binary is in OPLBOX's image.
 - **BearSSL**, Thomas Pornin (MIT): SHA-1, HMAC and AES decryption under the WPA2 key code (`firmware/wifi/bearssl/`).
 - **lwIP** 2.1.3, Adam Dunkels, the Swedish Institute of Computer Science and the lwIP developers (BSD-3-Clause): the
   IP stack under the WiFi network interface (IPv4, ARP, DHCP, ICMP, UDP; `firmware/wifi/lwip/`, unchanged).

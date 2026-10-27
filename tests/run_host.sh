@@ -18,7 +18,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -DFM1WIFI_NET_DEBUG -Ifirmware/wifi $LWIP_
 cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -DDBOPL2_SCOPE_N=512 -Ifirmware/src -Ifirmware/gen \
    -Ifirmware/wifi -Itests/wifi -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c \
    firmware/wifi/fm1wifi_wpa.c firmware/wifi/wpa_eapol.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c firmware/wifi/fm1wifi_ip.c \
-   tests/wifi/sdio_model.c tests/wifi/wpa_ap.c build/host/fm1wifi_net.o build/host/lwip/*.o
+   tests/wifi/sdio_model.c tests/wifi/wpa_ap.c build/host/fm1wifi_net.o build/host/lwip/*.o tests/ble/fm1ble_test_host.c
 build/host/oplbox build/host/oplbox
 # the editor's undo and live recording, checked against the song in memory: each script exits 1 when a check fails
 build/host/oplbox build/host/undo tests/script_undo.txt
@@ -337,7 +337,9 @@ python3 tests/wifi_ip_mutants.py build/host
 # connection update, a disconnection either way), the same with answers inside the send call, and how a start fails;
 # and the test must catch 17 deliberate bugs in hci.c
 for f in firmware/ble/*.c firmware/ble/*.h; do
-  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v -e '"hci\.h"' -e '"ble_midi\.h"'; then
+  if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v -e '"hci\.h"' -e '"ble_midi\.h"' -e '"ble_nimble\.h"' \
+       -e '"ble_nimble_npl\.h"' -e '"fm1ble_test\.h"' -e '"fm1ble\.h"' -e '"fm1ble_port\.h"' -e '"fm1ble_regs\.h"' \
+       -e '"fm1ble_stack\.h"' -e '"cordio_ctrl\.h"' -e '"pal_fm1\.h"'; then
     echo "FAIL: $f includes a file from outside firmware/ble/" >&2; exit 1; fi
 done
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/ble_hci.o firmware/ble/hci.c
@@ -355,6 +357,97 @@ cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -Ifirmware/ble -o bu
    tests/ble_midi.c firmware/ble/ble_midi.c
 build/host/ble_midi
 python3 tests/ble_midi_mutants.py build/host
+# the NimBLE host (firmware/ble/nimble/, Apache-2.0, unchanged: held to the upstream commit by its checksums) on our port
+# (ble_nimble.c, ble_nimble_npl.c, nimble_port/; docs/BLUETOOTH.md "Cordio path as built" step 1), against the fake
+# controller: start-up, advertising, a central that walks the GATT database, subscribes, writes MIDI and is sent MIDI,
+# the connection interval, disconnection either way, and the ways start-up fails (one process each: NimBLE is a
+# singleton); it must catch the deliberate bugs in the port (tests/ble_nimble_mutants.py)
+python3 - <<'PY'
+import hashlib, sys
+from pathlib import Path
+d = Path("firmware/ble/nimble")
+want = dict(reversed(l.split(None, 1)) for l in (d / "SHA256SUMS").read_text().splitlines())
+have = {str(p.relative_to(d)) for p in d.rglob("*") if p.is_file() and p.name not in ("README.md", "SHA256SUMS")}
+bad = [f for f in sorted(want) if not (d / f).is_file() or hashlib.sha256((d / f).read_bytes()).hexdigest() != want[f]]
+bad += [f"{f} (not in SHA256SUMS)" for f in sorted(have - set(want))]
+if bad: sys.exit("FAIL: firmware/ble/nimble differs from NimBLE e00b85cc: " + ", ".join(bad))
+print(f"NimBLE: {len(want)} files as at e00b85cc")
+PY
+NB_DIR=firmware/ble/nimble
+NB_INC="-Ifirmware/ble/nimble_port -Ifirmware/ble -Itests/ble -I$NB_DIR/nimble/include -I$NB_DIR/nimble/host/include -I$NB_DIR/nimble/transport/include -I$NB_DIR/porting/nimble/include -I$NB_DIR/nimble/host/services/gap/include -I$NB_DIR/nimble/host/services/gatt/include -I$NB_DIR/nimble/host/util/include"
+mkdir -p build/host/nimble
+ls $NB_DIR/nimble/host/src/*.c $NB_DIR/nimble/host/services/gap/src/*.c $NB_DIR/nimble/host/services/gatt/src/*.c \
+   $NB_DIR/nimble/host/util/src/*.c $NB_DIR/nimble/transport/src/transport.c $NB_DIR/porting/nimble/src/*.c |
+  xargs -P 4 -I{} sh -c 'cc -std=gnu11 -O1 -w '"$NB_INC"' -c -o build/host/nimble/$(basename {} .c).o {}'
+cc -std=gnu11 -Wall -Wextra -Werror $NB_INC -c -o build/host/nimble/ble_nimble.o firmware/ble/ble_nimble.c
+cc -std=gnu11 -Wall -Wextra -Werror $NB_INC -c -o build/host/nimble/ble_nimble_npl.o firmware/ble/ble_nimble_npl.c
+cc -std=gnu11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror $NB_INC -o build/host/ble_nimble tests/ble_nimble.c \
+   tests/ble/hci_model.c firmware/ble/hci.c firmware/ble/ble_midi.c build/host/nimble/*.o
+for w in session silent refused refusing never npl; do build/host/ble_nimble tests/ble build/host $w; done
+python3 tests/ble_nimble_mutants.py build/host
+# the BLE baseband driver (firmware/ble/fm1ble.c, docs/BLUETOOTH_RADIO.md) compiles warning-free with only its directory;
+# its test against the register model (tests/ble_radio.c) needs the stack and runs after Cordio and NimBLE below
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/fm1ble.o firmware/ble/fm1ble.c
+# the C library functions the BLE stacks need beyond the BSP's (firmware/ble/ble_libc.c: a small heap, memmove, strlen)
+cc -std=c11 -Wall -Wextra -Werror -Dmalloc=ble_malloc -Dfree=ble_free -Drealloc=ble_realloc -Dmemmove=ble_memmove \
+   -Dstrlen=ble_strlen -D__assert_func=ble_assert_func -fno-builtin -c -o build/host/ble_libc.o firmware/ble/ble_libc.c
+cc -std=c11 -Wall -Wextra -Werror -fno-builtin -o build/host/ble_libc_test tests/ble_libc.c build/host/ble_libc.o
+build/host/ble_libc_test
+# Cordio's LE controller (firmware/ble/cordio/, Apache-2.0, held to the upstream commit by its checksums) in our configuration
+# and glue (firmware/ble/cordio_port/) on host stubs for the chip's PAL: the HCI start-up and advertising commands, the
+# refusals, and the first advertising transmit it asks the baseband for (docs/BLUETOOTH_CORDIO.md). Never run on a chip.
+python3 - <<'PY'
+import hashlib, sys
+from pathlib import Path
+d = Path("firmware/ble/cordio")
+want = dict(reversed(l.split(None, 1)) for l in (d / "SHA256SUMS").read_text().splitlines())
+have = {str(p.relative_to(d)) for p in d.rglob("*") if p.is_file() and p.name not in ("SHA256SUMS", "README.md")}
+bad = [f for f in sorted(want) if not (d / f).is_file() or hashlib.sha256((d / f).read_bytes()).hexdigest() != want[f]]
+bad += [f"{f} (not in SHA256SUMS)" for f in sorted(have - set(want))]
+if bad: sys.exit("FAIL: firmware/ble/cordio differs from Cordio 3656312: " + ", ".join(bad))
+print(f"Cordio: {len(want)} files as at 3656312")
+PY
+CR=firmware/ble/cordio; CP=firmware/ble/cordio_port
+CR_INC=$(find $CR -name '*.h' -printf '-I%h\n' | sort -u | tr '\n' ' ')
+CR_DEF=$(sed 's/^/-D/' $CP/DEFINES.txt | tr '\n' ' ')
+mkdir -p build/host/cordio
+sed "s|^|$CR/|" $CP/SOURCES.txt > build/host/cordio/sources.txt
+echo $CP/cordio_ctrl.c >> build/host/cordio/sources.txt; echo $CP/cordio_wsf.c >> build/host/cordio/sources.txt
+echo $CP/pal_stubs_host.c >> build/host/cordio/sources.txt
+xargs -P 4 -I{} sh -c "cc -std=gnu11 -O1 -w -fshort-enums -ffunction-sections -fdata-sections $CR_DEF $CR_INC -Ifirmware/ble -I$CP -c -o build/host/cordio/\$(echo {} | tr / _).o {}" < build/host/cordio/sources.txt
+cc -std=gnu11 -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Wl,--gc-sections -o build/host/ble_cordio tests/ble_cordio.c \
+   firmware/ble/ble_midi.c build/host/cordio/*.o
+build/host/ble_cordio
+# Cordio's PAL on the FM-1's baseband (firmware/ble/cordio_port/pal_fm1.c) on the radio driver's one-packet operations,
+# against the register model's air and a central written from the specification: advertising on 37-39, a SCAN_REQ
+# answered, a CONNECT_IND, connection events on CSA #1's channels with the anchor from the first packet, data both ways
+# with SN/NESN, LL_TERMINATE_IND, advertising again (docs/BLUETOOTH_CORDIO.md). The receive interrupt runs within T_IFS
+# in the model: the FM-1 has to show it does. Never run on a chip.
+cc -std=gnu11 -Wall -Wextra -Werror -fshort-enums $CR_DEF $CR_INC -Ifirmware/ble -I$CP -c -o build/host/pal_fm1.o $CP/pal_fm1.c
+cc -std=gnu11 -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Itests/ble -Wl,--gc-sections -o build/host/ble_pal tests/ble_pal.c \
+   tests/ble/bb_model.c tests/ble/air_central.c firmware/ble/fm1ble.c firmware/ble/ble_midi.c build/host/pal_fm1.o \
+   $(ls build/host/cordio/*.o | grep -v pal_stubs_host)
+build/host/ble_pal
+python3 tests/ble_pal_mutants.py build/host
+# the whole stack minus the chip: NimBLE and the BLE-MIDI service over HCI to Cordio, on the PAL and the driver, against the
+# model's air and the central (tests/ble/air_central.c) doing L2CAP and ATT: it finds the characteristic, subscribes, writes
+# a Note On that comes out of ble_midi_get, gets the app's notification, leaves; the peripheral advertises again
+cc -std=gnu11 -D_GNU_SOURCE -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Itests/ble -Wl,--gc-sections -o build/host/ble_stack \
+   tests/ble_stack.c tests/ble/bb_model.c tests/ble/air_central.c firmware/ble/fm1ble.c firmware/ble/fm1ble_test.c \
+   firmware/ble/fm1ble_stack.c firmware/ble/ble_midi.c firmware/ble/hci.c \
+   build/host/pal_fm1.o $(ls build/host/cordio/*.o | grep -v pal_stubs_host) build/host/nimble/*.o
+build/host/ble_stack
+# the test run (fm1ble_test.c) as the FM-1 runs it, on the model's air: the driver's own advertising, then the stack;
+# the central connects, plays a Note On (midi_in) and is sent one (midi_out); the run closes the connection
+build/host/ble_stack run
+# the test run's driver steps against the register model (no air: the baseband that repeats events, the one that needs
+# re-arming, the one that needs the shared radio's init, a silent one, a CONNECT_IND of made-up bytes Cordio refuses), the
+# stack (hci) on the same model
+cc -std=gnu11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Itests/ble -Wl,--gc-sections \
+   -o build/host/ble_radio tests/ble_radio.c tests/ble/bb_model.c firmware/ble/fm1ble.c firmware/ble/fm1ble_test.c \
+   firmware/ble/fm1ble_stack.c firmware/ble/ble_midi.c firmware/ble/hci.c build/host/pal_fm1.o \
+   $(ls build/host/cordio/*.o | grep -v pal_stubs_host) build/host/nimble/*.o
+build/host/ble_radio
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c
@@ -410,3 +503,38 @@ for b in bad: print("FAIL:", b, file=sys.stderr)
 if bad: sys.exit(1)
 print("checks passed: screen, battery icon, sound (peak %d), arp sound" % peak)
 PY
+# the Bluetooth test page (docs/BLUETOOTH_PAGE.md): firmware/ble/fm1ble_test.c, the run the firmware links, is warning-free
+# alone; the simulator links tests/ble/fm1ble_test_host.c instead (a made-up run), so these test the page, the SysEx
+# report (firmware/src/ble_sysex.c, commands 0x66 and 0x67) and tools/fm1_ble_report.py, not the radio
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -Ifirmware/ble/cordio_port -c -o build/host/fm1ble_test.o firmware/ble/fm1ble_test.c
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -Ifirmware/ble/cordio_port -c -o build/host/fm1ble_stack.o firmware/ble/fm1ble_stack.c
+# over USB SysEx, no button pressed: no run yet (2), the run command with a 2 s wait for a central (none comes: connect
+# fails, the MIDI steps are skipped), both commands say running meanwhile (3), the report whole, a second run asked from
+# the open page (no wait: the connect steps are skipped) leaves it and runs again, SAVE leaves, EDIT refuses (4), bad
+# requests are refused (1)
+HOST_BLE_REPORT=build/host/ble_usb_report-%u.bin build/host/oplbox build/host/ble_usb tests/script_ble_usb.txt > build/host/ble_usb.txt
+for want in "   200 ms  USB reply 66: 02 00 00 00 00 00 00 00 00 | 0 bytes" "   250 ms  USB reply 67: 00 01 00 | 0 bytes" \
+            "   250 ms  ble page 0: BLUETOOTH TEST (STAGE 5)" "   251 ms  USB reply 66: 03 00 00 00" "   252 ms  USB reply 67: 03 01 00 |" \
+            "  3652 ms  ble page 6: CONNECT  FAIL NO CENTRAL CONNECTED" "  3652 ms  ble page 7: MIDI_IN  SKIP SKIPPED: AN EARLIER" \
+            "  5000 ms  USB reply 66: 00 58 0A 00 00 00 00 01 00 | 512 bytes" "  5001 ms  USB reply 66: 00 58 0A 00 00 0A 00 01 00 | 88 bytes" \
+            "  5100 ms  USB reply 67: 00 02 00 |" "  5101 ms  USB reply 66: 03 " "  6506 ms  ble page 6: CONNECT  SKIP SKIPPED: NO WAIT FOR" \
+            "  7000 ms  USB reply 66: 00 54 0A 00 00 00 00 02 00 | 512 bytes" "  7300 ms  USB reply 66: 00 54 0A 00 00 00 00 02 00 | 512 bytes" \
+            "  7500 ms  USB reply 67: 04 00 00 |" "  7800 ms  USB reply 66: 01 " "  7900 ms  USB reply 66: 01 " \
+            "  8000 ms  USB reply 67: 01 " "  8100 ms  USB reply 67: 01 "; do
+  grep -qF -- "$want" build/host/ble_usb.txt || { echo "FAIL: Bluetooth page over USB: no line '$want'" >&2; exit 1; }
+done
+[ "$(grep -c 'ble page 0: BLUETOOTH TEST (STAGE 5)   1/12' build/host/ble_usb.txt)" = 2 ] || { echo "FAIL: Bluetooth page over USB: not two runs" >&2; exit 1; }
+# by the buttons: SAVE (the WiFi page), HOME there (the Bluetooth page), PLAY runs it (a central connects), PLAY turns its twelve
+# pages, SAVE leaves it (the WiFi page's first screen again), SAVE leaves that; then the same with the hci step failing
+HOST_BLE_CONNECT=1 HOST_BLE_REPORT=build/host/ble_page_report-%u.bin build/host/oplbox build/host/ble_page tests/script_ble_page.txt > build/host/ble_page.txt
+HOST_BLE_FAIL=hci HOST_BLE_REPORT=build/host/ble_fail_report-%u.bin build/host/oplbox build/host/ble_fail tests/script_ble_page.txt > build/host/ble_fail.txt
+for want in "   200 ms  wifi page 0: WIFI TEST (STAGE 9)" "   300 ms  ble page 0: BLUETOOTH TEST (STAGE 5)" "   400 ms  ble page 1: WORKING" \
+            "ble page 6: CONNECT  PASS CONNECTED, INTERVAL" "ble page 0: STEP 3 HCI   4/12" "ble page 4: RAW: 41 BYTES (40 SHOWN)" \
+            "ble page 0: COUNTERS 3/3   12/12" "ble page 8: ATT_MTU" "  4200 ms  wifi page 0: WIFI TEST (STAGE 9)"; do
+  grep -qF -- "$want" build/host/ble_page.txt || { echo "FAIL: Bluetooth page: no line '$want'" >&2; exit 1; }
+done
+for want in "ble page 3: HCI      FAIL MADE-UP FAILURE (HOS" "ble page 4: ADV_SET  SKIP SKIPPED: AN EARLIER" "ble page 8: MIDI_OUT SKIP SKIPPED: AN EARLIER"; do
+  grep -qF -- "$want" build/host/ble_fail.txt || { echo "FAIL: Bluetooth page, failed step: no line '$want'" >&2; exit 1; }
+done
+# ... and tools/fm1_ble_report.py reads the button run's report through ble_sysex.c: its text is the pages' text
+python3 tests/ble_report_tool.py build/host/slot_sysex_test build/host/ble_page_report-1.bin build/host/ble_page.txt build/host/ble_fail_report-1.bin build/host
