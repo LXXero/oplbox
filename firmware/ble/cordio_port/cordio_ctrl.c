@@ -26,7 +26,7 @@
 #endif
 #define CORDIO_DISPATCH_MAX 64          /* dispatcher rounds per poll: a handler that keeps queuing work must not hold the loop */
 
-static uint32_t g_heap[CORDIO_HEAP_BYTES / 4];
+static uint32_t g_heap[CORDIO_HEAP_BYTES / 4] __attribute__((section(".pool")));   /* app.ld's pool, not the 96 KB of .bss */
 static BbRtCfg_t g_bb_cfg;
 static LlRtCfg_t g_ll_cfg;
 static cordio_ctrl_cfg g_cfg;

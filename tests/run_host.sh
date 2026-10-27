@@ -338,7 +338,8 @@ python3 tests/wifi_ip_mutants.py build/host
 # and the test must catch 17 deliberate bugs in hci.c
 for f in firmware/ble/*.c firmware/ble/*.h; do
   if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v -e '"hci\.h"' -e '"ble_midi\.h"' -e '"ble_nimble\.h"' \
-       -e '"ble_nimble_npl\.h"' -e '"fm1ble_test\.h"' -e '"fm1ble\.h"' -e '"fm1ble_port\.h"' -e '"fm1ble_regs\.h"'; then
+       -e '"ble_nimble_npl\.h"' -e '"fm1ble_test\.h"' -e '"fm1ble\.h"' -e '"fm1ble_port\.h"' -e '"fm1ble_regs\.h"' \
+       -e '"fm1ble_stack\.h"' -e '"cordio_ctrl\.h"' -e '"pal_fm1\.h"'; then
     echo "FAIL: $f includes a file from outside firmware/ble/" >&2; exit 1; fi
 done
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/ble_hci.o firmware/ble/hci.c
@@ -384,14 +385,9 @@ cc -std=gnu11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror $NB_INC -o build/h
    tests/ble/hci_model.c firmware/ble/hci.c firmware/ble/ble_midi.c build/host/nimble/*.o
 for w in session silent refused refusing never npl; do build/host/ble_nimble tests/ble build/host $w; done
 python3 tests/ble_nimble_mutants.py build/host
-# the BLE baseband driver (firmware/ble/fm1ble.c, docs/BLUETOOTH_RADIO.md) and the test run on it (fm1ble_test.c) against a
-# register model written from the same facts (tests/ble/bb_model.c): the power-up writes in order, the RAM block, the
-# advertising link, polling, stopping, and the run for a baseband that repeats events, one that needs re-arming, one that
-# needs the shared radio's init first and a silent one. Never run on an FM-1.
+# the BLE baseband driver (firmware/ble/fm1ble.c, docs/BLUETOOTH_RADIO.md) compiles warning-free with only its directory;
+# its test against the register model (tests/ble_radio.c) needs the stack and runs after Cordio and NimBLE below
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/fm1ble.o firmware/ble/fm1ble.c
-cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -Ifirmware/ble -Itests/ble -o build/host/ble_radio tests/ble_radio.c \
-   tests/ble/bb_model.c firmware/ble/fm1ble.c firmware/ble/fm1ble_test.c firmware/ble/ble_midi.c
-build/host/ble_radio
 # the C library functions the BLE stacks need beyond the BSP's (firmware/ble/ble_libc.c: a small heap, memmove, strlen)
 cc -std=c11 -Wall -Wextra -Werror -Dmalloc=ble_malloc -Dfree=ble_free -Drealloc=ble_realloc -Dmemmove=ble_memmove \
    -Dstrlen=ble_strlen -D__assert_func=ble_assert_func -fno-builtin -c -o build/host/ble_libc.o firmware/ble/ble_libc.c
@@ -437,9 +433,21 @@ python3 tests/ble_pal_mutants.py build/host
 # model's air and the central (tests/ble/air_central.c) doing L2CAP and ATT: it finds the characteristic, subscribes, writes
 # a Note On that comes out of ble_midi_get, gets the app's notification, leaves; the peripheral advertises again
 cc -std=gnu11 -D_GNU_SOURCE -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Itests/ble -Wl,--gc-sections -o build/host/ble_stack \
-   tests/ble_stack.c tests/ble/bb_model.c tests/ble/air_central.c firmware/ble/fm1ble.c firmware/ble/ble_midi.c firmware/ble/hci.c \
+   tests/ble_stack.c tests/ble/bb_model.c tests/ble/air_central.c firmware/ble/fm1ble.c firmware/ble/fm1ble_test.c \
+   firmware/ble/fm1ble_stack.c firmware/ble/ble_midi.c firmware/ble/hci.c \
    build/host/pal_fm1.o $(ls build/host/cordio/*.o | grep -v pal_stubs_host) build/host/nimble/*.o
 build/host/ble_stack
+# the test run (fm1ble_test.c) as the FM-1 runs it, on the model's air: the driver's own advertising, then the stack;
+# the central connects, plays a Note On (midi_in) and is sent one (midi_out); the run closes the connection
+build/host/ble_stack run
+# the test run's driver steps against the register model (no air: the baseband that repeats events, the one that needs
+# re-arming, the one that needs the shared radio's init, a silent one, a CONNECT_IND of made-up bytes Cordio refuses), the
+# stack (hci) on the same model
+cc -std=gnu11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Itests/ble -Wl,--gc-sections \
+   -o build/host/ble_radio tests/ble_radio.c tests/ble/bb_model.c firmware/ble/fm1ble.c firmware/ble/fm1ble_test.c \
+   firmware/ble/fm1ble_stack.c firmware/ble/ble_midi.c firmware/ble/hci.c build/host/pal_fm1.o \
+   $(ls build/host/cordio/*.o | grep -v pal_stubs_host) build/host/nimble/*.o
+build/host/ble_radio
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c

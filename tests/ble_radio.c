@@ -307,11 +307,15 @@ static void run_to_end(uint32_t wait_ms, void (*inject)(uint32_t t))
     }
 }
 
+static int g_injected;
+
+/* a CONNECT_IND of made-up bytes once the stack advertises (after 1.5 s), while one of its operations is armed */
 static void inject_conn(uint32_t t)
 {
     static uint8_t conn[34];
     int i;
-    if (t == 1500) {
+    if (t >= 1500 && bbm.armed && !g_injected) {
+        g_injected = 1;
         for (i = 0; i < 34; i++)
             conn[i] = (uint8_t)(0x40 + i);
         bb_model_rx(0, 5, conn, 34);
@@ -327,7 +331,9 @@ static void test_runs(void)
     check(R.state == FM1BLE_DONE, "a run finishes");
     check(R.step[FM1BLE_STEP_RADIO].result == FM1BLE_PASS && R.step[FM1BLE_STEP_RADIO].nraw == 32, "radio: PASS with the eight readbacks as evidence");
     check(R.step[FM1BLE_STEP_BLOCK].result == FM1BLE_PASS && R.step[FM1BLE_STEP_BLOCK].nraw == 32, "block: PASS");
-    check(R.step[FM1BLE_STEP_HCI].result == FM1BLE_SKIP, "hci: SKIP (the chip's Cordio PAL is not written)");
+    check(R.step[FM1BLE_STEP_HCI].result == FM1BLE_PASS && R.bdaddr[0] == 0xC2 && R.bdaddr[5] == 0x01,
+          "hci: PASS, NimBLE started Cordio over the PAL and read its address (C2:46:4D:31:00:01)");
+    check((R.ctr[20] & 0xFFFFu) >= 3 && (R.ctr[22] >> 16) == 0, "pal counters: advertising operations armed and ended, none stuck");
     check(R.step[FM1BLE_STEP_ADV_SET].result == FM1BLE_PASS && R.step[FM1BLE_STEP_ADV_SET].nraw == 21, "adv_set: PASS, the 21 bytes of advertising data");
     check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "repeat"), "adv_air: PASS, events repeat on their own");
     check(R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_FAIL && strstr(R.step[FM1BLE_STEP_CONNECT].note, "no SCAN_REQ"), "connect: FAIL, nobody came");
@@ -362,8 +368,10 @@ static void test_runs(void)
     /* a central connects: the CONNECT_IND is the evidence */
     bb_model_reset();
     bbm.repeat = 1;
+    g_injected = 0;
     run_to_end(5000, inject_conn);
-    check(R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_FAIL && strstr(R.step[FM1BLE_STEP_CONNECT].note, "CONNECT_IND received"), "CONNECT_IND: connect FAIL says it was received");
+    check(g_injected && R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_FAIL && strstr(R.step[FM1BLE_STEP_CONNECT].note, "CONNECT_IND received"),
+          "a CONNECT_IND Cordio refuses (made-up parameters): connect FAIL says it was received");
     check(R.step[FM1BLE_STEP_CONNECT].nraw == 34 && R.step[FM1BLE_STEP_CONNECT].raw[0] == 0x40 && R.step[FM1BLE_STEP_CONNECT].raw[33] == 0x40 + 33,
           "with its payload as raw evidence");
     check(R.ctr[8] == 1 && R.ctr[18] == 5 && R.ctr[19] == 34, "counters: one CONNECT_IND, type 5, length 34");

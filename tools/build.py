@@ -170,10 +170,7 @@ def build_app():
             ("cc", *CFLAGS, "-Ifirmware/wifi", "-c", FW / "wifi" / "fm1wifi.c", "-o", OUT / "fm1wifi.o"),
             ("cc", *CFLAGS, "-Ifirmware/wifi", "-c", FW / "wifi" / "fm1wifi_frame.c", "-o", OUT / "fm1wifi_frame.o"),
             ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-c", FW / "hal" / "fm1wifi_port_bsp.c", "-o", OUT / "fm1wifi_port_bsp.o"),
-            # the Bluetooth test run (firmware/ble/fm1ble_test.c, docs/BLUETOOTH_PAGE.md) for the Bluetooth test page
-            ("cc", *CFLAGS, *libc_inc(), "-Ifirmware/ble", "-c", FW / "ble" / "fm1ble_test.c", "-o", OUT / "fm1ble_test.o"),
-            ("cc", *CFLAGS, *libc_inc(), "-Ifirmware/ble", "-c", FW / "ble" / "fm1ble.c", "-o", OUT / "fm1ble.o"),
-            ("cc", *CFLAGS, "-Ifirmware/ble", "-c", FW / "ble" / "ble_midi.c", "-o", OUT / "ble_midi.o"),
+            # the Bluetooth driver's port on felucca-bsp; the test run and the stack under it are build_ble's objects
             ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-Ifirmware/ble", "-c", FW / "hal" / "fm1ble_port_bsp.c", "-o", OUT / "fm1ble_port_bsp.o")]
     # stage 8 (docs/WIFI_STAGE8.md): the WPA2 station, the EAPOL handshakes, the key primitives and their BearSSL subset
     wpa = [FW / "wifi" / "fm1wifi_wpa.c", FW / "wifi" / "wpa_eapol.c", FW / "wifi" / "wpa_crypto.c",
@@ -197,7 +194,7 @@ def build_app():
     elf = OUT / "oplbox.elf"
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o",
        OUT / "fm1_isr.o", OUT / "oplbox.o", OUT / "dbopl2.o", OUT / "fm1wifi.o", OUT / "fm1wifi_frame.o",
-       OUT / "fm1wifi_port_bsp.o", OUT / "fm1ble_test.o", OUT / "fm1ble.o", OUT / "ble_midi.o", OUT / "fm1ble_port_bsp.o",
+       OUT / "fm1wifi_port_bsp.o", OUT / "fm1ble_port_bsp.o", *BLE_APP_OBJS,
        *wpa_objs, *ip_objs, *lwip_objs, "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin", "ramcode.bin"):
         (OUT / sect).unlink(missing_ok=True)
@@ -299,15 +296,18 @@ def section_sizes(objs):
     return code, data
 
 
+BLE_APP_OBJS = []
+
+
 def build_ble():
     out = OUT / "ble"
     out.mkdir(parents=True, exist_ok=True)
     own = [FW / "ble" / n for n in ("hci.c", "ble_midi.c")]
     own_objs = [out / f"{s.stem}.o" for s in own]
     tc_all(*[("cc", *CFLAGS, "-Ifirmware/ble", "-c", s, "-o", o) for s, o in zip(own, own_objs)])
-    nim = [FW / "ble" / "fm1ble_test.c", FW / "ble" / "fm1ble.c", *nimble_sources()]
+    nim = [FW / "ble" / "fm1ble_test.c", FW / "ble" / "fm1ble.c", FW / "ble" / "fm1ble_stack.c", *nimble_sources()]
     nim_objs = [out / f"nimble_{s.stem}.o" for s in nim]
-    tc_all(*[("cc", *CFLAGS, *NIMBLE_INC, *libc_inc(), "-c", s, "-o", o) for s, o in zip(nim, nim_objs)])
+    tc_all(*[("cc", *CFLAGS, *NIMBLE_INC, "-Ifirmware/ble/cordio_port", *libc_inc(), "-c", s, "-o", o) for s, o in zip(nim, nim_objs)])
     # Cordio's LE controller (vendored, Apache-2.0), peripheral-only, with the port's WSF and HCI glue
     cr = FW / "ble" / "cordio"
     crp = FW / "ble" / "cordio_port"
@@ -333,7 +333,7 @@ def build_ble():
     tc_all(*[("cc", *CFLAGS, *fl, "-c", src, "-o", o) for (src, fl), o in zip(extra, ex_objs)])
     elf = out / "ble_measure.elf"
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "ble_nimble_init", "-u", "cordio_ctrl_init", "-u", "ble_nimble_poll",
-       *own_objs, *[o for o in nim_objs if o.name not in ("nimble_fm1ble.o", "nimble_fm1ble_test.o")], *cr_objs, *ex_objs, "-o", elf)
+       *own_objs, *[o for o in nim_objs if o.name not in ("nimble_fm1ble.o", "nimble_fm1ble_test.o", "nimble_fm1ble_stack.o")], *cr_objs, *ex_objs, "-o", elf)
     lc = ld = 0
     for ln in tc("common/bin/objdump", "-h", elf).splitlines():
         p = ln.split()
@@ -343,6 +343,9 @@ def build_ble():
             ld += int(p[2], 16)
     oc, od = section_sizes(own_objs)
     nc, nd = section_sizes(nim_objs)
+    # what the app links (build_app): the test run, the driver and the stack (NimBLE, Cordio, the chip's PAL) and
+    # ble_libc.c; the BSP's libc.c is the app's own (platform.c), the measuring objects and the stub PAL are not linked
+    BLE_APP_OBJS[:] = [*own_objs, *nim_objs, *cr_objs, pal_obj, out / "measure_ble_libc.o"]
     return (f"firmware/ble/ alone: {len(own_objs)} objects {oc} B code+rodata, {od} B data+bss; "
             f"NimBLE host and port: {len(nim_objs)} objects {nc} B code+rodata, {nd} B data+bss; "
             f"Cordio controller: {len(cr_objs)} objects {kc} B code+rodata, {kd} B data+bss; the chip's PAL: {pc} B code+rodata, "
@@ -403,6 +406,12 @@ def trim_ram_check(objs):
     return errors, f"WiFi trim RAM code: {n} references, all to RAM"
 
 
+# Immediates in the ROM's address range that are numbers, not addresses: (function, value), each read in its source.
+ROM_CHECK_CONSTANTS = {
+    ("LlSetConnOpFlags", 0xFFC3FB41),   # Cordio's ll_main_conn.c: ~flagAll, the mask of the connection flags it refuses
+}
+
+
 def check(img, syms, dis, rt):
     errors, notes = [], []
     m = re.search(r"^([0-9a-f]+) .*\s_start$", syms, re.M)
@@ -415,14 +424,18 @@ def check(img, syms, dis, rt):
         errors.append(f".ram_text contains calls: {rt_calls[:3]}")
     else:
         notes.append(f".ram_text: {len([ln for ln in rt.splitlines() if LINE.match(ln)])} insns, no calls")
+    fn = None
     for ln in dis.splitlines():     # nothing may call or load an address in the chip ROM
+        mf = re.match(r"^([A-Za-z_.$][\w.$]*):$", ln)   # this objdump writes a function as "name:"
+        if mf:
+            fn = mf.group(1)
         mm = LINE.match(ln)
         if not mm:
             continue
         for v in re.findall(r"= (-?\d+) <|call -?\d+ <[^:>]*: ([0-9a-f]+) >", mm.group(3)):
             val = (int(v[0]) & 0xFFFFFFFF) if v[0] else int(v[1], 16) & 0xFFFFFFFF
-            if 0xFFC00000 <= val < 0xFFD00000:
-                errors.append(f"reference to ROM address {val:#010x}")
+            if 0xFFC00000 <= val < 0xFFD00000 and (fn, val) not in ROM_CHECK_CONSTANTS:
+                errors.append(f"reference to ROM address {val:#010x} in {fn}")
     if len(img) > APP_SLOT:
         errors.append(f"image {len(img)} B exceeds the app slot")
 
@@ -516,10 +529,11 @@ def main():
             print(f"warning: SDK {rel} differs from AC79NN_SDK_V1.2.1; the package will not match the reference")
     OUT.mkdir(parents=True, exist_ok=True)
     ota = build_loader()
+    ble_note = build_ble()                      # first: the app links its objects
     img, syms, dis, rt = build_app()
     errors, notes = check(img, syms, dis, rt)
     notes.append(build_wifi())
-    notes.append(build_ble())
+    notes.append(ble_note)
     trim_err, trim_note = trim_ram_check([OUT / "fm1wifi.o", OUT / "fm1wifi_port_bsp.o"])
     errors += trim_err
     if not trim_err:

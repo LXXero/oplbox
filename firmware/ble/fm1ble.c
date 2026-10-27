@@ -615,6 +615,13 @@ uint32_t fm1ble_op_service(fm1ble *b, fm1ble_pkt *p)
         p->hdr[0] = (uint8_t)(b->op_state == FM1BLE_STATE_ADV ? ahdr & 0xFFu : dhdr & 0x1Fu);
         p->hdr[1] = (uint8_t)(dhdr >> 8);
         p->payload = b->blk + b->rx[k] + FM1BLE_RX_HDR;
+        d->rx_hdr[0] = (uint16_t)ahdr;                   /* the report's evidence, as rx_capture keeps it */
+        d->rx_hdr[1] = (uint16_t)dhdr;
+        d->rx_stat[k] = p->stat;
+        d->rx_last_type = (uint8_t)(p->hdr[0] & 0xFu);
+        d->rx_last_len = p->hdr[1];
+        d->rx_last_n = (uint8_t)(p->hdr[1] < sizeof d->rx_last ? p->hdr[1] : sizeof d->rx_last);
+        memcpy(d->rx_last, p->payload, d->rx_last_n);
         e16(b, FM1BLE_E_RXSTAT0, 0);
         e16(b, FM1BLE_E_RXSTAT1, 0);
         if (b->op_state == FM1BLE_STATE_ADV) {

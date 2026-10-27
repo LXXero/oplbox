@@ -73,16 +73,20 @@ static uint32_t g_rng;
 static uint32_t now(void) { return fm1ble_port_now_us(); }
 static uint32_t air_us(uint32_t pdu_len) { return (1u + 4u + pdu_len + 3u) * 8u; }   /* 1M PHY: preamble, AA, PDU, CRC */
 
+/* A second attach (the driver powered down and up again under a running Cordio) keeps the scheduler's timer and the
+ * operation Cordio waits for: that one ends by its deadline, since the new radio never ran it. */
 void pal_fm1_attach(const pal_fm1_cfg *cfg)
 {
+    if (!g_cfg.b) {
+        g_wait = W_NONE;
+        g_held = g_done = g_armed = g_skip_done = 0;
+        g_tmr_on = 0;
+        g_rng = now() ^ 0x9E3779B9u;
+    }
     g_cfg = *cfg;
     if (!g_cfg.sch_setup_us)
         g_cfg.sch_setup_us = 2000u;
     memset(&g_st, 0, sizeof g_st);
-    g_wait = W_NONE;
-    g_held = g_done = g_armed = g_skip_done = 0;
-    g_tmr_on = 0;
-    g_rng = now() ^ 0x9E3779B9u;
 }
 
 const pal_fm1_stats *pal_fm1_state(void) { return &g_st; }

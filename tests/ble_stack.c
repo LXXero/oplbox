@@ -16,6 +16,7 @@
 #include "hci.h"
 #include "ble_midi.h"
 #include "ble_nimble.h"
+#include "fm1ble_test.h"
 
 static int bad, checks;
 static void check(int ok, const char *what) { checks++; if (!ok) { fprintf(stderr, "FAIL: %s\n", what); bad = 1; } }
@@ -44,12 +45,20 @@ static void step(void)                  /* 100 us of the radio, the PAL, the con
 
 static void pump(void *ctx) { (void)ctx; for (int i = 0; i < 10; i++) step(); }   /* a millisecond while NimBLE waits */
 
+static int g_run;                       /* "run": the test run (fm1ble_test.c) drives the stack, not this file */
+static fm1ble_run R;
+
 static void run_us(uint64_t us)
 {
     uint64_t end = bbm.now_us + us;
     while (bbm.now_us < end) {
-        step();
-        ble_nimble_poll();
+        if (g_run) {
+            bb_model_advance_us(100);
+            fm1ble_test_poll(&R, (uint32_t)(bbm.now_us / 1000u));
+        } else {
+            step();
+            ble_nimble_poll();
+        }
     }
 }
 
@@ -142,7 +151,75 @@ static int c_advertising(void) { return is_state(BLE_NIMBLE_ADVERTISING) && C.ad
 static int c_connected(void) { return is_state(BLE_NIMBLE_CONNECTED); }
 static int c_notify_on(void) { return ble_nimble_state()->notify_on; }
 
-int main(void)
+/* the central's side of a session: find the characteristic, subscribe, play a Note On; returns the value handle */
+static uint16_t central_session(void)
+{
+    uint8_t r[64];
+    uint16_t val = 0, h;
+    int n, i;
+    for (h = 1; h && !val;) {
+        uint8_t q[7] = { 0x08, (uint8_t)h, (uint8_t)(h >> 8), 0xFF, 0xFF, 0x03, 0x28 };
+        att_send(q, sizeof q);
+        n = att_wait(0x09, r, 2000);
+        if (n < 2 || r[0] != 0x09)
+            break;
+        for (i = 2; i + r[1] <= n; i += r[1]) {
+            if (r[1] == 21 && !memcmp(r + i + 5, uuid_chr, 16))
+                val = (uint16_t)(r[i + 3] | r[i + 4] << 8);
+            h = (uint16_t)((r[i] | r[i + 1] << 8) + 1);
+        }
+    }
+    if (val) {
+        uint8_t sub[5] = { 0x12, (uint8_t)(val + 1), (uint8_t)((val + 1) >> 8), 1, 0 };
+        uint8_t w[8] = { 0x52, (uint8_t)val, (uint8_t)(val >> 8), 0x80, 0x80, 0x90, 0x3C, 0x64 };
+        att_send(sub, sizeof sub);
+        att_wait(0x13, r, 2000);
+        att_send(w, sizeof w);
+    }
+    return val;
+}
+
+static int c_hci_done(void) { return R.step[FM1BLE_STEP_HCI].result != FM1BLE_NOT_RUN; }
+static int c_conn_done(void) { return R.step[FM1BLE_STEP_CONNECT].result != FM1BLE_NOT_RUN; }
+static int c_run_done(void) { return R.state == FM1BLE_DONE; }
+
+/* The Bluetooth test run as the FM-1 runs it (firmware/ble/fm1ble_test.c), here on the model's air with the central: the
+ * driver's own advertising first (adv_set, adv_air), then the stack (hci), the central connects (connect), plays a note
+ * (midi_in) and is sent one (midi_out). */
+static int test_run(void)
+{
+    uint16_t val;
+    uint8_t r[64];
+    int k;
+    bb_model_reset();
+    bbm.air = &AIR;
+    g_run = 1;
+    fm1ble_test_begin(&R, 0, 4000);
+    check(run_until(c_hci_done, 5000) && R.step[FM1BLE_STEP_HCI].result == FM1BLE_PASS, "the run: hci PASS (the stack on the radio)");
+    for (k = 0; k < FM1BLE_STEP_HCI; k++)
+        check(R.step[k].result == FM1BLE_PASS, fm1ble_step_name(k));
+    check(R.step[FM1BLE_STEP_ADV_SET].result == FM1BLE_PASS && R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS,
+          "the driver's own advertising first: adv_set and adv_air PASS on the air (one event per arming: it re-arms)");
+    C.want_conn = 1;
+    check(run_until(c_conn_done, 3000) && R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_PASS, "the run: connect PASS");
+    val = central_session();
+    check(val != 0, "the central finds the characteristic during the run");
+    att_wait(0xFF, r, 300);
+    check(run_until(c_run_done, 6000), "the run ends");
+    check(R.step[FM1BLE_STEP_MIDI_IN].result == FM1BLE_PASS && R.step[FM1BLE_STEP_MIDI_IN].nraw >= 3 &&
+          R.step[FM1BLE_STEP_MIDI_IN].raw[0] == 0x90 && R.step[FM1BLE_STEP_MIDI_IN].raw[1] == 0x3C && R.step[FM1BLE_STEP_MIDI_IN].raw[2] == 0x64,
+          "the run: midi_in PASS with the central's Note On (90 3C 64) as evidence");
+    check(R.step[FM1BLE_STEP_MIDI_OUT].result == FM1BLE_PASS, "the run: midi_out PASS, the notification acknowledged");
+    check(g_notes == 1 && g_note_n == 8 && g_note[5] == 0x90 && g_note[6] == 0x3C, "the central got the run's Note On");
+    check((R.ctr[22] & 0xFFFFu) == 0 && (R.ctr[22] >> 16) == 0, "pal counters: no response late, nothing stuck");
+    check(ble_nimble_state()->disconnects == 1, "the run closed the connection before turning the radio off");
+    printf("ble_stack run: %d checks, %s (steps' ms: hci %u, connect %u, midi_in %u, midi_out %u)\n", checks, bad ? "FAILED" : "all passed",
+           (unsigned)R.step[FM1BLE_STEP_HCI].ms, (unsigned)R.step[FM1BLE_STEP_CONNECT].ms, (unsigned)R.step[FM1BLE_STEP_MIDI_IN].ms,
+           (unsigned)R.step[FM1BLE_STEP_MIDI_OUT].ms);
+    return bad;
+}
+
+int main(int argc, char **argv)
 {
     static uint8_t blk[FM1BLE_BLOCK_SIZE] __attribute__((aligned(4)));
     static fm1ble B;
@@ -153,6 +230,8 @@ int main(void)
     int n, nadv, i;
     uint16_t val = 0, h;
 
+    if (argc > 1 && !strcmp(argv[1], "run"))
+        return test_run();
     bb_model_reset();
     check(fm1ble_radio_up(&B, 0, NULL) == FM1BLE_OK && fm1ble_bb_init(&B, blk) == FM1BLE_OK, "the driver comes up on the model");
     bbm.air = &AIR;

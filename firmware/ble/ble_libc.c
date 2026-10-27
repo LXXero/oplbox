@@ -14,7 +14,7 @@ typedef struct blk {
     uint32_t used;
 } blk;
 
-static uint8_t g_heap[BLE_LIBC_HEAP] __attribute__((aligned(8)));
+static uint8_t g_heap[BLE_LIBC_HEAP] __attribute__((aligned(8), section(".pool")));   /* app.ld's pool: zeroed at start */
 static uint8_t g_init;
 uint32_t ble_libc_assert_line;      /* the line of the last failed assert (0: none), for a crash report */
 const char *ble_libc_assert_file;
