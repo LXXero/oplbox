@@ -41,14 +41,15 @@ typedef struct {
     uint16_t interval, latency, timeout;/* the connection's parameters, 1.25 ms, events, 10 ms */
     uint8_t notify_on;                  /* the central enabled notifications on the characteristic */
     uint8_t bdaddr[6];                  /* the public address, most significant byte first */
-    uint32_t connects, disconnects, writes, notified, notify_failed, update_asked, hci_refused, failures;
+    uint32_t connects, disconnects, writes, notified, notify_failed, update_asked, hci_refused, failures, rx_bad;
 } ble_nimble_status;
 
 /* Starts the host. Returns 0, or a NimBLE error; the state is FAILED then. The host's start-up (a few commands) runs
  * inside a poll, not here. */
 int ble_nimble_init(const ble_nimble_cfg *cfg);
 
-/* The controller's packet handler: every packet it sends, by type (HCI_EVT or HCI_ACL). */
+/* The controller's packet handler: every packet it sends, by type (HCI_EVT or HCI_ACL). An event whose length byte
+ * disagrees with its size, a type that is neither, or a packet NimBLE has no buffer for is refused and counted (rx_bad). */
 void ble_nimble_receive(uint8_t type, const uint8_t *p, uint16_t n);
 
 /* One main-loop step: runs NimBLE's queued events and due timers and puts a held packet on the transport. */

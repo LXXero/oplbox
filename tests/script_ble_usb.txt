@@ -1,0 +1,32 @@
+# t(ms) what ...   : the Bluetooth test page driven over USB SysEx (firmware/src/ble_sysex.c, docs/API.md "Bluetooth
+# test page over SysEx"), no button pressed for it. The run is tests/ble/fm1ble_test_host.c's made-up one (no central comes,
+# so connect fails after the 2 s wait it is given). tests/run_host.sh checks the replies ("USB reply 65: status total24
+# off24 serial16 | n bytes", "USB reply 66: status run16") and the pages' lines.
+# nothing has run: the report says 2 (no run since start)
+200 usb 65 000000
+# run with a 2 s wait for a central: accepted at once as run 1; the main loop opens the page and starts it as PLAY does
+250 usb 66 02
+# while it runs, both answer 3 (running), the run command with the run's number
+251 usb 65 000000
+252 usb 66 02
+# a bad wait (121 s) and a bad body are refused (1) even then? no: running (3) comes first for a good request only
+# done (about 3.4 s): the report whole from offset 0 and its tail
+5000 usb 65 000000
+5001 usb 65 000A00
+# run again with the page open on its results: it leaves as SAVE does and starts a fresh run 2 (no wait: the connect steps skip)
+5100 usb 66 00
+5101 usb 65 000000
+7000 usb 65 000000
+# SAVE leaves; the report stays
+7100 btn 9
+7300 usb 65 000000
+# in EDIT the page is not reachable: refused (4), nothing opens
+7400 btn 6
+7500 usb 66 02
+7700 btn 6
+# bad requests: a short body, an offset past the end, a wait over 120 s, two bytes of body
+7800 usb 65 0000
+7900 usb 65 FFFF00
+8000 usb 66 79
+8100 usb 66 0000
+8200 end

@@ -10,10 +10,12 @@
  *
  * Usage: ble_nimble <dir with nimble_session.txt and nimble_expect.txt> [scratch dir]
  */
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "ble_nimble.h"
 #include "ble_nimble_npl.h"
+#include <nimble/nimble_port.h>
 #include "ble_midi.h"
 #include "hci_model.h"
 
@@ -342,6 +344,23 @@ static void gatt_access(void)
 static int g_sent;
 static int count_send(void *ctx, const uint8_t *p, uint32_t n) { (void)ctx; g_sent++; return ble_nimble_notify(ctx, p, n); }
 
+static void bad_events(void)
+{
+    const ble_nimble_status *s = ble_nimble_state();
+    static const uint8_t long_len[] = { 0x13, 0x09, 0x01, 0x40, 0x00 };          /* says 9 parameter bytes, has 3 */
+    static const uint8_t short_hdr[] = { 0x05 };
+    static const uint8_t extra[] = { 0x0E, 0x01, 0x00, 0x00, 0x00 };             /* says 1, has 3 */
+    uint32_t c0 = s->rx_bad;
+
+    ble_nimble_receive(HCI_EVT, long_len, sizeof long_len);
+    ble_nimble_receive(HCI_EVT, short_hdr, sizeof short_hdr);
+    ble_nimble_receive(HCI_EVT, extra, sizeof extra);
+    ble_nimble_receive(HCI_SCO, extra, sizeof extra);
+    run(20);
+    check(s->rx_bad == c0 + 4, "four malformed packets (two lengths wrong, a header cut short, a SCO packet) are refused and counted");
+    check(is_state(BLE_NIMBLE_CONNECTED) && M.bad == 0, "and the connection goes on");
+}
+
 static void notify(void)
 {
     uint8_t buf[182];
@@ -380,6 +399,16 @@ static void notify(void)
     check(M.bad == 0, "no ACL packet beyond the controller's buffers or out of order");
     check(g_sent == 2, "two packets were sent");
 
+    /* the transport refuses the next send: the notification waits in the port and goes out on a later poll */
+    before = M.l2cap_from_host;
+    g_refuse = 2;
+    check(ble_midi_enc_msg(&e, 3000, 0x90, 0x40, 0x7F) == 0 && ble_midi_enc_flush(&e) == 0, "a notification while the transport refuses");
+    run(1);
+    check(M.l2cap_from_host == before, "it has not reached the central yet");
+    for (i = 0; i < 20 && M.l2cap_from_host == before; i++)
+        run(1);
+    check(M.l2cap_from_host == before + 1 && g_refuse == 0, "it goes out on a poll once the transport takes it");
+
     /* a packet longer than MTU - 3 is refused, not truncated */
     {
         uint8_t big[200] = { 0 };
@@ -395,15 +424,24 @@ static void leave_and_return(void)
     uint8_t st, d1, d2;
     uint8_t q[16];
 
-    check(add_steps("disconnect reason=13\nwait adv\nwait ms 20\nconnect handle=0041 peer=c0:ff:ee:00:00:02 type=1 interval=12 latency=0 timeout=72\n") == 0,
-          "the later steps load");
+    {   /* a message the app has not read yet when the central leaves */
+        uint8_t w[8] = { 0x52, 0, 0, 0x81, 0x85, 0x90, 0x2A, 0x55 };
+        le16(w + 1, val_handle);
+        att_send(w, 8);
+        run(5);
+    }
+    check(add_steps("disconnect reason=13\nwait adv\n") == 0, "the leave loads");
     check(run_until(c_adv, 500), "the central leaves and the host advertises again");
     check(s->disconnects == 1, "one disconnection counted");
+    check(!s->notify_on && s->conn == 0xFFFF && s->mtu == 23, "notifications off, no connection, MTU back to 23 as soon as it left");
+    check(ble_nimble_notify(NULL, (const uint8_t *)"\x80\x80\x90\x3c\x7f", 5) == -1, "nothing is sent while nobody is connected");
+    check(add_steps("wait ms 20\nconnect handle=0041 peer=c0:ff:ee:00:00:02 type=1 interval=12 latency=0 timeout=72\n") == 0,
+          "the second central's steps load");
     check(run_until(c_conn, 500) && s->connects == 2, "advertising started again and a second central connected");
     check(s->conn == 0x0041, "the second connection's handle");
     check(!s->notify_on, "notifications are off again on a new connection");
     check(s->mtu == 23, "the MTU is back to 23");
-    check(ble_midi_get(&g_in, &st, &d1, &d2) == 0, "nothing queued from the old connection");
+    check(ble_midi_get(&g_in, &st, &d1, &d2) == 0, "the message nobody read from the old connection is gone");
     check(ble_nimble_notify(NULL, (const uint8_t *)"\x80\x80\x90\x3c\x7f", 5) == -1, "no notification until the new central subscribes");
 
     /* the host ends the connection itself */
@@ -465,6 +503,156 @@ static void transport_refuses_always(void)
     check(M.bad == 0, "in order");
 }
 
+/* ---- the port's OS layer alone: no host, no controller ---- */
+
+static uint32_t g_clock;
+static uint32_t npl_now(void *ctx) { (void)ctx; return g_clock; }
+static int g_pumped;
+static void npl_pump(void *ctx) { (void)ctx; g_pumped++; g_clock++; }
+static int g_order[16], g_nord;
+static void ev_note(struct ble_npl_event *ev) { if (g_nord < 16) g_order[g_nord++] = (int)(intptr_t)ble_npl_event_get_arg(ev); }
+static struct ble_npl_eventq *g_q;
+static void ev_again(struct ble_npl_event *ev) { ble_npl_eventq_put(g_q, ev); g_nord++; }
+
+static void npl_units(void)
+{
+    struct ble_npl_eventq q, *dq;
+    struct ble_npl_event a, b, d, *e;
+    struct ble_npl_callout co, co2;
+    struct ble_npl_sem sem;
+    struct ble_npl_mutex mu;
+    uint32_t tmo;
+
+    ble_npl_port_set(npl_now, npl_pump, NULL);
+    nimble_port_init();                         /* the default queue, with the host's start event in it: drop that */
+    dq = nimble_port_get_dflt_eventq();
+    while ((e = ble_npl_eventq_get(dq, 0)) != NULL)
+        ;
+
+    /* events: FIFO, put twice is once, remove, is_queued */
+    ble_npl_eventq_init(&q);
+    ble_npl_event_init(&a, ev_note, (void *)1);
+    ble_npl_event_init(&b, ev_note, (void *)2);
+    ble_npl_event_init(&d, ev_note, (void *)3);
+    check(ble_npl_eventq_is_empty(&q), "a new queue is empty");
+    ble_npl_eventq_put(&q, &a);
+    ble_npl_eventq_put(&q, &b);
+    ble_npl_eventq_put(&q, &a);                 /* already in */
+    ble_npl_eventq_put(&q, &d);
+    check(ble_npl_event_is_queued(&a) && !ble_npl_eventq_is_empty(&q), "queued events say so");
+    ble_npl_eventq_remove(&q, &b);
+    check(!ble_npl_event_is_queued(&b), "a removed event is not queued");
+    ble_npl_eventq_remove(&q, &b);              /* not queued: nothing happens */
+    g_nord = 0;
+    while ((e = ble_npl_eventq_get(&q, 0)) != NULL)
+        ble_npl_event_run(e);
+    check(g_nord == 2 && g_order[0] == 1 && g_order[1] == 3, "events come out in the order they went in, once each, without the removed one");
+    check(ble_npl_eventq_is_empty(&q) && q.tail == NULL, "and the queue is empty, head and tail");
+    ble_npl_eventq_put(&q, &b);
+    e = ble_npl_eventq_get(&q, 0);
+    check(e == &b && ble_npl_eventq_get(&q, 0) == NULL, "a queue that emptied takes an event again");
+    ble_npl_eventq_put(&q, &a);
+    ble_npl_eventq_put(&q, &a);                 /* the same event twice in a row */
+    check(ble_npl_eventq_get(&q, 0) == &a && ble_npl_eventq_get(&q, 0) == NULL, "an event put twice in a row comes out once");
+    ble_npl_event_set_arg(&b, (void *)7);
+    check(ble_npl_event_get_arg(&b) == (void *)7, "an event's argument");
+
+    /* callouts fire when due, once, on their queue; stop and re-arm */
+    ble_npl_eventq_init(dq);
+    g_clock = 100;
+    ble_npl_callout_init(&co, dq, ev_note, (void *)10);
+    ble_npl_callout_init(&co2, dq, ev_note, (void *)20);
+    check(!ble_npl_callout_is_active(&co), "a new callout is not active");
+    ble_npl_callout_reset(&co, 50);
+    check(ble_npl_callout_is_active(&co) && ble_npl_callout_get_ticks(&co) == 150, "armed for 150");
+    check(ble_npl_callout_remaining_ticks(&co, 120) == 30 && ble_npl_callout_remaining_ticks(&co, 200) == 0, "ticks remaining");
+    g_nord = 0;
+    g_clock = 149;
+    check(ble_npl_port_run() == 0 && g_nord == 0, "not before it is due");
+    g_clock = 150;
+    check(ble_npl_port_run() == 1 && g_nord == 1 && g_order[0] == 10, "when it is due: once");
+    check(!ble_npl_callout_is_active(&co), "and no longer armed");
+    g_clock = 300;
+    check(ble_npl_port_run() == 0, "it does not fire again");
+    ble_npl_callout_reset(&co, 100);
+    ble_npl_callout_reset(&co, 10);             /* re-armed sooner: the first arming is gone */
+    g_nord = 0;
+    g_clock = 310;
+    check(ble_npl_port_run() == 1 && g_nord == 1, "a re-armed callout fires at its new time");
+    g_clock = 500;
+    check(ble_npl_port_run() == 0, "and not a second time at the old one");
+    ble_npl_callout_reset(&co, 10);
+    ble_npl_callout_reset(&co2, 10);
+    ble_npl_callout_stop(&co);
+    check(!ble_npl_callout_is_active(&co), "a stopped callout is not active");
+    g_nord = 0;
+    g_clock = 600;
+    check(ble_npl_port_run() == 1 && g_order[0] == 20, "a stopped callout does not fire, the other does");
+    g_clock = 601;
+    ble_npl_callout_reset(&co, 1);
+    g_clock = 602;
+    g_nord = 0;
+    ble_npl_callout_set_arg(&co, (void *)5);
+    ble_npl_port_run();
+    check(g_nord == 1 && g_order[0] == 5, "set_arg changes what the callout's event gets");
+    /* several callouts: re-arming one in the middle of the list keeps the list whole */
+    g_clock = 700;
+    ble_npl_callout_set_arg(&co, (void *)10);
+    ble_npl_callout_reset(&co, 50);
+    ble_npl_callout_reset(&co2, 60);
+    ble_npl_callout_reset(&co, 500);
+    g_nord = 0;
+    g_clock = 760;
+    check(ble_npl_port_run() == 1 && g_nord == 1 && g_order[0] == 20, "the callout that was not re-armed fires at its time, the re-armed one does not");
+    g_clock = 1200;
+    check(ble_npl_port_run() == 1 && g_nord == 2 && g_order[1] == 10, "and the re-armed one fires at its new time");
+    /* a callout fired and still queued, then stopped, leaves the queue */
+    g_clock = 1300;
+    ble_npl_callout_reset(&co, 1);
+    g_clock = 1301;
+    ble_npl_callout_stop(&co);
+    check(ble_npl_port_run() == 0, "a callout that was stopped does not run");
+
+    /* the main loop's step runs a bounded number of events, and stops although an event queues itself again */
+    ble_npl_eventq_init(dq);
+    {
+        struct ble_npl_event ev[5];
+        int i, n;
+        for (i = 0; i < 5; i++) {
+            ble_npl_event_init(&ev[i], ev_note, (void *)(intptr_t)(i + 1));
+            ble_npl_eventq_put(dq, &ev[i]);
+        }
+        g_nord = 0;
+        n = ble_npl_port_run();
+        check(n == 5 && g_nord == 5, "one step runs all the events that are queued (up to its bound)");
+    }
+    g_q = dq;
+    ble_npl_event_init(&a, ev_again, NULL);
+    ble_npl_eventq_put(dq, &a);
+    g_nord = 0;
+    check(ble_npl_port_run() > 0 && g_nord <= 64, "an event that queues itself again does not keep one step from ending");
+    ble_npl_eventq_remove(dq, &a);
+
+    /* the semaphore waits by running the pump; a mutex counts */
+    ble_npl_sem_init(&sem, 0);
+    g_pumped = 0;
+    g_clock = 1000;
+    check(ble_npl_sem_pend(&sem, 50) == BLE_NPL_TIMEOUT, "nothing releases the semaphore: a wait times out");
+    tmo = g_clock - 1000;
+    check(tmo >= 50 && tmo <= 52 && g_pumped >= 50, "after about 50 ms, running the pump the whole time");
+    ble_npl_sem_release(&sem);
+    check(ble_npl_sem_get_count(&sem) == 1 && ble_npl_sem_pend(&sem, 50) == 0 && ble_npl_sem_get_count(&sem) == 0, "a released token is taken at once");
+    ble_npl_sem_init(&sem, 1);
+    g_pumped = 0;
+    check(ble_npl_sem_pend(&sem, 50) == 0 && g_pumped == 0, "with a token, no pump");
+    ble_npl_mutex_init(&mu);
+    check(ble_npl_mutex_release(&mu) == BLE_NPL_BAD_MUTEX, "releasing a mutex that is not held is an error");
+    check(ble_npl_mutex_pend(&mu, 0) == 0 && ble_npl_mutex_release(&mu) == 0, "pend and release");
+    g_clock = 2000;
+    ble_npl_time_delay(5);
+    check(g_clock == 2005, "delay runs the pump for the time given");
+}
+
 int main(int argc, char **argv)
 {
     char exp[400], why[300];
@@ -479,7 +667,9 @@ int main(int argc, char **argv)
     if (argc > 3)
         what = argv[3];
 
-    if (!strcmp(what, "silent")) {
+    if (!strcmp(what, "npl")) {
+        npl_units();
+    } else if (!strcmp(what, "silent")) {
         fail_silent();
     } else if (!strcmp(what, "refused")) {
         fail_refused();
@@ -491,6 +681,7 @@ int main(int argc, char **argv)
         start_and_advertise();
         discover();
         gatt_access();
+        bad_events();
         notify();
         leave_and_return();
         snprintf(exp, sizeof exp, "%s/nimble_expect.txt", dir);

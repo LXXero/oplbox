@@ -80,11 +80,14 @@ int ble_transport_to_ll_iso_impl(struct os_mbuf *om)
 void ble_nimble_receive(uint8_t type, const uint8_t *p, uint16_t n)
 {
     if (type == HCI_EVT) {
-        uint8_t *buf = ble_transport_alloc_evt(0);
-        if (!buf)
+        uint8_t *buf;
+        if (n < 2u || p[1] + 2u != n || n > MYNEWT_VAL(BLE_TRANSPORT_EVT_SIZE)) {
+            g_st.rx_bad++;
             return;
-        if (n > 2u + 255u || n < 2u || p[1] + 2u != n || n > MYNEWT_VAL(BLE_TRANSPORT_EVT_SIZE)) {
-            ble_transport_free(buf);
+        }
+        buf = ble_transport_alloc_evt(0);
+        if (!buf) {
+            g_st.rx_bad++;
             return;
         }
         memcpy(buf, p, n);
@@ -98,6 +101,8 @@ void ble_nimble_receive(uint8_t type, const uint8_t *p, uint16_t n)
             return;
         }
         ble_transport_to_hs_acl(om);
+    } else {
+        g_st.rx_bad++;
     }
 }
 

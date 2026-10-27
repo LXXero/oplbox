@@ -234,6 +234,37 @@ Up to four frames are kept per step. The tool prints the text and the counters; 
 `report.bin`, `counters.txt` and `frame-NN-<step>-chNN.bin` (EAPOL frames `frame-NN-<step>-msgN.bin`). EAPOL
 msg 1 and 2 allow offline passphrase guesses: keep a WPA2 run's report private.
 
+## Bluetooth test page over SysEx
+
+`tools/fm1_ble_report.py` reads the Bluetooth test page's results (docs/BLUETOOTH_PAGE.md) and can start a run
+(`firmware/src/ble_sysex.c`). Same framing as the song slots and the WiFi page; it reuses the WiFi report's status codes,
+chunking and `serial16`.
+
+| cmd | from the computer | from the FM-1 |
+| --- | --- | --- |
+| `0x65` report | `off24` | `status total24 off24 serial16 data`: up to 512 bytes of the report from `off` |
+| `0x66` run | (nothing), or `wait8` | `status run16`, at once |
+
+`wait8` is the seconds a central has to connect once advertising is on, 0 to 120 (0 skips the connect and MIDI steps);
+with no body it is 20. A longer wait or a longer body is status 1. The statuses are the WiFi page's (0 done or taken, 1 bad
+request, 2 no run since the FM-1 started, 3 a run is asked for or going on, 4 EDIT is open). A run asked for starts in
+the main loop as SAVE, HOME, PLAY would on the pages: the sound stops, the page opens and runs, and stays open on page 1
+afterwards (SAVE leaves, back on the WiFi page's first screen if it was opened from there). The report is in RAM until the
+next run (numbers little-endian):
+
+| Bytes | What |
+| --- | --- |
+| 4 | `OPLB` |
+| 1 | version, 1 |
+| 1 | flags: bit 0 the text was cut short, bit 1 counters or steps were |
+| 2 | the run's number |
+| 2 | T, then T bytes of text: every line pages 1-12 show (not the `PLAY: PAGE n` footers), a blank line between pages, then `STEPS IN FULL: NAME, RESULT, MS, NOTE` and one line per step with its whole note, then `ADDRESS` (the controller's, `00:00:00:00:00:00` before the HCI step) |
+| 1 | K, then K 32-bit counters (24): `tools/fm1_ble_report.py` and `fm1ble_ctr_name` name them |
+| 1 | S, then S steps (8): the step (0 radio ... 7 midi_out), its result (0 not run, 1 pass, 2 fail, 3 skip), the evidence bytes it had (16 bits) and kept (16 bits, the same, at most 48), then those bytes |
+
+The tool prints the text and the counters; `--out DIR` writes `report.txt`, `report.bin`, `counters.txt` and
+`step-N-<name>.bin` for each step that has evidence.
+
 ## Settings
 
 ```c

@@ -11,6 +11,9 @@
  *                              run makes; no run yet until the run command, which takes 3 report polls (edit: EDIT is
  *                              open; running: a run is already going on). With WIFI_NET_OUT set, the network command's
  *                              SSID and passphrase are written there as hex, one line each (what the test compares)
+ *   slot_sysex_test --serve-ble FILE [edit|running]   the same for tests/ble_report_tool.py and firmware/src/ble_sysex.c
+ *                              (the Bluetooth report): the run command's wait is written to BLE_WAIT_OUT, if set, as one
+ *                              decimal line
  *   slot_sysex_test --dump N FILE   built-in song N (0..) as a .CMF file
  */
 #include <stdint.h>
@@ -122,6 +125,39 @@ static int wifi_run_ask(uint32_t *run)
     return WIFI_OK;
 }
 
+/* ---- the Bluetooth page's side (ble_sysex.c, composed after wifi_sysex.c as oplbox.c does), the same way */
+static uint32_t ble_report_state(void);
+static const uint8_t *ble_report(uint32_t *n, uint32_t *serial);
+static int ble_run_ask(uint32_t wait_s, uint32_t *run);
+#include "ble_sysex.c"
+static uint8_t brep[8000];
+static uint32_t brep_n, brep_serial, bstate, bruns, breq, bedit, bpolls, brun_polls = 3, bwait = ~0u;
+static void ble_run_ends(void)
+{
+    breq = 0; bruns++; bstate = WR_DONE; brep_serial++;
+    if (brep_n >= WR_HEAD) { brep[6] = (uint8_t)bruns; brep[7] = (uint8_t)(bruns >> 8); }
+}
+static uint32_t ble_report_state(void)
+{
+    if (breq && ++bpolls >= brun_polls) ble_run_ends();
+    return breq ? (uint32_t)WR_RUNNING : bstate;
+}
+static const uint8_t *ble_report(uint32_t *n, uint32_t *serial) { *n = brep_n; *serial = brep_serial & 0xFFFFu; return brep; }
+static int ble_run_ask(uint32_t wait_s, uint32_t *run)
+{
+    const char *path = getenv("BLE_WAIT_OUT");
+    if (breq || bstate == WR_RUNNING) { *run = (bruns + breq) & 0xFFFFu; return WIFI_E_RUNNING; }
+    *run = 0;
+    if (bedit) return WIFI_E_EDIT;
+    breq = 1; bpolls = 0; bwait = wait_s;
+    if (path) {
+        FILE *f = fopen(path, "w");
+        if (f) { fprintf(f, "%u\n", wait_s); fclose(f); }
+    }
+    *run = (bruns + 1u) & 0xFFFFu;
+    return WIFI_OK;
+}
+
 /* ---- the computer: frames to the FM-1 go through a SysEx assembler like usb.c's; what the FM-1 sends is
  * checked as SysEx, answered when it is a read request, kept when it is a reply */
 static int serve, old;
@@ -223,7 +259,7 @@ static void poll_fm1(void)                      /* platform_poll's part: the han
 {
     uint32_t d = ota_take();
     if (d == 7u && ota_dec[2] == 0x11) ota_reply_identity();
-    else if (d && !old && !slot_sysex(ota_dec, d)) wifi_sysex(ota_dec, d);
+    else if (d && !old && !slot_sysex(ota_dec, d) && !wifi_sysex(ota_dec, d)) ble_sysex(ota_dec, d);
 }
 static void send(uint32_t cmd, const uint8_t *body, uint32_t n)
 {
@@ -433,7 +469,7 @@ static void test_wifi(void)
     CHECK(reply_n == 16u && reply[6] == WIFI_E_REQ, "a short report request is not refused");
     send(WIFI_CMD_RUN, (const uint8_t *)"\0", 1);
     CHECK(reply_n == 10u && reply[6] == WIFI_E_REQ && !wreq, "a run command with a body is not refused");
-    send(0x65, 0, 0);
+    send(0x67, 0, 0);                          /* 0x65 and 0x66 are the Bluetooth page's */
     CHECK(reply_n == 0u, "an unknown command is answered");
 
     /* the network (0x64): taken whole, the reply status and the SSID's length only; every refusal */
@@ -475,8 +511,55 @@ static void test_wifi(void)
     CHECK(max_wire <= 640u, "a message of %u bytes", max_wire);
 }
 
+/* the Bluetooth report's header (the magic), and the two commands: the run with and without a wait, refused waits and bodies */
+static void test_ble(void)
+{
+    static uint8_t b[64];
+    wr_buf w;
+    uint32_t sets_before;
+    wb_begin(&w, b, sizeof b, 32, 5);
+    wr_line(&w, "A");
+    CHECK(!memcmp(b, "OPLB", 4) && b[4] == 1 && b[6] == 5 && b[8] == 2 && b[10] == 'A', "the Bluetooth report's header is not OPLB 1 run 5");
+
+    bedit = 1;
+    send(BLE_CMD_RUN, 0, 0);
+    CHECK(reply_n == 10u && reply[2] == BLE_CMD_RUN && reply[6] == WIFI_E_EDIT && !breq, "Bluetooth: in EDIT a run is not refused");
+    bedit = 0;
+    send(BLE_CMD_RUN, (const uint8_t *)"\x79", 1);                     /* 121 s */
+    CHECK(reply_n == 10u && reply[6] == WIFI_E_REQ && !breq, "Bluetooth: a wait of 121 s is not refused");
+    send(BLE_CMD_RUN, (const uint8_t *)"\0\0", 2);
+    CHECK(reply_n == 10u && reply[6] == WIFI_E_REQ && !breq, "Bluetooth: a two-byte body is not refused");
+    send(BLE_CMD_RUN, 0, 0);
+    CHECK(reply_n == 10u && reply[6] == WIFI_OK && reply[7] == 1u && breq && bwait == BLE_WAIT_DEFAULT,
+          "Bluetooth: a run with no wait is not run 1 with the default wait (%u)", bwait);
+    send(BLE_CMD_RUN, (const uint8_t *)"\x05", 1);
+    CHECK(reply_n == 10u && reply[6] == WIFI_E_RUNNING && reply[7] == 1u && bwait == BLE_WAIT_DEFAULT,
+          "Bluetooth: a second run command changed the run");
+    send(BLE_CMD_REPORT, (const uint8_t *)"\0\0\0", 3);
+    CHECK(reply_n == 16u && reply[2] == BLE_CMD_REPORT && reply[6] == WIFI_E_RUNNING, "Bluetooth: while it runs the report is not \"running\"");
+    ble_run_ends();
+    sets_before = bruns;
+    send(BLE_CMD_RUN, (const uint8_t *)"\x00", 1);
+    CHECK(reply_n == 10u && reply[6] == WIFI_OK && reply[7] == 2u && bwait == 0u && bruns == sets_before, "Bluetooth: a wait of 0 is not taken as run 2");
+    breq = 0; bruns = 0; bstate = WR_NONE; brep_n = 0;
+    send(BLE_CMD_REPORT, (const uint8_t *)"\0\0\0", 3);
+    CHECK(reply_n == 16u && reply[6] == WIFI_E_NONE, "Bluetooth: before any run the report is not \"none\"");
+    send(BLE_CMD_REPORT, (const uint8_t *)"\0\0", 2);
+    CHECK(reply_n == 16u && reply[6] == WIFI_E_REQ, "Bluetooth: a short report request is not refused");
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 2 && !strcmp(argv[1], "--serve-ble")) {
+        FILE *f = fopen(argv[2], "rb");
+        if (!f) return 2;
+        brep_n = (uint32_t)fread(brep, 1, sizeof brep, f);
+        fclose(f);
+        serve = 1;
+        if (argc > 3 && !strcmp(argv[3], "edit")) bedit = 1;
+        if (argc > 3 && !strcmp(argv[3], "running")) { breq = 1; brun_polls = 6; }
+        for (;;) poll_fm1();
+    }
     if (argc > 2 && !strcmp(argv[1], "--serve-wifi")) {
         FILE *f = fopen(argv[2], "rb");
         if (!f) return 2;
@@ -504,8 +587,9 @@ int main(int argc, char **argv)
     test_check();
     test_transfer();
     test_wifi();
+    test_ble();
     if (failed) { printf("slot_sysex: %d checks failed\n", failed); return 1; }
-    printf("slot_sysex: checks passed (pull, push, refusals, macsop_check == macsop_parse, the WiFi report and run, "
+    printf("slot_sysex: checks passed (pull, push, refusals, macsop_check == macsop_parse, the WiFi and Bluetooth reports and runs, "
            "messages <= %u bytes)\n", max_wire);
     return 0;
 }

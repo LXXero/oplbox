@@ -14,7 +14,8 @@
  *   SELECT         turn: pick a song (18 built in, then 9 flash slots)
  *   REC            loop one song <-> play them all in turn (the LED says which)
  *   GLO            the battery's raw ADC count in the status line, for a moment (the icon at the top right)
- *   SAVE           the WiFi test page (docs/WIFI.md stages 2-3): PLAY there brings the radio up and reads it, SAVE leaves
+ *   SAVE           the WiFi test page (docs/WIFI.md stages 2-3): PLAY there brings the radio up and reads it, SAVE leaves;
+ *                  HOME there opens the Bluetooth test page (docs/BLUETOOTH_PAGE.md): PLAY runs it, PLAY pages, SAVE leaves
  *   scope: the first nine white keys (F3..G4) mute / unmute channels 1..9 (key LED = muted)
  *   ARP            the arpeggiator on (its settings open) / off  LFO   the arp's settings: open, or the next page
  *   PRESETS        the instrument the keys / the arp play (one of the song's; the editor's I too)
@@ -63,6 +64,7 @@ static inline void irq_restore(uint32_t f) { (void)f; }
 #include "fm1wifi.h"                         /* the WiFi driver (firmware/wifi/), for the WiFi test page */
 #define BR_LIBC_DECLARED                     /* memcpy and memset are libc.c's (platform.c), not BearSSL's declarations */
 #include "fm1wifi_wpa.h"                     /* its WPA2-PSK station (stage 8) */
+#include "../ble/fm1ble_test.h"              /* the Bluetooth test run (docs/BLUETOOTH.md), for the Bluetooth test page */
 #ifdef DINGHY_HOST
 static uint32_t host_supply;                  /* platform_supply_full: 1 called with the WiFi core down, 2 with it up */
 static void platform_supply_full(void) { host_supply = fm1wifi_is_up() ? 2u : 1u; }
@@ -1485,6 +1487,11 @@ static int wifi_run_ask(uint32_t *run);
 static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint8_t *data, uint32_t nd);
 static int wifi_net_set(const uint8_t *ssid, uint32_t ns, const char *pass, uint32_t np);
 #include "wifi_sysex.c"
+static uint32_t ble_report_state(void);
+static const uint8_t *ble_report(uint32_t *n, uint32_t *serial);
+static int ble_run_ask(uint32_t wait_s, uint32_t *run);
+static void ble_page(void);
+#include "ble_sysex.c"
 #define WIFI_TEXT_MAX 6144u
 #define WIFI_N_CTR 58u                        /* the report's counters (wifi_report_build) */
 #define WIFI_REPORT_MAX (WR_HEAD + WIFI_TEXT_MAX + 2u + 4u * WIFI_N_CTR + 3u * FM1WIFI_RAW_N * (6u + FM1WIFI_RAW_LEN) + \
@@ -2320,6 +2327,16 @@ static void wifi_page(void)
         platform_poll();
         b = fm1_input_edges(&rel);
         if (b & (1u << BTN_SAVE)) break;
+        if (b & (1u << BTN_HOME)) {           /* the Bluetooth test page; back here when it is left */
+            ble_page();
+            lcd_fill(0, 0, 240, 240, C_BLACK);
+            if (started) { wifi_show(page, &d, &r, sv, sv_got, &rx, rx_ok, rc); continue; }
+            wifi_line(0, "WIFI TEST (STAGE 8)", C_ACC);
+            wifi_line(1, "PLAY: POWER UP, TRIM, READ", C_TXT);
+            wifi_line(2, "SAVE: LEAVE", C_TXT);
+            wifi_line(3, "THE SOUND STOPS MEANWHILE", C_MUTE);
+            continue;
+        }
         if (wifi_req && started) break;      /* a run asked for over USB: leave as SAVE does; the main loop opens the page again */
         if (wifi_req) b |= 1u << BTN_PLAY;    /* ... and there it starts as PLAY does */
         if ((b & (1u << BTN_PLAY)) && started) { page = (page + 1u) % 11u; wifi_show(page, &d, &r, sv, sv_got, &rx, rx_ok, rc); }
@@ -2360,6 +2377,190 @@ static void wifi_page(void)
         }
     }
     fm1wifi_power_down();                     /* nothing if it never came up */
+    chip_run = was_run; playing = was_play;
+}
+
+
+/* ---- the Bluetooth test page (docs/BLUETOOTH_PAGE.md): the steps of fm1ble_test.h, one line each, then each step's
+ * evidence and the counters, 12 pages; its report (ble_sysex.c) is those pages' text, then the counters and the steps'
+ * raw bytes. Built like the WiFi page's: a run asked for over USB opens it and starts as PLAY does. */
+#define BLE_PAGES 12u                           /* 1 list, 8 steps, 3 of counters (8 each) */
+#define BLE_TEXT_MAX 3072u
+#define BLE_REPORT_MAX (WR_HEAD + BLE_TEXT_MAX + 2u + 4u * FM1BLE_N_CTR + FM1BLE_STEPS * (6u + FM1BLE_RAW))
+static uint8_t ble_rep[BLE_REPORT_MAX] __attribute__((section(".pool")));
+static fm1ble_run ble_run __attribute__((section(".pool")));
+static uint32_t ble_rep_n, ble_rep_serial, ble_runs, ble_req, ble_state, ble_wait_s;   /* ble_req: a run asked for over USB */
+static wr_buf *ble_cap;                         /* set: ble_line adds the line to the report instead of drawing it */
+static uint32_t ble_report_state(void) { return ble_req ? (uint32_t)WR_RUNNING : ble_state; }
+static const uint8_t *ble_report(uint32_t *n, uint32_t *serial) { *n = ble_rep_n; *serial = ble_rep_serial & 0xFFFFu; return ble_rep; }
+static int ble_run_ask(uint32_t wait_s, uint32_t *run)
+{
+    if (ble_req || ble_state == WR_RUNNING) { *run = (ble_runs + ble_req) & 0xFFFFu; return WIFI_E_RUNNING; }
+    *run = 0;
+    if (edit) return WIFI_E_EDIT;               /* SAVE writes the song there: the page is not reachable */
+    ble_req = 1;
+    ble_wait_s = wait_s;
+    *run = (ble_runs + 1u) & 0xFFFFu;
+    return WIFI_OK;
+}
+
+static void ble_line(uint32_t i, const char *s, uint16_t c)   /* line i of the page */
+{
+    if (ble_cap) {                              /* not a footer (PLAY: PAGE n), not a blank */
+        const char *f = "PLAY: PAGE";
+        uint32_t k = 0;
+        while (f[k] && s[k] == f[k]) k++;
+        if (f[k] && *s) wr_line(ble_cap, s);
+        return;
+    }
+    draw_text_box(0, 2u + 22u * i, 240, &FONT_S, s, c, 0);
+#ifdef DINGHY_HOST
+    printf("%6u ms  ble page %u: %s\n", fm1_ms, i, s);
+#endif
+}
+
+static const char *ble_result_name(uint32_t r)
+{
+    return r == FM1BLE_PASS ? "PASS" : r == FM1BLE_FAIL ? "FAIL" : r == FM1BLE_SKIP ? "SKIP" : "NOT RUN";
+}
+
+static char *ble_upper(char *d, const char *s, uint32_t max)   /* s upper-cased, at most max characters */
+{
+    while (*s && max--) { *d++ = (char)(*s >= 'a' && *s <= 'z' ? *s - 32 : *s); s++; }
+    *d = 0;
+    return d;
+}
+
+/* page 0 lists the steps, 1-8 show one step's evidence, 9-11 the counters */
+static void ble_show(uint32_t page, const fm1ble_run *r)
+{
+    char s[48], *p;
+    uint32_t i, k;
+    if (!ble_cap) lcd_fill(0, 0, 240, 240, C_BLACK);
+    if (page == 0u) p = cat(s, "BLUETOOTH TEST (STAGE 5)");
+    else if (page <= FM1BLE_STEPS) { p = catu(cat(s, "STEP "), page); p = ble_upper(cat(p, " "), fm1ble_step_name((int)page - 1), 12); }
+    else p = cat(catu(cat(s, "COUNTERS "), page - FM1BLE_STEPS), "/3");
+    p = cat(p, "   "); p = catu(p, page + 1u); cat(p, "/12");
+    ble_line(0, s, C_ACC);
+    if (page == 0u) {
+        for (i = 0; i < FM1BLE_STEPS; i++) {
+            const fm1ble_step *st = &r->step[i];
+            p = ble_upper(s, fm1ble_step_name((int)i), 8);
+            while (p < s + 9) *p++ = ' ';
+            p = cat(p, st->result == FM1BLE_NOT_RUN ? "--  " : ble_result_name(st->result));
+            *p++ = ' ';
+            ble_upper(p, st->note, 20);
+            ble_line(1u + i, s, st->result == FM1BLE_FAIL ? C_RED : st->result == FM1BLE_PASS ? C_ACC : C_MUTE);
+        }
+    } else if (page <= FM1BLE_STEPS) {
+        const fm1ble_step *st = &r->step[page - 1u];
+        p = cat(s, "RESULT: "); p = cat(p, ble_result_name(st->result));
+        p = cat(p, "   "); p = catu(p, st->ms); cat(p, " MS");
+        ble_line(1, s, st->result == FM1BLE_FAIL ? C_RED : C_ACC);
+        for (k = 0; k < 2u; k++) {              /* the note, 32 characters a line */
+            uint32_t n = 0;
+            while (n < k * 32u && st->note[n]) n++;
+            ble_upper(s, n == k * 32u ? st->note + n : "", 32);
+            ble_line(2u + k, s, C_TXT);
+        }
+        p = cat(s, "RAW: "); p = catu(p, st->nraw); p = cat(p, " BYTES");
+        if (st->nraw > 40u) cat(p, " (40 SHOWN)");
+        ble_line(4, s, C_TXT);
+        for (k = 0; k < 4u; k++) {              /* the evidence, 10 bytes a line (the report has all of it) */
+            uint32_t j, n = st->nraw > 10u * k ? st->nraw - 10u * k : 0;
+            p = s;
+            for (j = 0; j < 10u && j < n; j++) { p = hexn(p, st->raw[10u * k + j], 2); *p++ = ' '; }
+            *p = 0;
+            ble_line(5u + k, s, C_MUTE);
+        }
+    } else {
+        for (i = 0; i < 8u; i++) {
+            uint32_t n = (page - FM1BLE_STEPS - 1u) * 8u + i;
+            p = ble_upper(s, fm1ble_ctr_name((int)n), 22);
+            while (p < s + 23) *p++ = ' ';
+            hexn(p, r->ctr[n], 8);
+            ble_line(1u + i, s, C_TXT);
+        }
+    }
+    p = cat(s, "PLAY: PAGE "); p = catu(p, (page + 1u) % BLE_PAGES + 1u); cat(p, "   SAVE: LEAVE");
+    ble_line(9, s, C_MUTE);
+}
+
+static void ble_report_build(const fm1ble_run *r)
+{
+    static wr_buf w;
+    char s[96], *p;
+    uint32_t i, k;
+    wb_begin(&w, ble_rep, sizeof ble_rep, BLE_TEXT_MAX, ble_runs);
+    ble_cap = &w;
+    for (i = 0; i < BLE_PAGES; i++) { if (i) wr_line(&w, ""); ble_show(i, r); }
+    ble_cap = 0;
+    wr_line(&w, "");
+    wr_line(&w, "STEPS IN FULL: NAME, RESULT, MS, NOTE");
+    for (i = 0; i < FM1BLE_STEPS; i++) {
+        const fm1ble_step *st = &r->step[i];
+        p = cat(s, fm1ble_step_name((int)i)); *p++ = ' ';
+        p = cat(p, ble_result_name(st->result)); *p++ = ' ';
+        p = catu(p, st->ms); *p++ = ' ';
+        cat(p, st->note);
+        wr_line(&w, s);
+    }
+    p = cat(s, "ADDRESS ");
+    for (k = 0; k < 6u; k++) { p = hexn(p, r->bdaddr[k], 2); if (k < 5u) *p++ = ':'; }
+    *p = 0;
+    wr_line(&w, s);
+    wr_counters(&w, r->ctr, FM1BLE_N_CTR);
+    for (i = 0; i < FM1BLE_STEPS; i++) wr_frame(&w, i, r->step[i].result, r->step[i].nraw, r->step[i].raw, r->step[i].nraw);
+    ble_rep_n = w.n;
+    ble_rep_serial++;
+#ifdef DINGHY_HOST
+    {   const char *path = getenv("HOST_BLE_REPORT");   /* tests/run_host.sh: the report as the FM-1 would send it; */
+        char name[512];                                  /* a %u in the name: the run's number */
+        FILE *o;
+        if (path) snprintf(name, sizeof name, path, ble_runs);
+        o = path ? fopen(name, "wb") : 0;
+        if (o) { fwrite(ble_rep, 1, ble_rep_n, o); fclose(o); }
+    }
+#endif
+}
+
+static void ble_page(void)
+{
+    uint32_t was_run = chip_run, was_play = playing, started = 0, running = 0, page = 0, rel;
+    lcd_fill(0, 0, 240, 240, C_BLACK);
+    ble_line(0, "BLUETOOTH TEST (STAGE 5)", C_ACC);
+    ble_line(1, "PLAY: START THE RUN", C_TXT);
+    ble_line(2, "SAVE: LEAVE", C_TXT);
+    ble_line(3, "THE SOUND STOPS MEANWHILE", C_MUTE);
+    for (;;) {
+        uint32_t b;
+        platform_poll();
+        b = fm1_input_edges(&rel);
+        if (b & (1u << BTN_SAVE)) break;
+        if (ble_req && started && !running) break;   /* a run asked for over USB: leave as SAVE does; the main loop opens the page again */
+        if (ble_req) b |= 1u << BTN_PLAY;            /* ... and there it starts as PLAY does */
+        if ((b & (1u << BTN_PLAY)) && started && !running) { page = (page + 1u) % BLE_PAGES; ble_show(page, &ble_run); }
+        if ((b & (1u << BTN_PLAY)) && !started) {
+            started = running = 1;
+            if (!ble_req) ble_wait_s = BLE_WAIT_DEFAULT;
+            ble_req = 0; ble_runs++; ble_state = WR_RUNNING;   /* the report says RUNNING until it is rebuilt */
+            chip_off();                       /* no sound while the radio comes up: */
+            fm1_delay_ms(15);                 /* both output halves rendered silent, so a masked trim stays quiet */
+            platform_supply_full();           /* the rails at M-VAVE's levels before the radio's load (platform.c) */
+            ble_line(1, "WORKING", C_TXT);
+            fm1ble_test_begin(&ble_run, fm1_ms, ble_wait_s * 1000u);
+        }
+        if (running && fm1ble_test_poll(&ble_run, fm1_ms)) {
+            running = 0;
+            ble_report_build(&ble_run);
+            ble_state = WR_DONE;
+            ble_show(page, &ble_run);
+        }
+    }
+    if (running) {                            /* SAVE during the run: the report holds what it got */
+        ble_report_build(&ble_run);
+        ble_state = WR_DONE;
+    }
     chip_run = was_run; playing = was_play;
 }
 
@@ -2478,7 +2679,7 @@ static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint
 {
     return slot_reply(cmd, head, nh, data, nd);
 }
-static void app_usb_cmd(const uint8_t *d, uint32_t n) { if (!slot_sysex(d, n)) wifi_sysex(d, n); }
+static void app_usb_cmd(const uint8_t *d, uint32_t n) { if (!slot_sysex(d, n) && !wifi_sysex(d, n)) ble_sysex(d, n); }
 #else                                         /* the host: tests/host.c's "usb" script lines; the replies as text */
 static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint8_t *data, uint32_t nd)
 {
@@ -2489,7 +2690,7 @@ static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint
     (void)data;
     return 0;
 }
-static void app_usb_cmd(const uint8_t *d, uint32_t n) { wifi_sysex(d, n); }
+static void app_usb_cmd(const uint8_t *d, uint32_t n) { if (!wifi_sysex(d, n)) ble_sysex(d, n); }
 #endif
 
 static void app_main(void)
@@ -2626,6 +2827,8 @@ static void app_main(void)
         if ((b & (1u << BTN_SAVE)) && !edit) { wifi_page(); redraw = 1; shown_order = ~0u; }   /* the WiFi page */
         if (wifi_req && edit) wifi_req = 0;   /* asked over USB, then EDIT came first: the page is not reachable */
         if (wifi_req) { wifi_page(); redraw = 1; shown_order = ~0u; }   /* asked over USB: the page, PLAY pressed */
+        if (ble_req && edit) ble_req = 0;     /* the same for the Bluetooth page (ble_sysex.c) */
+        if (ble_req) { ble_page(); redraw = 1; shown_order = ~0u; }
         if ((b & (1u << BTN_GLO)) && !edit) {   /* the battery's smoothed ADC count, to tune BATT_LEVEL by */
             static char bm[24];
             char *p = cat(bm, "BATTERY ");
