@@ -507,12 +507,11 @@ static void op_buf(fm1ble *b, int k, const uint8_t *pdu, uint16_t n, int adv)
 /* The common part of an operation: the RX buffers, the state, a one-shot interval, the channel, interrupts, the counter */
 static void op_arm(fm1ble *b, uint32_t state, uint32_t delay_us)
 {
+    /* the counter: whole slots, then the bit offset inside the slot. Where the slot boundaries lie against this write is
+     * the baseband's own clock [measure on FM-1]: taken as a boundary at the write, so 0 slots and an offset is "this
+     * slot" (Cordio's scheduler arms 300 us ahead, SCH_LOAD_DELAY_US, less than a slot) */
     uint32_t slots = delay_us / 625u, bitoff = delay_us % 625u;
 
-    if (!slots) {                                    /* sooner than a slot: the next slot (the counter's minimum, G 12) */
-        slots = 1;
-        bitoff = 0;
-    }
     e16(b, FM1BLE_E_RXPTR0, (uint32_t)b->rx[0] + FM1BLE_RX_HDR);
     e16(b, FM1BLE_E_RXPTR1, (uint32_t)b->rx[1] + FM1BLE_RX_HDR);
     e16(b, FM1BLE_E_RXSTAT0, 0);
@@ -533,9 +532,9 @@ static void op_arm(fm1ble *b, uint32_t state, uint32_t delay_us)
     wr(FM1BLE_BB_IRQ_CLR, BIT(HW_ID) | BIT(HW_ID + 8u));
     set(FM1BLE_BB_IRQ_EN, BIT(HW_ID) | BIT(HW_ID + 8u));
     ax_wr(FM1BLE_AX_BITOFF, 0);                      /* D.2 __set_anchor_cnt, then the bit offset inside the slot */
-    ax_wr(FM1BLE_AX_CNT_LO, (slots - 1u) & 0xFFFFu);
+    ax_wr(FM1BLE_AX_CNT_LO, slots & 0xFFFFu);
     ax_wr(FM1BLE_AX_BITOFF, bitoff);
-    ax_wr(FM1BLE_AX_CNT_HI, ((slots - 1u) >> 16) | 0x8000u);
+    ax_wr(FM1BLE_AX_CNT_HI, (slots >> 16) | 0x8000u);
     b->op_state = (uint8_t)state;
     b->op_on = 1;
 }

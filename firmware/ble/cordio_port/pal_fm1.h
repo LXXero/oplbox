@@ -1,0 +1,37 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Cordio's PAL on the FM-1's baseband (pal_fm1.c): what the app gives it and what it reports. See pal_fm1.c. */
+#ifndef OPLBOX_BLE_PAL_FM1_H
+#define OPLBOX_BLE_PAL_FM1_H
+
+#include <stdint.h>
+#include "fm1ble.h"
+
+typedef struct {
+    fm1ble *b;                          /* the driver, powered up and its block open (fm1ble_radio_up, fm1ble_bb_init) */
+    uint32_t (*rand32)(void *ctx);      /* random numbers (LE Rand, the controller's seeds); NULL: a counter-fed generator */
+    void *ctx;
+    uint16_t sch_setup_us;              /* how long before an operation the scheduler's timer fires: 0 = 2000 us (main-loop
+                                           polling, not an interrupt: a guess at the loop's latency [measure on FM-1]) */
+} pal_fm1_cfg;
+
+typedef struct {
+    uint32_t adv_ops, conn_ops;         /* operations armed: advertising packets, connection events */
+    uint32_t tx_done, rx_ok, rx_bad, rx_timeout;   /* completions given to Cordio */
+    uint32_t resp_set, resp_late;       /* responses put in for T_IFS; ones asked for after the event had ended */
+    uint32_t timer_fired, timer_late_us;/* the scheduler's timer: fired, the most it was late */
+    uint32_t refused;                   /* operations the driver refused (a bad channel, a PDU too long) */
+    uint32_t late_ops;                  /* operations whose due time had passed: sent at the next slot */
+    uint32_t stuck;                     /* operations the baseband never ended: ended by their deadline */
+    uint32_t aes_calls;                 /* PalCryptoAesEcb reached (no AES here: privacy is off, it should stay 0) */
+    uint32_t asserts;
+} pal_fm1_stats;
+
+void pal_fm1_attach(const pal_fm1_cfg *cfg);
+
+/* The baseband's interrupts (IRQs 45 and 29, D.4) and the scheduler's timer: completions to Cordio, the timer's callback
+ * when due. Call it from the main loop as often as possible (and from the interrupts once they are attached). */
+void pal_fm1_service(void);
+
+const pal_fm1_stats *pal_fm1_state(void);
+
+#endif

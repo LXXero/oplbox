@@ -308,8 +308,7 @@ def build_ble():
     nim = [FW / "ble" / "fm1ble_test.c", FW / "ble" / "fm1ble.c", *nimble_sources()]
     nim_objs = [out / f"nimble_{s.stem}.o" for s in nim]
     tc_all(*[("cc", *CFLAGS, *NIMBLE_INC, *libc_inc(), "-c", s, "-o", o) for s, o in zip(nim, nim_objs)])
-    # Cordio's LE controller (vendored, Apache-2.0), peripheral-only, with the port's WSF and HCI glue; the chip's PAL
-    # (what firmware/ble/cordio_port/PAL_NEEDED.md lists) is not linked: a host stub exists only for the tests
+    # Cordio's LE controller (vendored, Apache-2.0), peripheral-only, with the port's WSF and HCI glue
     cr = FW / "ble" / "cordio"
     crp = FW / "ble" / "cordio_port"
     cr_src = [cr / ln.strip() for ln in (crp / "SOURCES.txt").read_text().splitlines() if ln.strip()]
@@ -320,6 +319,11 @@ def build_ble():
     tc_all(*[("cc", *CFLAGS, "-fshort-enums", "-Wno-parentheses", *cr_inc, "-Ifirmware/ble", "-Ifirmware/ble/cordio_port", *cr_def, *libc_inc(), "-c", s, "-o", o)
              for s, o in zip(cr_all, cr_objs)])
     kc, kd = section_sizes(cr_objs)
+    # the chip's PAL (pal_fm1.c on the radio driver), compiled for the FM-1 CPU: its size, apart from the measuring link below
+    pal_obj = out / "cordio_pal_fm1.o"
+    tc_all(("cc", *CFLAGS, "-fshort-enums", *cr_inc, "-Ifirmware/ble", "-Ifirmware/ble/cordio_port", *cr_def, *libc_inc(), "-c",
+            crp / "pal_fm1.c", "-o", pal_obj))
+    pc, pd = section_sizes([pal_obj])
     # the host stack linked with --gc-sections (the driver and the test run are in the app's own link), to measure what a build that carries it would add: the host stub PAL stands
     # for the chip's (it counts, so its few bytes are in the number), the BSP's libc.c and ble_libc.c are the C library
     extra = [(crp / "pal_stubs_host.c", [*cr_inc, "-Ifirmware/ble/cordio_port", "-fshort-enums", "-Wno-parentheses", *cr_def, *libc_inc()]),
@@ -341,8 +345,8 @@ def build_ble():
     nc, nd = section_sizes(nim_objs)
     return (f"firmware/ble/ alone: {len(own_objs)} objects {oc} B code+rodata, {od} B data+bss; "
             f"NimBLE host and port: {len(nim_objs)} objects {nc} B code+rodata, {nd} B data+bss; "
-            f"Cordio controller: {len(cr_objs)} objects {kc} B code+rodata, {kd} B data+bss; all linked with --gc-sections "
-            f"(stub PAL): {lc} B code+rodata, {ld} B data+bss")
+            f"Cordio controller: {len(cr_objs)} objects {kc} B code+rodata, {kd} B data+bss; the chip's PAL: {pc} B code+rodata, "
+            f"{pd} B data+bss; all linked with --gc-sections (stub PAL): {lc} B code+rodata, {ld} B data+bss")
 
 
 # ---- the WiFi trim's RAM code (docs/WIFI_STAGE3.md "What runs from RAM"): the radio's trim must not touch the flash,

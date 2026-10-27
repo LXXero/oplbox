@@ -22,7 +22,7 @@
 #include "cordio_ctrl.h"
 
 #ifndef CORDIO_HEAP_BYTES
-#define CORDIO_HEAP_BYTES 2048u         /* LlInit, the scheduler and the buffer pools (cordio_ctrl_state()->heap_used) */
+#define CORDIO_HEAP_BYTES 3072u         /* LlInit, the scheduler and the buffer pools (cordio_ctrl_state()->heap_used) */
 #endif
 #define CORDIO_DISPATCH_MAX 64          /* dispatcher rounds per poll: a handler that keeps queuing work must not hold the loop */
 
@@ -125,7 +125,7 @@ int cordio_ctrl_init(const cordio_ctrl_cfg *cfg)
 {
     uint16_t acl_buf;
     uint32_t used;
-    wsfBufPoolDesc_t pools[4];
+    wsfBufPoolDesc_t pools[5];
     uint8_t acl = cfg->max_acl_len ? cfg->max_acl_len : 27;
 
     if (acl < 27)
@@ -148,11 +148,16 @@ int cordio_ctrl_init(const cordio_ctrl_cfg *cfg)
 
     /* +12 for the message headroom, +4 for the header (main.c's sizes) */
     acl_buf = (uint16_t)(12 + g_ll_cfg.maxAclLen + 4 + BB_DATA_PDU_TAILROOM);
+    /* The controller's messages go through these pools too: LE Set Advertising Parameters is a 40-byte message and a
+     * connection's set-up 96 bytes (sizes on the host), so the 64- and 128-byte pools hold several. With one 128-byte
+     * buffer (the advertising reports' count) the parameter message found no buffer and was dropped without an error:
+     * advertising ran at the default 1.28 s interval (found by tests/ble_pal.c). */
     pools[0].len = 16;      pools[0].num = 8;
-    pools[1].len = 32;      pools[1].num = 4;
-    pools[2].len = 128;     pools[2].num = g_ll_cfg.maxAdvReports;
-    pools[3].len = acl_buf; pools[3].num = (uint8_t)(g_ll_cfg.numTxBufs + g_ll_cfg.numRxBufs);
-    used = WsfBufInit(4, pools);
+    pools[1].len = 32;      pools[1].num = 6;
+    pools[2].len = 64;      pools[2].num = 4;
+    pools[3].len = 128;     pools[3].num = (uint8_t)(g_ll_cfg.maxAdvReports + 3);
+    pools[4].len = acl_buf; pools[4].num = (uint8_t)(g_ll_cfg.numTxBufs + g_ll_cfg.numRxBufs);
+    used = WsfBufInit(5, pools);
     if (!used)
         return -1;
     WsfHeapAlloc(used);

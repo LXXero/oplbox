@@ -422,6 +422,17 @@ xargs -P 4 -I{} sh -c "cc -std=gnu11 -O1 -w -fshort-enums -ffunction-sections -f
 cc -std=gnu11 -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Wl,--gc-sections -o build/host/ble_cordio tests/ble_cordio.c \
    firmware/ble/ble_midi.c build/host/cordio/*.o
 build/host/ble_cordio
+# Cordio's PAL on the FM-1's baseband (firmware/ble/cordio_port/pal_fm1.c) on the radio driver's one-packet operations,
+# against the register model's air and a central written from the specification: advertising on 37-39, a SCAN_REQ
+# answered, a CONNECT_IND, connection events on CSA #1's channels with the anchor from the first packet, data both ways
+# with SN/NESN, LL_TERMINATE_IND, advertising again (docs/BLUETOOTH_CORDIO.md). The receive interrupt runs within T_IFS
+# in the model: the FM-1 has to show it does. Never run on a chip.
+cc -std=gnu11 -Wall -Wextra -Werror -fshort-enums $CR_DEF $CR_INC -Ifirmware/ble -I$CP -c -o build/host/pal_fm1.o $CP/pal_fm1.c
+cc -std=gnu11 -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Itests/ble -Wl,--gc-sections -o build/host/ble_pal tests/ble_pal.c \
+   tests/ble/bb_model.c firmware/ble/fm1ble.c firmware/ble/ble_midi.c build/host/pal_fm1.o \
+   $(ls build/host/cordio/*.o | grep -v pal_stubs_host)
+build/host/ble_pal
+python3 tests/ble_pal_mutants.py build/host
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c

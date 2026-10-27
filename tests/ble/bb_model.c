@@ -30,7 +30,9 @@ static void arm(void)
     uint32_t slots = (uint32_t)bbm.ax[FM1BLE_AX_CNT_LO] + 1u;
     bbm.armed = 1;
     bbm.armed_at_us = bbm.now_us;
-    bbm.period_us = slots * 625u + (bbm.air ? bbm.ax[FM1BLE_AX_BITOFF] : 0u);
+    /* the event at the counter's slot: the register-level tests take the next slot boundary a whole slot after the
+     * write, the air takes one at the write and adds the bit offset (fm1ble.c op_arm); which is right is the chip's */
+    bbm.period_us = bbm.air ? (slots - 1u) * 625u + bbm.ax[FM1BLE_AX_BITOFF] : slots * 625u;
 }
 
 uint32_t bb_model_air_us(int pdu_len) { return (uint32_t)(1 + 4 + pdu_len + 3) * 8u; }
@@ -199,6 +201,8 @@ void bb_model_advance_us(uint64_t us)
     while (bbm.air && !in_event && bbm.armed && bbm.armed_at_us + bbm.period_us <= end) {
         bbm.now_us = bbm.armed_at_us + bbm.period_us;
         bbm.armed = 0;                          /* one-shot: the handler arms the next one */
+        if (bbm.silent)                         /* a baseband that runs nothing and raises no flag */
+            continue;
         in_event = 1;
         air_event();
         in_event = 0;
