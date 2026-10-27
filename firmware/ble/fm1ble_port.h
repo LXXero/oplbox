@@ -24,6 +24,11 @@ void fm1ble_port_sync(void);
  * bits & 0xC000 in one read-modify-write that leaves the others alone; returns what they were. */
 uint32_t fm1ble_port_clk(uint32_t bits);
 
+/* A free-running microsecond clock, wrapping at 2^32 (Cordio's baseband time, PalBbGetCurrentTime). The FM-1's is TIMER4
+ * (24 ticks a microsecond, the timer the busy-waits use): the baseband's own slot counter may be one, [measure on FM-1].
+ * Called often enough that TIMER4 does not wrap twice between calls (179 s). */
+uint32_t fm1ble_port_now_us(void);
+
 /* Busy-wait at least us microseconds. JieLi's delay(n) is taken as microseconds, as in the WiFi driver [unchecked]. */
 void fm1ble_port_delay_us(uint32_t us);
 

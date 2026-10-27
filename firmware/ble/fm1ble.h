@@ -76,6 +76,7 @@ typedef struct {
     uint16_t rx[2], tx[2];      /* offsets of the receive and transmit buffers */
     uint8_t on, link_open, adv_on;
     uint8_t rearm, hop;
+    uint8_t op_on, op_chan, op_state;   /* fm1ble_op_*: an operation armed, its channel, its state code (2 or 7) */
     uint16_t slots;             /* the interval in slots, for re-arming */
     uint32_t ana_pll[243];      /* the PLL table (F.2): 81 entries of 3 words, the analog block reads it */
     fm1ble_cal cal;
@@ -112,5 +113,49 @@ void fm1ble_radio_down(fm1ble *b);
 
 /* The last received PDU's payload and type, or 0 bytes. */
 const uint8_t *fm1ble_rx_last(const fm1ble *b, uint8_t *n, uint8_t *type);
+
+/* ---- One packet at a time, for Cordio's PAL (firmware/ble/cordio_port/pal_fm1.c, PAL_NEEDED.md)
+ *
+ * Cordio hands the baseband one packet with a time; the baseband runs a whole event from a parameter block. These calls
+ * make each of Cordio's operations a one-channel event of its own on the open link (fm1ble_bb_init), our design from
+ * the facts, nothing JieLi does:
+ *   - an advertising packet (channel 37-39): state 2 with the channel map holding that channel alone, the PDU in TX
+ *     buffer 0 and the response (SCAN_RSP) in buffer 1;
+ *   - a connection event as the peripheral (channel 0-36): state 7 on a fixed channel (index 6 = channel | 0x2000, as
+ *     the direct test sets one, K), the master's packet into an RX buffer, the response from TX buffer 0.
+ * The hardware turns around by itself after T_IFS (150 us) and sends the response buffer: fm1ble_op_resp must fill it
+ * before then, which is why the PAL fills it from the receive interrupt. [measure on FM-1] every one of: a one-channel
+ * map, state 7 with a fixed channel, the response read at T_IFS rather than at the start of the event, the header
+ * words of a data PDU (TXDHDR, RXDHDR: written as RXDHDR's layout in E.5 says), the window's unit (taken as us).
+ * PDUs are Cordio's: two header bytes (the first: type or LLID/NESN/SN/MD, the second: the length), then the payload. */
+
+#define FM1BLE_EV_DONE  1u      /* the event ended (pending bit id) */
+#define FM1BLE_EV_RX    2u      /* a packet came in (pending bit id + 8) */
+
+typedef struct {
+    uint8_t ok;                 /* the packet's status says good (RXSTAT bits 3-0 = 1, E.5 [unchecked]) */
+    uint8_t hdr[2];             /* its header as on the air: the first byte and the length */
+    const uint8_t *payload;     /* in the RX buffer: copy it out before the next packet */
+    uint16_t stat;              /* the RXSTAT word, raw */
+} fm1ble_pkt;
+
+/* The access address, CRC init (24 bits) and channel (0-39) of the next operation. FM1BLE_EARG for a channel over 39. */
+int fm1ble_op_chan(fm1ble *b, uint32_t aa, uint32_t crc, uint8_t chan);
+/* The transmit power level for both TX buffers (E.7: 0x10 + level). */
+void fm1ble_op_power(fm1ble *b, uint8_t level);
+/* An advertising packet on the channel set (37-39), sent delay_us from now (625 us slots and a bit offset, at least one
+ * slot). FM1BLE_ESTATE before fm1ble_bb_init or while fm1ble_adv_start's advertising runs, FM1BLE_EARG for a data
+ * channel or a PDU over 39 bytes. */
+int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n);
+/* A connection event as the peripheral on the channel set (0-36): listen from delay_us from now for window_us. */
+int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
+/* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event, buffer 0 in a connection event. At
+ * most 37 bytes of payload (the buffers' size, E.4). */
+int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n);
+/* The event off: anchor counter stopped, the link's interrupts off. No wait (it may run from an interrupt). */
+void fm1ble_op_stop(fm1ble *b);
+/* Reads and clears the pending flags of the operation in flight: FM1BLE_EV_DONE and FM1BLE_EV_RX, with the packet in
+ * *p for RX. 0 when nothing is pending. Polled, or called from IRQ 29 / 45 (D.4). */
+uint32_t fm1ble_op_service(fm1ble *b, fm1ble_pkt *p);
 
 #endif

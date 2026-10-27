@@ -315,7 +315,7 @@ int fm1ble_adv_start(fm1ble *b, const fm1ble_adv *a)
 {
     uint32_t map, first, i, slots;
 
-    if (!b->link_open || b->adv_on)
+    if (!b->link_open || b->adv_on || b->op_on)
         return FM1BLE_ESTATE;
     if (!a || (a->type != 0 && a->type != 2 && a->type != 6) || a->nadv > 31 || a->nrsp > 31 || a->filter > 3 ||
         a->interval_slots < 32 || a->interval_slots > 16384)
@@ -445,6 +445,7 @@ void fm1ble_radio_down(fm1ble *b)
 {
     if (b->adv_on)
         fm1ble_adv_stop(b);
+    fm1ble_op_stop(b);
     if (!b->on)
         return;
     clr(FM1BLE_WL_CON0, 0x1Fu);                  /* B.5 bt_rf_close */
@@ -455,4 +456,183 @@ void fm1ble_radio_down(fm1ble *b)
     us(1000);
     b->on = 0;
     b->link_open = 0;
+}
+
+/* ---- one packet at a time (fm1ble.h "for Cordio's PAL"): our design from the facts, every choice marked */
+
+#define OP_MAX_PDU      (2u + 37u)               /* two header bytes and the TX buffers' 37-byte payload (E.4) */
+#define OP_NEVER        0xFFFFu                  /* the interval of a one-shot operation: 41 s, the next one comes first */
+
+int fm1ble_op_chan(fm1ble *b, uint32_t aa, uint32_t crc, uint8_t chan)
+{
+    if (!b->link_open)
+        return FM1BLE_ESTATE;
+    if (chan > 39)
+        return FM1BLE_EARG;
+    e16(b, FM1BLE_E_BDADDR0, aa & 0xFFFFu);          /* E.2: the access address in BDADDR1:BDADDR0 */
+    e16(b, FM1BLE_E_BDADDR1, aa >> 16);
+    e16(b, FM1BLE_E_CRCWORD0, crc & 0xFFFFu);        /* CRC init, 24 bits */
+    e16(b, FM1BLE_E_CRCWORD1, (crc >> 16) & 0xFFu);
+    b->op_chan = chan;
+    return FM1BLE_OK;
+}
+
+void fm1ble_op_power(fm1ble *b, uint8_t level)
+{
+    if (!b->link_open)
+        return;
+    e32(b, FM1BLE_E_TXPWR0, 0x10u + level);           /* E.7 */
+    e32(b, FM1BLE_E_TXPWR1, 0x10u + level);
+}
+
+/* A PDU into TX buffer k as E.4 lays it out: the header word at +0x10, the length at +0x12, the payload at +0x14 */
+static void op_buf(fm1ble *b, int k, const uint8_t *pdu, uint16_t n, int adv)
+{
+    uint8_t *t = b->blk + b->tx[k];
+    uint32_t len = n >= 2u ? pdu[1] : 0u;
+    memset(t, 0, FM1BLE_TX_SIZE);
+    t[0x10] = n ? pdu[0] : 0;
+    t[0x12] = (uint8_t)len;
+    if (len)
+        memcpy(t + FM1BLE_TX_HDR, pdu + 2, len);
+    e16(b, k ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0, (uint32_t)b->tx[k] + FM1BLE_TX_HDR);
+    if (adv) {                                       /* E.4: TXAHDR from the header word */
+        e16(b, k ? FM1BLE_E_TXAHDR1 : FM1BLE_E_TXAHDR0, ((t[0x10] >> 2) & 0x30u) | (t[0x10] & 0xFu));
+    } else {                                         /* a data PDU: length in 15-8, LLID/NESN/SN/MD in 4-0, as RXDHDR (E.5) [unchecked] */
+        e16(b, k ? FM1BLE_E_TXAHDR1 : FM1BLE_E_TXAHDR0, 0);
+        e16(b, k ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0, len << 8 | (t[0x10] & 0x1Fu));
+    }
+}
+
+/* The common part of an operation: the RX buffers, the state, a one-shot interval, the channel, interrupts, the counter */
+static void op_arm(fm1ble *b, uint32_t state, uint32_t delay_us)
+{
+    uint32_t slots = delay_us / 625u, bitoff = delay_us % 625u;
+
+    if (!slots) {                                    /* sooner than a slot: the next slot (the counter's minimum, G 12) */
+        slots = 1;
+        bitoff = 0;
+    }
+    e16(b, FM1BLE_E_RXPTR0, (uint32_t)b->rx[0] + FM1BLE_RX_HDR);
+    e16(b, FM1BLE_E_RXPTR1, (uint32_t)b->rx[1] + FM1BLE_RX_HDR);
+    e16(b, FM1BLE_E_RXSTAT0, 0);
+    e16(b, FM1BLE_E_RXSTAT1, 0);
+    fm1ble_port_sync();
+    ax_wr(FM1BLE_AX_INTERVAL, OP_NEVER);
+    ax_wr(FM1BLE_AX_INTERVAL_HI, 0x8000u);
+    ax_wr(FM1BLE_AX_STATE, state << 12);
+    if (state == FM1BLE_STATE_ADV) {                 /* G 7 with a map of one channel: hop 0, its two ends both itself [unchecked] */
+        uint32_t map = 1u << (b->op_chan - 37u);
+        ax_wr(FM1BLE_AX_CHANNEL, (((map & 1u) ^ 1u) << 6) | ((map >> 2) << 7) | b->op_chan | 0x4000u);
+    } else {                                         /* K 4: a fixed channel, latched by a pulse of 0x28000 bit 2 */
+        set(FM1BLE_BB_CON0, BIT(2));
+        us(10);
+        ax_wr(FM1BLE_AX_CHANNEL, b->op_chan | 0x2000u);
+        clr(FM1BLE_BB_CON0, BIT(2));
+    }
+    wr(FM1BLE_BB_IRQ_CLR, BIT(HW_ID) | BIT(HW_ID + 8u));
+    set(FM1BLE_BB_IRQ_EN, BIT(HW_ID) | BIT(HW_ID + 8u));
+    ax_wr(FM1BLE_AX_BITOFF, 0);                      /* D.2 __set_anchor_cnt, then the bit offset inside the slot */
+    ax_wr(FM1BLE_AX_CNT_LO, (slots - 1u) & 0xFFFFu);
+    ax_wr(FM1BLE_AX_BITOFF, bitoff);
+    ax_wr(FM1BLE_AX_CNT_HI, ((slots - 1u) >> 16) | 0x8000u);
+    b->op_state = (uint8_t)state;
+    b->op_on = 1;
+}
+
+int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n)
+{
+    if (!b->link_open || b->adv_on)
+        return FM1BLE_ESTATE;
+    if (b->op_chan < 37 || !pdu || n < 2 || n > OP_MAX_PDU || pdu[1] != n - 2u)
+        return FM1BLE_EARG;
+    op_buf(b, 0, pdu, n, 1);
+    e16(b, FM1BLE_E_FORMAT, g16(b, FM1BLE_E_FORMAT) | BIT(2) | BIT(3));   /* G 14, and the local address bit E.2 */
+    e16(b, FM1BLE_E_OPTCNTL, g16(b, FM1BLE_E_OPTCNTL) | BIT(4));          /* no local address match: Cordio filters */
+    e16(b, FM1BLE_E_WINCNTL0, 0x32u);                                    /* G 2 */
+    e16(b, FM1BLE_E_WINCNTL1, 0);
+    op_arm(b, FM1BLE_STATE_ADV, delay_us);
+    return FM1BLE_OK;
+}
+
+int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
+{
+    if (!b->link_open || b->adv_on)
+        return FM1BLE_ESTATE;
+    if (b->op_chan > 36)
+        return FM1BLE_EARG;
+    if (!b->op_on || b->op_state != 7u)              /* an empty PDU until the PAL puts the response in (LLID 1, length 0) */
+        op_buf(b, 0, (const uint8_t *)"\x01\x00", 2, 0);
+    e16(b, FM1BLE_E_WINCNTL0, window_us & 0xFFFFu);  /* the window, taken as us [measure on FM-1] */
+    e16(b, FM1BLE_E_WINCNTL1, window_us >> 16);
+    op_arm(b, 7u, delay_us);
+    return FM1BLE_OK;
+}
+
+int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n)
+{
+    if (!b->link_open)
+        return FM1BLE_ESTATE;
+    if (!pdu || n < 2 || n > OP_MAX_PDU || pdu[1] != n - 2u)
+        return FM1BLE_EARG;
+    if (b->op_state == FM1BLE_STATE_ADV)
+        op_buf(b, 1, pdu, n, 1);
+    else
+        op_buf(b, 0, pdu, n, 0);
+    fm1ble_port_sync();
+    return FM1BLE_OK;
+}
+
+void fm1ble_op_stop(fm1ble *b)
+{
+    if (!b->op_on)
+        return;
+    ax_wr(FM1BLE_AX_CNT_HI, 0);                      /* the counter off (ble_hw_disable without its wait) */
+    clr(FM1BLE_BB_IRQ_EN, BIT(HW_ID) | BIT(HW_ID + 8u));
+    wr(FM1BLE_BB_IRQ_CLR, BIT(HW_ID) | BIT(HW_ID + 8u));
+    b->op_on = 0;
+}
+
+uint32_t fm1ble_op_service(fm1ble *b, fm1ble_pkt *p)
+{
+    fm1ble_diag *d = &b->d;
+    uint32_t pend, ev = 0;
+
+    if (!b->op_on)
+        return 0;
+    pend = rd(FM1BLE_BB_IRQ_PEND) & rd(FM1BLE_BB_IRQ_EN);
+    d->pending_last = pend;
+    if (pend & BIT(HW_ID + 8u)) {                    /* the packet first: it came before the event's end */
+        uint32_t k, ahdr, dhdr;
+        wr(FM1BLE_BB_IRQ_CLR, BIT(HW_ID + 8u));
+        d->rx_packets++;
+        k = g16(b, FM1BLE_E_RXSTAT0) ? 0u : 1u;      /* the buffer the hardware used [unchecked how it chooses] */
+        ahdr = g16(b, k ? FM1BLE_E_RXAHDR1 : FM1BLE_E_RXAHDR0);
+        dhdr = g16(b, k ? FM1BLE_E_RXDHDR1 : FM1BLE_E_RXDHDR0);
+        p->stat = (uint16_t)g16(b, k ? FM1BLE_E_RXSTAT1 : FM1BLE_E_RXSTAT0);
+        p->ok = (p->stat & 0xFu) == 1u;
+        /* an advertising PDU's header byte is RXAHDR's low byte (E.5 reads TxAdd and RxAdd from its bits 6 and 7); a data
+         * PDU's is RXDHDR bits 4-0 (LLID, NESN, SN, MD) [unchecked]; the length is RXDHDR bits 15-8 either way */
+        p->hdr[0] = (uint8_t)(b->op_state == FM1BLE_STATE_ADV ? ahdr & 0xFFu : dhdr & 0x1Fu);
+        p->hdr[1] = (uint8_t)(dhdr >> 8);
+        p->payload = b->blk + b->rx[k] + FM1BLE_RX_HDR;
+        e16(b, FM1BLE_E_RXSTAT0, 0);
+        e16(b, FM1BLE_E_RXSTAT1, 0);
+        if (b->op_state == FM1BLE_STATE_ADV) {
+            uint32_t type = p->hdr[0] & 0xFu;
+            if (type == 5)
+                d->rx_conn_ind++;
+            else if (type == 3)
+                d->rx_scan_req++;
+            else
+                d->rx_other++;
+        }
+        ev |= FM1BLE_EV_RX;
+    }
+    if (pend & BIT(HW_ID)) {
+        wr(FM1BLE_BB_IRQ_CLR, BIT(HW_ID));
+        d->events++;
+        ev |= FM1BLE_EV_DONE;
+    }
+    return ev;
 }

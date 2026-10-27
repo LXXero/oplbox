@@ -12,6 +12,22 @@
 
 #define BB_LOG 1024
 
+/* The air, for the PAL's tests (air set): what a central does in each event, and the interrupt handler the baseband
+ * raises (IRQs 45 and 29, called at once: an interrupt that runs within T_IFS, the assumption fm1ble.h names). The
+ * model runs an advertising event (state 2) as: the PDU of TX buffer 0 on the channel in anchor index 6, then, when the
+ * central answers, its request in RX buffer 0 (the receive flag), and for a SCAN_REQ the SCAN_RSP from TX buffer 1 T_IFS
+ * after it; a connection event (state 7) as: the central's packet received when it starts inside the window
+ * (WINCNTL, us), then T_IFS after its end the PDU of TX buffer 0 (header TXDHDR0 bits 4-0, length bits 15-8); the event
+ * flag at the end of either. Times are on the model's clock, in us. */
+typedef struct {
+    int (*adv)(void *ctx, uint64_t t, uint8_t chan, const uint8_t *pdu, int n, uint8_t *req);    /* returns the request's length, 0: none */
+    void (*scan_rsp)(void *ctx, uint64_t t, const uint8_t *pdu, int n);
+    int (*conn)(void *ctx, uint64_t t, uint32_t window, uint8_t chan, uint32_t aa, uint32_t crc, uint8_t *pdu, uint64_t *at);
+    void (*conn_rsp)(void *ctx, uint64_t t, const uint8_t *pdu, int n);
+    void (*irq)(void *ctx);
+    void *ctx;
+} bb_air;
+
 typedef struct { uint32_t addr, val; } bb_write;
 
 typedef struct {
@@ -34,6 +50,8 @@ typedef struct {
     uint32_t clk_bits;
     uint8_t *blk;                       /* the RAM block the driver gave the baseband (from 0x2FC84) */
     uintptr_t hi;                       /* the high half of host pointers, since the bus address is 32 bits */
+    const bb_air *air;                  /* set: events run on the air (above), one-shot, at slots x 625 + bit offset */
+    uint32_t air_events, air_missed;    /* events run; connection events whose packet fell outside the window */
 } bb_model;
 
 extern bb_model bbm;
@@ -44,6 +62,9 @@ void bb_model_advance_us(uint64_t us);
 /* A packet arrives in receive buffer k: PDU type, payload; sets RXAHDR/RXDHDR/RXSTAT as E.5 says and the receive flag. */
 void bb_model_rx(int k, uint8_t type, const uint8_t *payload, uint8_t n);
 uint32_t bb_model_reg(uint32_t addr);
+/* A PDU's time on the air at 1 Mbit/s: preamble, access address, the PDU (two header bytes and the payload), CRC. */
+uint32_t bb_model_air_us(int pdu_len);
+
 /* The k-th write to addr (0 based), or -1; value out. */
 int bb_model_nth_write(uint32_t addr, int k, uint32_t *val);
 /* Index of the first log entry at or after `from` that writes addr with val, or -1. */

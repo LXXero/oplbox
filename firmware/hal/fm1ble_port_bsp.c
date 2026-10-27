@@ -43,6 +43,17 @@ uint32_t fm1ble_port_clk(uint32_t bits)     /* CLK_CON1 is shared (USB, UART, Wi
 
 void fm1ble_port_delay_us(uint32_t us) { fm1_busy_us_inl(us); }
 
+uint32_t fm1ble_port_now_us(void)           /* TIMER4's ticks into microseconds, the remainder kept */
+{
+    static uint32_t last, rem, now;
+    uint32_t t = FM1_T4_CNT, d = t - last;
+    last = t;
+    d += rem;
+    now += d / FM1_TICKS_PER_US;
+    rem = d % FM1_TICKS_PER_US;
+    return now;
+}
+
 int fm1ble_port_rf_common(void)
 {
     fm1wifi_radio r;
