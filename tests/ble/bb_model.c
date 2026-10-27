@@ -44,18 +44,27 @@ static uint8_t *air_ent(void) { uint8_t *b = air_blk(); return b + (b[0] | (b[1]
 static uint16_t air16(uint32_t off) { uint8_t *e = air_ent(); return (uint16_t)(e[off] | e[off + 1] << 8); }
 static void air16w(uint32_t off, uint32_t v) { uint8_t *e = air_ent(); e[off] = (uint8_t)v; e[off + 1] = (uint8_t)(v >> 8); }
 
-/* a TX buffer as the hardware would send it: header byte, length, payload (E.4: the header word 4 bytes before the
- * payload pointer, the length 2 before) */
+/* a TX slot as the hardware would send it: header byte, length, payload. An advertising PDU is sent from the slot
+ * TXTOG & 1 names (k is ignored), its header from TXAHDR (type bits 3-0, TxAdd and RxAdd in bits 5-4) and TXDHDR bits
+ * 1-0 (the header's bits 5-4: ChSel), its length from TXDHDR bits 15-8, and TXTOG changes after it (docs/BLUETOOTH_RADIO.md
+ * "TX and RX toggles"; which of the length copies the chip reads is [unchecked]: the model takes the register's, so a
+ * driver that leaves TXDHDR out sends nothing a central takes) */
 static int air_tx(int k, int adv, uint8_t *pdu)
 {
-    uint16_t ptr = air16(k ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0);
+    uint16_t ptr;
     uint8_t *p;
+    if (adv)
+        k = air16(FM1BLE_E_TXTOG) & 1;
+    ptr = air16(k ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0);
     if (ptr == 1 || ptr < 4)
         return 0;
     p = air_blk() + ptr;
     if (adv) {
-        pdu[0] = p[-4];
-        pdu[1] = p[-2];
+        uint16_t ah = air16(k ? FM1BLE_E_TXAHDR1 : FM1BLE_E_TXAHDR0), dh = air16(k ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
+        pdu[0] = (uint8_t)((ah & 0xFu) | (ah & 0x30u) << 2 | (dh & 3u) << 4);
+        pdu[1] = (uint8_t)(dh >> 8);
+        air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
+        bbm.tx_sent++;
     } else {
         uint16_t dh = air16(k ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
         pdu[0] = (uint8_t)(dh & 0x1Fu);
@@ -215,6 +224,10 @@ void bb_model_advance_us(uint64_t us)
     while (bbm.armed && !bbm.silent && (!bbm.needs_common || bbm.common_ran) &&
            bbm.armed_at_us + bbm.period_us <= end) {
         bbm.now_us = bbm.armed_at_us + bbm.period_us;
+        if (!bbm.no_tx && bbm.ax[FM1BLE_AX_STATE] >> 12 == FM1BLE_STATE_ADV && bb_model_reg(FM1BLE_BB_RAM_START)) {
+            air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);   /* the advertising PDU went: TXTOG changes */
+            bbm.tx_sent++;
+        }
         pend(1u);
         if (bbm.repeat) {                /* later events come every interval (anchor index 1), as the hardware's own */
             bbm.armed_at_us = bbm.now_us;

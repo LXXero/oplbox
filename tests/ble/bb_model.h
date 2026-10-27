@@ -14,9 +14,9 @@
 
 /* The air, for the PAL's tests (air set): what a central does in each event, and the interrupt handler the baseband
  * raises (IRQs 45 and 29, called at once: an interrupt that runs within T_IFS, the assumption fm1ble.h names). The
- * model runs an advertising event (state 2) as: the PDU of TX buffer 0 on the channel in anchor index 6, then, when the
- * central answers, its request in RX buffer 0 (the receive flag), and for a SCAN_REQ the SCAN_RSP from TX buffer 1 T_IFS
- * after it; a connection event (state 7) as: the central's packet received when it starts inside the window
+ * model runs an advertising event (state 2) as: the PDU of the TX slot TXTOG & 1 names on the channel in anchor index 6
+ * (length from TXDHDR, TXTOG changed after it), then, when the central answers, its request in RX buffer 0 (the receive
+ * flag), and for a SCAN_REQ the SCAN_RSP from the other slot T_IFS after it; a connection event (state 7) as: the central's packet received when it starts inside the window
  * (WINCNTL, us), then T_IFS after its end the PDU of TX buffer 0 (header TXDHDR0 bits 4-0, length bits 15-8); the event
  * flag at the end of either. Times are on the model's clock, in us. */
 typedef struct {
@@ -42,6 +42,7 @@ typedef struct {
     int repeat;                         /* the hardware repeats events by itself */
     int silent;                         /* the hardware raises no flag at all */
     int needs_common;                   /* flags only come after fm1ble_port_rf_common ran (the second variant) */
+    int no_tx;                          /* events run, but TXTOG never changes: nothing sent (the first FM-1 run's look) */
     int common_ran;
     uint64_t now_us, armed_at_us;
     int armed;
@@ -52,6 +53,7 @@ typedef struct {
     uintptr_t hi;                       /* the high half of host pointers, since the bus address is 32 bits */
     const bb_air *air;                  /* set: events run on the air (above), one-shot, at slots x 625 + bit offset */
     uint32_t air_events, air_missed;    /* events run; connection events whose packet fell outside the window */
+    uint32_t tx_sent;                   /* advertising PDUs the air sent (each changes TXTOG) */
 } bb_model;
 
 extern bb_model bbm;

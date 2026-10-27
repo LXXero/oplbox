@@ -64,11 +64,19 @@ typedef struct {
     uint8_t rx_last[48];        /* the last received PDU's first bytes (the payload), rx_last_n of them */
     uint8_t rx_last_n, rx_last_type, rx_last_len;
     uint32_t pending_last;      /* the last value of the pending register */
+    uint32_t tx_flips;          /* events after which TXTOG had changed: the hardware's record that it sent a buffer (E.4) */
+    uint16_t txtog;             /* TXTOG as last read */
+    uint32_t ram_end;           /* 0x2FCBC as read back after fm1ble_bb_init (JieLi writes it and never reads it: D.1) */
+    uint32_t op_done[3];        /* fm1ble_op_adv events that ended, per channel 37, 38, 39 */
 } fm1ble_diag;
 
 /* The driver's state. The caller owns it and the RAM block (word aligned, at least FM1BLE_BLOCK_SIZE bytes; the whole
  * block must be below 64 KB of its start, which the size guarantees). */
 #define FM1BLE_BLOCK_SIZE   2304u
+/* The transmit power level (E.7: TXPWR = 0x10 + level): JieLi's SDK sets 6 unless the configuration store says otherwise,
+ * and documents 0-11 (docs/BLUETOOTH_RADIO.md "The TX power level"). Level 0 is the lowest. */
+#define FM1BLE_TXPWR_LEVEL  6u
+#define FM1BLE_TXPWR_MAX    11u
 typedef struct {
     uint8_t *blk;               /* the RAM block */
     uint32_t blk_bus;           /* its address as the baseband takes it */
@@ -77,6 +85,9 @@ typedef struct {
     uint8_t on, link_open, adv_on;
     uint8_t rearm, hop;
     uint8_t op_on, op_chan, op_state;   /* fm1ble_op_*: an operation armed, its channel, its state code (2 or 7) */
+    uint8_t op_slot;            /* the TX slot (TXTOG & 1 when armed) the advertising PDU went into; the response takes the other */
+    uint8_t txpwr;              /* the transmit power level in both TXPWR words */
+    uint8_t adv_type;           /* fm1ble_adv_start's PDU type, for re-pointing the buffers after each event */
     uint16_t slots;             /* the interval in slots, for re-arming */
     uint32_t ana_pll[243];      /* the PLL table (F.2): 81 entries of 3 words, the analog block reads it */
     fm1ble_cal cal;
@@ -105,7 +116,9 @@ int fm1ble_adv_stop(fm1ble *b);
 void fm1ble_set_rearm(fm1ble *b, int on);
 
 /* From the main loop: reads the pending flags, clears what it saw, counts events and received packets (and keeps
- * the last received PDU's raw bytes), re-arms the next event when asked. Returns the number of flags handled. */
+ * the last received PDU's raw bytes), re-arms the next event when asked. After each event it reads TXTOG (counting a
+ * change in tx_flips) and puts the advertising PDU back in the TX slot TXTOG & 1 names and the scan response in the
+ * other, as JieLi's event handler does (docs/BLUETOOTH_RADIO.md "TX and RX toggles"). Returns the number of flags handled. */
 int fm1ble_poll(fm1ble *b);
 
 /* Power-down (B.5) and the baseband's close. */
@@ -141,10 +154,11 @@ typedef struct {
 
 /* The access address, CRC init (24 bits) and channel (0-39) of the next operation. FM1BLE_EARG for a channel over 39. */
 int fm1ble_op_chan(fm1ble *b, uint32_t aa, uint32_t crc, uint8_t chan);
-/* The transmit power level for both TX buffers (E.7: 0x10 + level). */
+/* The transmit power level for both TX buffers (E.7: 0x10 + level, at most FM1BLE_TXPWR_MAX; FM1BLE_TXPWR_LEVEL from
+ * fm1ble_bb_init on). For fm1ble_adv_start's advertising as much as for the operations. */
 void fm1ble_op_power(fm1ble *b, uint8_t level);
 /* An advertising packet on the channel set (37-39), sent delay_us from now (625 us slots and a bit offset, at least one
- * slot). FM1BLE_ESTATE before fm1ble_bb_init or while fm1ble_adv_start's advertising runs, FM1BLE_EARG for a data
+ * slot). The PDU goes into the TX slot TXTOG & 1 names (the one the hardware sends next), the response into the other. FM1BLE_ESTATE before fm1ble_bb_init or while fm1ble_adv_start's advertising runs, FM1BLE_EARG for a data
  * channel or a PDU over 39 bytes. */
 int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n);
 /* A connection event as the peripheral on the channel set (0-36): listen from delay_us from now for window_us. */

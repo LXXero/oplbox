@@ -1,17 +1,22 @@
 /* SPDX-License-Identifier: GPL-3.0-only
- * The Bluetooth test run's state machine (fm1ble_test.h) on the baseband driver (fm1ble.h). Own code. Not run on an FM-1.
+ * The Bluetooth test run's state machine (fm1ble_test.h) on the baseband driver (fm1ble.h). Own code.
  *
- * What the run does: it powers up the radio and the baseband, starts one connectable advertisement (the name OPLBOX, the
- * BLE-MIDI service UUID) straight from the driver and counts the baseband's event flags (adv_set, adv_air: the first FM-1
- * proof, with the second variant, the shared radio's common init first, when no flag comes: docs/BLUETOOTH_RADIO.md "not
- * settled" 1). Then it stops that advertisement and brings up the stack on the same radio (fm1ble_stack.h: Cordio's PAL,
- * Cordio, NimBLE): hci passes when NimBLE's start-up through Cordio ends with advertising on; connect when a central
- * connects within the wait; midi_in when a BLE-MIDI write from it reaches the MIDI input; midi_out when OPLBOX's
- * notification of a Note On is acknowledged (Cordio's Number Of Completed Packets). A connection is closed before the
- * run turns the radio off. Everything is polled from the main loop: the PAL's counters (20-23) say how late it was.
+ * What the run does: it powers up the radio and the baseband, then advertises straight from the driver (connectable, the
+ * name OPLBOX in the scan response, the BLE-MIDI service UUID) in three trials of FM1BLE_TRIAL_MS, each from its own
+ * address (fm1ble_test.h): without the shared radio's common init, with it (docs/BLUETOOTH_RADIO.md "not settled" 1), and
+ * with it at the highest level. A central scanning meanwhile (tools/ble_central.py) says which reached the air; the
+ * firmware's own evidence is per trial: the event flags, the changes of TXTOG (the hardware's record of a buffer sent)
+ * and the packets received. adv_air passes only with events and one of the other two: an event timer that runs with
+ * nothing sent (the first FM-1 run, 48ea034) fails it. Then the stack comes up on the radio of the trial that sent
+ * (fm1ble_stack.h: Cordio's PAL, Cordio, NimBLE): hci passes when NimBLE's start-up through Cordio ends with advertising
+ * on; connect when a central connects within the wait; midi_in when a BLE-MIDI write from it reaches the MIDI input;
+ * midi_out when OPLBOX's notification of a Note On is acknowledged (Cordio's Number Of Completed Packets). A connection
+ * is closed before the run turns the radio off. Everything is polled from the main loop: the PAL's counters say how late
+ * it was.
  */
 #include <string.h>
 #include "fm1ble.h"
+#include "fm1ble_regs.h"
 #include "fm1ble_test.h"
 #include "ble_midi.h"
 #include "ble_nimble.h"
@@ -22,11 +27,7 @@ static const char *const g_steps[FM1BLE_STEPS] = {
     "radio", "block", "hci", "adv_set", "adv_air", "connect", "midi_in", "midi_out"
 };
 
-static const char *const g_ctrs[FM1BLE_N_CTR] = {
-    "radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "events", "rearms", "rx_packets", "rx_scan_req",
-    "rx_conn_ind", "rx_other", "pending_last", "bb_err", "events_v0", "events_v1", "rearm_used", "adv_err",
-    "rx_hdr", "rx_stat", "rx_type", "rx_len", "pal_ops_adv_conn", "pal_rx_ok_timeout", "pal_late_resp_stuck", "pal_timer_late_us"
-};
+static const char *const g_ctrs[FM1BLE_N_CTR] = { FM1BLE_CTR_NAMES };
 
 const char *fm1ble_step_name(int step) { return step >= 0 && step < FM1BLE_STEPS ? g_steps[step] : 0; }
 const char *fm1ble_ctr_name(int ctr) { return ctr >= 0 && ctr < FM1BLE_N_CTR ? g_ctrs[ctr] : 0; }
@@ -35,10 +36,12 @@ const char *fm1ble_ctr_name(int ctr) { return ctr >= 0 && ctr < FM1BLE_N_CTR ? g
 static fm1ble g_b;
 static uint32_t g_blk[FM1BLE_BLOCK_SIZE / 4u];
 
-enum { P_RADIO, P_BLOCK, P_ADV, P_SETTLE, P_WINDOW, P_REARM_WINDOW, P_RETRY, P_CONNECT, P_HCI, P_WAIT_CONN, P_MIDI_IN, P_MIDI_OUT,
+enum { P_RADIO, P_BLOCK, P_ADV, P_SETTLE, P_WINDOW, P_TRIAL_END, P_STACK, P_HCI, P_WAIT_CONN, P_MIDI_IN, P_MIDI_OUT,
        P_LEAVE, P_END };
-static uint8_t g_phase, g_variant, g_sent, g_left;
-static uint32_t g_phase_t, g_wait_ms, g_ev_before, g_nocp0;
+static uint8_t g_phase, g_variant, g_sent, g_left, g_trial, g_trial_bits, g_adv_err, g_rearm_used;
+static uint32_t g_phase_t, g_wait_ms, g_nocp0;
+static struct { uint32_t events, flips, rx; } g_tr[FM1BLE_TRIALS], g_at;   /* each trial's counts; the counts at its start */
+static uint16_t g_hw[8];                         /* the entity's hardware-written words after the last trial */
 
 static void note(fm1ble_step *s, const char *t)
 {
@@ -60,6 +63,16 @@ static void put32(fm1ble_step *s, uint32_t v)
     }
 }
 
+static void put16(fm1ble_step *s, uint32_t v)
+{
+    if (v > 0xFFFFu)
+        v = 0xFFFFu;
+    if (s->nraw + 2u <= FM1BLE_RAW) {
+        s->raw[s->nraw++] = (uint8_t)v;
+        s->raw[s->nraw++] = (uint8_t)(v >> 8);
+    }
+}
+
 static void finish(fm1ble_run *r, int k, int result, const char *t)
 {
     r->step[k].result = (uint8_t)result;
@@ -78,45 +91,56 @@ static void skip_rest(fm1ble_run *r, int from, const char *why)
 static void counters(fm1ble_run *r)
 {
     const fm1ble_diag *d = &g_b.d;
-    r->ctr[0] = d->rb_ok;
-    r->ctr[1] = d->rb_bad;
-    r->ctr[2] = d->variant;
-    r->ctr[3] = (uint32_t)d->rf_common;
-    r->ctr[4] = d->events;
-    r->ctr[5] = d->rearms;
-    r->ctr[6] = d->rx_packets;
-    r->ctr[7] = d->rx_scan_req;
-    r->ctr[8] = d->rx_conn_ind;
-    r->ctr[9] = d->rx_other;
-    r->ctr[10] = d->pending_last;
-    r->ctr[11] = (uint32_t)d->err;
-    r->ctr[14] = g_b.rearm;
-    r->ctr[16] = (uint32_t)d->rx_hdr[0] | (uint32_t)d->rx_hdr[1] << 16;
-    r->ctr[17] = (uint32_t)d->rx_stat[0] | (uint32_t)d->rx_stat[1] << 16;
-    r->ctr[18] = d->rx_last_type;
-    r->ctr[19] = d->rx_last_len;
-    {   /* the PAL's, two 16-bit counts a word (low, high): operations armed, receive completions, responses too late for
-         * T_IFS and operations the baseband never ended, and the most the scheduler's timer fired late */
-        const pal_fm1_stats *p = pal_fm1_state();
-        r->ctr[20] = (p->adv_ops & 0xFFFFu) | p->conn_ops << 16;
-        r->ctr[21] = (p->rx_ok & 0xFFFFu) | p->rx_timeout << 16;
-        r->ctr[22] = (p->resp_late & 0xFFFFu) | p->stuck << 16;
-        r->ctr[23] = p->timer_late_us;
-    }
+    const pal_fm1_stats *p = pal_fm1_state();
+    r->ctr[FM1BLE_C_RADIO_REGS_OK] = d->rb_ok;
+    r->ctr[FM1BLE_C_RADIO_REGS_BAD] = d->rb_bad;
+    r->ctr[FM1BLE_C_VARIANT] = g_variant;
+    r->ctr[FM1BLE_C_RF_COMMON] = (uint32_t)d->rf_common;
+    r->ctr[FM1BLE_C_EVENTS] = d->events;
+    r->ctr[FM1BLE_C_TX_FLIPS] = d->tx_flips;
+    r->ctr[FM1BLE_C_RX_PACKETS] = d->rx_packets;
+    r->ctr[FM1BLE_C_RX_SCAN_REQ] = d->rx_scan_req;
+    r->ctr[FM1BLE_C_RX_CONN_IND] = d->rx_conn_ind;
+    r->ctr[FM1BLE_C_RX_OTHER] = d->rx_other;
+    r->ctr[FM1BLE_C_PENDING_LAST] = d->pending_last;
+    r->ctr[FM1BLE_C_BB_ERR] = (uint32_t)d->err;
+    r->ctr[FM1BLE_C_AIR_TRIALS] = g_trial_bits;
+    r->ctr[FM1BLE_C_TXTOG] = d->txtog;
+    r->ctr[FM1BLE_C_REARM_USED] = g_rearm_used;
+    r->ctr[FM1BLE_C_ADV_ERR] = (uint32_t)(int32_t)(int8_t)g_adv_err;
+    r->ctr[FM1BLE_C_RX_HDR] = (uint32_t)d->rx_hdr[0] | (uint32_t)d->rx_hdr[1] << 16;
+    r->ctr[FM1BLE_C_RX_STAT] = (uint32_t)d->rx_stat[0] | (uint32_t)d->rx_stat[1] << 16;
+    r->ctr[FM1BLE_C_RX_TYPE] = d->rx_last_type;
+    r->ctr[FM1BLE_C_RX_LEN] = d->rx_last_len;
+    /* the PAL's (pal_fm1.h): operations armed, receive completions, responses too late for T_IFS, operations the baseband
+     * never ended, the most the scheduler's timer fired late; and the advertising operations that ended, per channel */
+    r->ctr[FM1BLE_C_PAL_ADV_OPS] = p->adv_ops;
+    r->ctr[FM1BLE_C_PAL_CONN_OPS] = p->conn_ops;
+    r->ctr[FM1BLE_C_PAL_RX_OK] = p->rx_ok;
+    r->ctr[FM1BLE_C_PAL_RX_TIMEOUT] = p->rx_timeout;
+    r->ctr[FM1BLE_C_PAL_RESP_LATE] = p->resp_late;
+    r->ctr[FM1BLE_C_PAL_STUCK] = p->stuck;
+    r->ctr[FM1BLE_C_PAL_TIMER_LATE_US] = p->timer_late_us;
+    r->ctr[FM1BLE_C_PAL_DONE_37] = d->op_done[0];
+    r->ctr[FM1BLE_C_PAL_DONE_38] = d->op_done[1];
+    r->ctr[FM1BLE_C_PAL_DONE_39] = d->op_done[2];
+    r->ctr[FM1BLE_C_TXPWR] = g_b.txpwr;
+    r->ctr[FM1BLE_C_RAM_END] = d->ram_end;
 }
 
-/* the advertisement: connectable, the BLE-MIDI service UUID in the data, the name OPLBOX in the scan response; the address
- * is a made-up static random one (the FM-1 has no device address: docs/BLUETOOTH_RADIO.md PalCfgLoadData) */
+/* the addresses: made-up static random ones (the FM-1 has no device address: docs/BLUETOOTH_RADIO.md PalCfgLoadData),
+ * least significant byte first; the stack's, then the trials' (fm1ble_test.h) differ in the first byte */
 static const uint8_t g_addr[6] = { 0x01, 0x00, 0x31, 0x4D, 0x46, 0xC2 };
 
-static void make_adv(fm1ble_adv *a)
+/* the advertisement: connectable, the BLE-MIDI service UUID in the data, the name OPLBOX in the scan response */
+static void make_adv(fm1ble_adv *a, uint8_t first)
 {
-    const uint8_t *addr = g_addr;
     memset(a, 0, sizeof *a);
     a->type = 0;
     a->own_random = 1;
     a->chmap = 7;
-    memcpy(a->addr, addr, 6);
+    memcpy(a->addr, g_addr, 6);
+    a->addr[0] = first;
     a->interval_slots = 160;                         /* 100 ms */
     a->nadv = (uint8_t)ble_midi_adv_data(a->adv);
     a->nrsp = (uint8_t)ble_midi_scan_rsp(a->rsp, "OPLBOX");
@@ -126,10 +150,16 @@ void fm1ble_test_begin(fm1ble_run *r, uint32_t now_ms, uint32_t wait_ms)
 {
     memset(r, 0, sizeof *r);
     memset(&g_b, 0, sizeof g_b);
+    memset(g_tr, 0, sizeof g_tr);
+    memset(g_hw, 0, sizeof g_hw);
     r->state = FM1BLE_RUNNING;
     r->t0 = r->now = now_ms;
     g_phase = P_RADIO;
     g_variant = 0;
+    g_trial = 0;
+    g_trial_bits = 0;
+    g_adv_err = 0;
+    g_rearm_used = 0;
     g_wait_ms = wait_ms;
     g_sent = g_left = 0;
 }
@@ -141,12 +171,80 @@ static void start_radio(fm1ble_run *r)
     int i;
 
     fm1ble_radio_up(&g_b, g_variant, 0);
+    if (s->result != FM1BLE_NOT_RUN)                 /* a later power-up (another variant): its readbacks are in the counters */
+        return;
     for (i = 0; i < 8; i++)
         put32(s, d->rb[i]);
     if (d->rb_ok >= 4u)
-        finish(r, FM1BLE_STEP_RADIO, FM1BLE_PASS, g_variant ? "regs read back, after shared radio init" : "regs read back as written");
+        finish(r, FM1BLE_STEP_RADIO, FM1BLE_PASS, "regs read back as written");
     else
         finish(r, FM1BLE_STEP_RADIO, FM1BLE_FAIL, "analog registers do not read back: not powered?");
+}
+
+/* the block step: the start address must read back; the end (0x2FCBC) read 0 on the first FM-1 run, and JieLi's driver
+ * writes it and never reads it (docs/BLUETOOTH_RADIO.md D.1), so its readback is evidence, not the test. Whether the
+ * baseband really works from the block shows in adv_air: TXTOG is a word of the block the hardware changes. */
+static void block_step(fm1ble_run *r, int rc)
+{
+    const fm1ble_diag *d = &g_b.d;
+    fm1ble_step *s = &r->step[FM1BLE_STEP_BLOCK];
+    int k;
+    if (s->result != FM1BLE_NOT_RUN)
+        return;
+    for (k = 0; k < 8; k++)
+        put32(s, d->bb[k]);
+    if (rc == FM1BLE_ETIMEOUT)
+        finish(r, FM1BLE_STEP_BLOCK, FM1BLE_FAIL, "baseband stays busy after power-up");
+    else if (rc != 0 || d->bb[4] != g_b.blk_bus)
+        finish(r, FM1BLE_STEP_BLOCK, FM1BLE_FAIL, "block start address does not read back");
+    else if (d->bb[5] > d->bb[4])
+        finish(r, FM1BLE_STEP_BLOCK, FM1BLE_PASS, "RAM block set, link open, baseband idle");
+    else if (d->bb[5] == 0)
+        finish(r, FM1BLE_STEP_BLOCK, FM1BLE_PASS, "block start reads back; end reads 0 (write-only)");
+    else
+        finish(r, FM1BLE_STEP_BLOCK, FM1BLE_PASS, "block start reads back; end reads other");
+}
+
+/* "SENT IN TRIALS 0 1 2" or the like, from the bits */
+static void trials_note(char *t, const char *head, uint32_t bits)
+{
+    uint32_t n = 0, k;
+    while (head[n]) {
+        t[n] = head[n];
+        n++;
+    }
+    for (k = 0; k < FM1BLE_TRIALS; k++)
+        if (bits & (1u << k)) {
+            t[n++] = ' ';
+            t[n++] = (char)('0' + k);
+        }
+    t[n] = 0;
+}
+
+/* After the trials: adv_air's result, then the stack on the radio of the variant that showed it sent (variant 1, the
+ * superset, when both did or neither did). The stack advertises at the SDK's level. */
+static void air_step(fm1ble_run *r)
+{
+    fm1ble_step *s = &r->step[FM1BLE_STEP_ADV_AIR];
+    uint32_t k, ev = 0;
+    char t[FM1BLE_NOTE];
+
+    for (k = 0; k < FM1BLE_TRIALS; k++) {
+        put16(s, g_tr[k].events);
+        put16(s, g_tr[k].flips);
+        put16(s, g_tr[k].rx);
+        ev += g_tr[k].events;
+    }
+    for (k = 0; k < 8; k++)
+        put16(s, g_hw[k]);
+    if (g_trial_bits) {
+        trials_note(t, g_rearm_used ? "sent (re-armed), trials" : "sent, trials", g_trial_bits);
+        finish(r, FM1BLE_STEP_ADV_AIR, FM1BLE_PASS, t);
+    } else if (ev) {
+        finish(r, FM1BLE_STEP_ADV_AIR, FM1BLE_FAIL, "events, but TXTOG never changed: nothing sent");
+    } else {
+        finish(r, FM1BLE_STEP_ADV_AIR, FM1BLE_FAIL, "no event flag in the baseband, any trial");
+    }
 }
 
 int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
@@ -161,37 +259,43 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
     switch (g_phase) {
     case P_RADIO:
         start_radio(r);
-        r->cur = FM1BLE_STEP_BLOCK;
+        if (r->cur == FM1BLE_STEP_RADIO)
+            r->cur = FM1BLE_STEP_BLOCK;
         g_phase = P_BLOCK;
         break;
     case P_BLOCK:
-        s = &r->step[FM1BLE_STEP_BLOCK];
         i = fm1ble_bb_init(&g_b, g_blk);
-        for (int k = 0; k < 8; k++)
-            put32(s, d->bb[k]);
-        if (i == 0 && d->bb[4] == g_b.blk_bus && d->bb[5] > d->bb[4])
-            finish(r, FM1BLE_STEP_BLOCK, FM1BLE_PASS, "RAM block set, link open, baseband idle");
-        else if (i == FM1BLE_ETIMEOUT)
-            finish(r, FM1BLE_STEP_BLOCK, FM1BLE_FAIL, "baseband stays busy after power-up");
-        else
-            finish(r, FM1BLE_STEP_BLOCK, FM1BLE_FAIL, "block address does not read back");
-        r->cur = FM1BLE_STEP_ADV_SET;
+        block_step(r, i);
+        if (r->cur == FM1BLE_STEP_BLOCK)
+            r->cur = FM1BLE_STEP_ADV_SET;
         g_phase = P_ADV;
         break;
-    case P_ADV: {
+    case P_ADV: {                                    /* trial g_trial: the driver's own ADV_IND from the trial's address */
         fm1ble_adv a;
-        make_adv(&a);
+        make_adv(&a, (uint8_t)(FM1BLE_TRIAL_ADDR0 + g_trial));
+        fm1ble_op_power(&g_b, (uint8_t)(g_trial == 2 ? FM1BLE_TXPWR_MAX : FM1BLE_TXPWR_LEVEL));
         s = &r->step[FM1BLE_STEP_ADV_SET];
         i = fm1ble_adv_start(&g_b, &a);
-        for (int k = 0; k < a.nadv && s->nraw < FM1BLE_RAW; k++)
-            s->raw[s->nraw++] = a.adv[k];
-        r->ctr[15] = (uint32_t)i;
-        if (i == 0)
-            finish(r, FM1BLE_STEP_ADV_SET, FM1BLE_PASS, "ADV_IND armed: service UUID, name in scan response");
-        else
-            finish(r, FM1BLE_STEP_ADV_SET, FM1BLE_FAIL, "fm1ble_adv_start refused (see adv_err)");
-        r->cur = FM1BLE_STEP_ADV_AIR;
-        g_phase = i == 0 ? P_SETTLE : P_END;
+        if (i != 0)
+            g_adv_err = (uint8_t)i;
+        if (s->result == FM1BLE_NOT_RUN) {
+            for (int k = 0; k < a.nadv && s->nraw < FM1BLE_RAW; k++)
+                s->raw[s->nraw++] = a.adv[k];
+            if (i == 0)
+                finish(r, FM1BLE_STEP_ADV_SET, FM1BLE_PASS, "ADV_IND armed: service UUID, name in scan response");
+            else
+                finish(r, FM1BLE_STEP_ADV_SET, FM1BLE_FAIL, "fm1ble_adv_start refused (see adv_err)");
+            r->cur = FM1BLE_STEP_ADV_AIR;
+            if (i != 0) {
+                skip_rest(r, FM1BLE_STEP_ADV_AIR, "advertising never ran");
+                g_phase = P_END;
+                break;
+            }
+        }
+        g_at.events = d->events;
+        g_at.flips = d->tx_flips;
+        g_at.rx = d->rx_packets;
+        g_phase = i == 0 ? P_SETTLE : P_TRIAL_END;
         g_phase_t = now_ms;
         break;
     }
@@ -199,62 +303,63 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
         if (now_ms - g_phase_t >= 20u) {
             g_phase = P_WINDOW;
             g_phase_t = now_ms;
-            g_ev_before = d->events;
         }
         break;
-    case P_WINDOW:                                   /* 400 ms without re-arming: does the hardware repeat by itself? */
+    case P_WINDOW:                                   /* FM1BLE_TRIAL_MS of advertising for a central to see */
         fm1ble_poll(&g_b);
-        if (now_ms - g_phase_t >= 400u) {
-            if (d->events >= 3u) {
-                g_phase = P_CONNECT;
-                g_phase_t = now_ms;
-                r->ctr[g_variant ? 13 : 12] = d->events;
-            } else {
-                fm1ble_set_rearm(&g_b, 1);          /* D.4: JieLi's handler does per-event bookkeeping: arm the next ourselves */
-                g_phase = P_REARM_WINDOW;
-                g_phase_t = now_ms;
-                r->ctr[g_variant ? 13 : 12] = d->events;
-                g_ev_before = d->events;
-                {   /* an event flag may be pending already: it re-arms in the poll */
-                    fm1ble_poll(&g_b);
-                }
+        if (!g_b.rearm && now_ms - g_phase_t >= 400u && d->events - g_at.events < 3u) {
+            fm1ble_set_rearm(&g_b, 1);              /* D.4: JieLi's handler does per-event bookkeeping: arm the next ourselves */
+            g_rearm_used = 1;
+            fm1ble_adv_stop(&g_b);                   /* and start again, so the first event is armed (an empty flag may wait) */
+            {
+                fm1ble_adv a;
+                make_adv(&a, (uint8_t)(FM1BLE_TRIAL_ADDR0 + g_trial));
+                fm1ble_adv_start(&g_b, &a);
             }
         }
+        if (now_ms - g_phase_t >= FM1BLE_TRIAL_MS)
+            g_phase = P_TRIAL_END;
         break;
-    case P_REARM_WINDOW:
-        fm1ble_poll(&g_b);
-        if (now_ms - g_phase_t >= 600u) {
-            if (d->events >= 3u && d->events > g_ev_before) {
-                g_phase = P_CONNECT;
-                g_phase_t = now_ms;
-            } else {
-                g_phase = P_RETRY;
-            }
-        }
-        break;
-    case P_RETRY:
-        if (!g_variant) {                            /* again with the shared radio's init first */
+    case P_TRIAL_END: {                              /* what the trial showed; the next trial, or the stack */
+        static const uint32_t hw[8] = { FM1BLE_E_TXTOG, FM1BLE_E_RXTOG, FM1BLE_E_ANCHOR, FM1BLE_E_BITOFF, FM1BLE_E_EVTCOUNT,
+                                        FM1BLE_E_LASTCHMAP, FM1BLE_E_RXSTAT0, FM1BLE_E_FORMAT };
+        const uint8_t *e = g_b.blk + g_b.entity;
+        g_tr[g_trial].events = d->events - g_at.events;
+        g_tr[g_trial].flips = d->tx_flips - g_at.flips;
+        g_tr[g_trial].rx = d->rx_packets - g_at.rx;
+        if (g_tr[g_trial].events >= 3u && (g_tr[g_trial].flips || g_tr[g_trial].rx))
+            g_trial_bits |= (uint8_t)(1u << g_trial);
+        for (i = 0; i < 8; i++)
+            g_hw[i] = (uint16_t)(e[hw[i]] | e[hw[i] + 1u] << 8);
+        if (g_b.adv_on)
             fm1ble_adv_stop(&g_b);
+        g_trial++;
+        if (g_trial == 1) {                          /* trial 1: again from power-up, with the shared radio's init first */
             fm1ble_radio_down(&g_b);
             g_variant = 1;
-            r->step[FM1BLE_STEP_RADIO].nraw = 0;
-            r->step[FM1BLE_STEP_BLOCK].nraw = 0;
-            r->step[FM1BLE_STEP_ADV_SET].nraw = 0;
-            r->cur = FM1BLE_STEP_RADIO;
             g_phase = P_RADIO;
+        } else if (g_trial < FM1BLE_TRIALS) {        /* trial 2: the same radio, the highest level */
+            g_phase = P_ADV;
         } else {
-            finish(r, FM1BLE_STEP_ADV_AIR, FM1BLE_FAIL, "no event flag in the baseband, either variant");
-            skip_rest(r, FM1BLE_STEP_CONNECT, "advertising never ran");
-            g_phase = P_END;
+            g_phase = P_STACK;
         }
         break;
-    case P_CONNECT:                                  /* the driver advertises: the radio works; the stack takes over */
-        s = &r->step[FM1BLE_STEP_ADV_AIR];
-        put32(s, d->events);
-        put32(s, d->rearms);
-        put32(s, d->pending_last);
-        finish(r, FM1BLE_STEP_ADV_AIR, FM1BLE_PASS, g_b.rearm ? "events seen, driver re-arms each" : "events repeat on their own");
-        fm1ble_adv_stop(&g_b);
+    }
+    case P_STACK:                                    /* adv_air's result; the stack takes over on the radio that sent */
+        air_step(r);
+        if (!g_tr[0].events && !g_tr[1].events && !g_tr[2].events) {
+            skip_rest(r, FM1BLE_STEP_HCI, "advertising never ran");
+            g_phase = P_END;
+            break;
+        }
+        if ((g_trial_bits & 1u) && !(g_trial_bits & 6u)) {   /* only variant 0 sent: the radio again without the shared init */
+            fm1ble_radio_down(&g_b);
+            g_variant = 0;
+            fm1ble_radio_up(&g_b, 0, 0);
+            fm1ble_bb_init(&g_b, g_blk);
+        }
+        fm1ble_set_rearm(&g_b, 0);
+        fm1ble_op_power(&g_b, FM1BLE_TXPWR_LEVEL);
         r->cur = FM1BLE_STEP_HCI;
         if (fm1ble_stack_start(&g_b, g_addr) != 0) {
             put32(&r->step[FM1BLE_STEP_HCI], (uint32_t)fm1ble_stack_state()->err);

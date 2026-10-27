@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * The Bluetooth test run for the host build (tests/run_host.sh), in place of firmware/ble/fm1ble_test.c: the same API
  * (fm1ble_test.h), but a scripted run, not a measurement. Every number and byte below is MADE UP to look like what the
- * real run will report; nothing here came from an FM-1 or a controller. It exists to test the page, the SysEx report and
+ * real run will report; nothing here came from an FM-1 or a controller. The counter names are the firmware's. It exists to test the page, the SysEx report and
  * tools/fm1_ble_report.py: the text, the layout, the SKIP after a FAIL, the timing of a run the page polls.
  *
  * Environment (read at each begin):
@@ -17,11 +17,7 @@
 static const char *const g_steps[FM1BLE_STEPS] = {
     "radio", "block", "hci", "adv_set", "adv_air", "connect", "midi_in", "midi_out"
 };
-static const char *const g_ctrs[FM1BLE_N_CTR] = {
-    "radio_regs_ok", "radio_regs_bad", "bb_irq", "bb_irq_tx", "bb_irq_rx", "hci_cmds", "hci_events", "hci_bad",
-    "hci_status", "hci_op", "adv_events", "connects", "disconnects", "acl_in", "acl_out", "att_mtu",
-    "interval", "latency", "timeout", "midi_in", "midi_out", "notify_failed", "nocp", "reserved"
-};
+static const char *const g_ctrs[FM1BLE_N_CTR] = { FM1BLE_CTR_NAMES };   /* the firmware's names (fm1ble_test.h) */
 
 const char *fm1ble_step_name(int step) { return step >= 0 && step < FM1BLE_STEPS ? g_steps[step] : 0; }
 const char *fm1ble_ctr_name(int ctr) { return ctr >= 0 && ctr < FM1BLE_N_CTR ? g_ctrs[ctr] : 0; }
@@ -73,21 +69,22 @@ static void finish(fm1ble_run *r, int i)
         s->result = FM1BLE_FAIL;
         note(s, "made-up failure (HOST_BLE_FAIL)");
         put(s, reg, 4);
-        r->ctr[8] = 0x12;
+        r->ctr[FM1BLE_C_BB_ERR] = 0x12;
         return;
     }
     s->result = FM1BLE_PASS;
     switch (i) {
-    case FM1BLE_STEP_RADIO: put(s, reg, 8); note(s, "2 of 2 registers read back"); r->ctr[0] = 2; break;
-    case FM1BLE_STEP_BLOCK: note(s, "baseband started, no interrupt storm"); r->ctr[2] = 3; break;
+    case FM1BLE_STEP_RADIO: put(s, reg, 8); note(s, "2 of 2 registers read back"); r->ctr[FM1BLE_C_RADIO_REGS_OK] = 2; break;
+    case FM1BLE_STEP_BLOCK: note(s, "baseband started, no interrupt storm"); r->ctr[FM1BLE_C_RAM_END] = 0x01C16940u; break;
     case FM1BLE_STEP_HCI:
         put(s, hci, sizeof hci);
         note(s, "4 commands answered, LE buffers 27 x 2");
         memcpy(r->bdaddr, addr, 6);
-        r->ctr[5] = 4; r->ctr[6] = 4;
+        r->ctr[FM1BLE_C_PAL_ADV_OPS] = 4;
         break;
-    case FM1BLE_STEP_ADV_SET: note(s, "4 commands accepted"); r->ctr[5] = 8; r->ctr[6] = 8; break;
-    case FM1BLE_STEP_ADV_AIR: note(s, "37 advertising events in 1 s"); r->ctr[2] = 114; r->ctr[3] = 111; r->ctr[10] = 37; break;
+    case FM1BLE_STEP_ADV_SET: note(s, "4 commands accepted"); r->ctr[FM1BLE_C_TXPWR] = 6; break;
+    case FM1BLE_STEP_ADV_AIR: note(s, "37 advertising events in 1 s"); r->ctr[FM1BLE_C_EVENTS] = 37; r->ctr[FM1BLE_C_TX_FLIPS] = 37;
+        r->ctr[FM1BLE_C_AIR_TRIALS] = 7; break;
     case FM1BLE_STEP_CONNECT:
         if (!g_connect) {
             s->result = FM1BLE_FAIL;
@@ -97,13 +94,14 @@ static void finish(fm1ble_run *r, int i)
                                           0x18, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00 };
             put(s, cc, sizeof cc);
             note(s, "connected, interval 30 ms, MTU 185");
-            r->ctr[11] = 1; r->ctr[15] = 185; r->ctr[16] = 24; r->ctr[18] = 72;
+            r->ctr[FM1BLE_C_RX_CONN_IND] = 1; r->ctr[FM1BLE_C_RX_LEN] = 34; r->ctr[FM1BLE_C_RX_TYPE] = 5;
         }
         break;
     case FM1BLE_STEP_MIDI_IN: { static const uint8_t m[] = { 0x81, 0x85, 0x90, 0x3C, 0x64 };
-        put(s, m, sizeof m); note(s, "note-on 3C/64 from the central"); r->ctr[19] = 1; r->ctr[13] = 1; break; }
+        put(s, m, sizeof m); note(s, "note-on 3C/64 from the central"); r->ctr[FM1BLE_C_PAL_RX_OK] = 185; break; }
     case FM1BLE_STEP_MIDI_OUT: { static const uint8_t m[] = { 0x87, 0xE8, 0x90, 0x3C, 0x7F };
-        put(s, m, sizeof m); note(s, "notification sent, buffer returned"); r->ctr[20] = 1; r->ctr[14] = 1; r->ctr[22] = 1; break; }
+        put(s, m, sizeof m); note(s, "notification sent, buffer returned"); r->ctr[FM1BLE_C_PAL_DONE_37] = 1; r->ctr[FM1BLE_C_PAL_DONE_38] = 2;
+        r->ctr[FM1BLE_C_PAL_DONE_39] = 3; break; }
     }
 }
 
