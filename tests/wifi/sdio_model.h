@@ -75,6 +75,22 @@
  *                                     error (RXD bits 10-9 = 3). A protected frame the library sends is taken only
  *                                     when JieLi's WIV is 0 and the TXWI's WCID holds the TK as above (with Ext IV in
  *                                     its IV/EIV entry); after the 4-way handshake nothing is taken in the clear.
+ *   ap ... sec=wpa2 psk=... net=A.B.C.D [dhcp=normal|silent|nak] [ping=on|off] [pingin=MS] [delay=MS]
+ *      [clear=MS] [ivleft=1] [others=1] [dup=1] [arpdrop=N]
+ *                                     stage 9 (docs/WIFI_STAGE9.md): a router behind the AP at A.B.C.D (MAC
+ *                                     02:47:57:00:00:01), once the 4-way handshake is done. Its DHCP server offers
+ *                                     A.B.C.23 (mask /24, router and DNS A.B.C.D and 1.1.1.1, lease 86400 s): the
+ *                                     OFFER broadcast (under the GTK), the ACK unicast (the PTK); silent: no answer,
+ *                                     nak: every REQUEST NAKed. It answers ARP requests for A.B.C.D and echo requests
+ *                                     to it (ping=off: none; delay: each reply MS late). pingin: once the ACK went
+ *                                     out, a host at A.B.C.50 (02:48:4F:53:54:50) ARPs for the station (broadcast),
+ *                                     then sends it an echo request every MS. clear: an ARP request broadcast in the
+ *                                     clear every MS (the station must drop it); ivleft: frames the MAC decrypted keep
+ *                                     their CCMP header (as a core that does not take it off would hand them).
+ *                                     others: an OFFER for another client (02:99:99:99:99:99, A.B.C.99) broadcast
+ *                                     before ours; dup: each echo reply sent twice; arpdrop: the first N ARP requests
+ *                                     for the gateway not answered. Only
+ *                                     protected frames from the station are taken; sdio_model_ap_net counts.
  *
  * Stages 4-6 (docs/WIFI_STAGE4.md): the WL30 host block's DMA moves frames between the model's RX FIFO or its
  * access points and the library's buffers (fm1wifi_port_bus hands out the addresses), 0x04's bits 17, 20 and 21
@@ -146,3 +162,13 @@ uint64_t sdio_model_now_us(const sdio_model *m);          /* the model's clock *
 /* access point i (in script order), WPA2: the 4-way handshake done and the station still joined, group key handshakes
  * finished, station frames refused, the PTK it agreed (or NULL) */
 void sdio_model_ap_wpa(const sdio_model *m, int i, int *done, int *group_done, uint32_t *refused, uint8_t ptk[48]);
+/* access point i's network (net=): what it heard from the station and sent to it */
+typedef struct {
+    uint32_t from_sta, to_sta;             /* protected IPv4 / ARP frames */
+    uint32_t discover, request, release;   /* DHCP messages heard */
+    uint32_t arp_req, arp_gw, arp_reply;   /* ARP requests heard, of those for the gateway; replies to the host's */
+    uint32_t ping_req, ping_reply, bad_icmp;   /* echo requests to the gateway, replies sent; bad ICMP checksums */
+    uint32_t host_arp_req, pingin_sent, pingin_got;   /* the host's ARP requests, echo requests, replies it got */
+    uint32_t clear_sent;                   /* broadcasts sent in the clear (clear=) */
+} sdio_model_net;
+void sdio_model_ap_net(const sdio_model *m, int i, sdio_model_net *ns);

@@ -11,7 +11,7 @@
 251 usb 64 085445535457504132166F706C626F782D686F73742D70617373706872617365
 3000 is 0 88 0 1
 3000 usb 62 000000
-# the pages: PLAY ten times, from page 1 to 11
+# the pages: PLAY 13 times, from page 1 to 14
 3100 btn 12
 3200 btn 12
 3300 btn 12
@@ -22,6 +22,9 @@
 3800 btn 12
 3900 btn 12
 4000 btn 12
+4030 btn 12
+4060 btn 12
+4090 btn 12
 # a second run: the PMK from the cache
 4100 usb 63
 7000 usb 62 000000
@@ -35,6 +38,9 @@
 7800 btn 12
 7900 btn 12
 8000 btn 12
+8030 btn 12
+8060 btn 12
+8090 btn 12
 # the wrong passphrase: the AP refuses msg 2
 8100 usb 64 0854455354575041321077726F6E672D70617373706872617365
 8150 usb 63
@@ -49,6 +55,12 @@
 13800 btn 12
 13900 btn 12
 14000 btn 12
+14030 btn 12
+14060 btn 12
+14090 btn 12
+4030 btn 12
+4060 btn 12
+4090 btn 12
 # forget it: the next run tries the open OPLBOX
 14100 usb 64 00
 14150 usb 63

@@ -72,6 +72,7 @@ static uint32_t wifi_report_state(void);
 static const uint8_t *wifi_report(uint32_t *n, uint32_t *serial);
 static int wifi_run_ask(uint32_t *run);
 static int wifi_net_set(const uint8_t *ssid, uint32_t ns, const char *pass, uint32_t np);
+static uint32_t wifi_live(uint8_t addr[4], uint32_t *left, uint32_t *answered);
 static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint8_t *data, uint32_t nd)
 {
     return slot_reply(cmd, head, nh, data, nd);
@@ -111,6 +112,18 @@ static int wifi_net_set(const uint8_t *ssid, uint32_t ns, const char *pass, uint
         }
     }
     return WIFI_OK;
+}
+/* the live state (0x65): no run, then DHCP for the first report poll of a run, then listening at 10.0.0.23 with 4000 ms
+ * left and wlive_answered echo requests answered (stage 9's steps as oplbox.c reports them: 2 DHCP, 5 listening) */
+static uint32_t wlive_answered;
+static uint32_t wifi_live(uint8_t addr[4], uint32_t *left, uint32_t *answered)
+{
+    static const uint8_t A[4] = { 10, 0, 0, 23 };
+    uint32_t step = !wreq ? 0u : wpolls < 2u ? 2u : 5u;
+    memcpy(addr, step == 5u ? A : (const uint8_t *)"\0\0\0\0", 4);
+    *left = step == 5u ? 4000u : 0u;
+    *answered = step == 5u ? wlive_answered++ : 0u;
+    return step;
 }
 static int wifi_run_ask(uint32_t *run)
 {
@@ -433,8 +446,23 @@ static void test_wifi(void)
     CHECK(reply_n == 16u && reply[6] == WIFI_E_REQ, "a short report request is not refused");
     send(WIFI_CMD_RUN, (const uint8_t *)"\0", 1);
     CHECK(reply_n == 10u && reply[6] == WIFI_E_REQ && !wreq, "a run command with a body is not refused");
-    send(0x65, 0, 0);
+    send(0x66, 0, 0);
     CHECK(reply_n == 0u, "an unknown command is answered");
+
+    /* the live state (0x65): none without a run; during one the step, then the address and the window */
+    send(WIFI_CMD_LIVE, 0, 0);
+    CHECK(reply_n == 17u && reply[2] == WIFI_CMD_LIVE && reply[6] == WIFI_OK && reply[7] == 0u && !reply[8] && !reply[11],
+          "live without a run: not step 0, no address");
+    send(WIFI_CMD_RUN, 0, 0);
+    send(WIFI_CMD_LIVE, 0, 0);
+    CHECK(reply_n == 17u && reply[7] == 2u && !reply[8], "live in DHCP: not step 2 without an address");
+    wpolls = 2;
+    send(WIFI_CMD_LIVE, 0, 0);
+    CHECK(reply_n == 17u && reply[7] == 5u && reply[8] == 10u && reply[11] == 23u && (reply[12] | reply[13] << 8) == 4000u &&
+          (reply[14] | reply[15] << 8) == 0u, "live while listening: not 10.0.0.23, 4000 ms left, 0 answered");
+    send(WIFI_CMD_LIVE, (const uint8_t *)"\0", 1);
+    CHECK(reply_n == 17u && reply[6] == WIFI_E_REQ, "a live command with a body is not refused");
+    wifi_run_ends();
 
     /* the network (0x64): taken whole, the reply status and the SSID's length only; every refusal */
     {   static const uint8_t NET[] = { 8, 'X', 'N', 'E', 'T', 'W', 'O', 'R', 'K', 12, 's', 'e', 'c', 'r', 'e', 't', ' ', 'p', 'a', 's', 's', '!' };

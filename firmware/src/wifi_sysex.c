@@ -6,8 +6,11 @@
  *   0x63 run     host: (none)    device: status run16
  *   0x64 network host: ssid_len8 ssid pass_len8 passphrase      device: status ssid_len8
  *                (ssid_len 0, nothing after it: forget the network)
+ *   0x65 live    host: (none)    device: status step8 addr4 left16 answered16
+ *                (stage 9: during a run, the step it is in, the FM-1's IPv4 address once DHCP gave one, the ms left
+ *                of the window in which it answers echo requests from the network, and how many it answered)
  *
- * The report is the last run's results, kept in RAM until the next run: every line the page's ten pages show, as
+ * The report is the last run's results, kept in RAM until the next run: every line the page's 14 pages show, as
  * text, then the counters and the frames the FIFO gave, as bytes (wr_* below build it; docs/API.md has the layout).
  * serial16 changes whenever the report is rebuilt (the page rebuilds it when its RAM check changes), so a reader
  * that sees it change between chunks starts again. A run is started by the main loop as SAVE then PLAY would; the
@@ -25,12 +28,15 @@
  *                               WIFI_E_EDIT
  *   wifi_net_set(ssid, ns, pass, np)   0: taken (ns 0: forgotten); WIFI_E_RUNNING while a run is going on. Called
  *                               with lengths already checked; it copies what it keeps
+ *   wifi_live(addr, &left, &answered)   the step a run is in (WIFI_LIVE_*; 0: no run going on), the address
+ *                               (0.0.0.0 before DHCP), the ms left of the listening window, echo requests answered
  *   wifi_reply(cmd, head, nh, data, nd)   one message to the computer (slot_sysex.c's slot_reply)
  * The command bytes are none of the updater's (0x11, 0x30), fm1-base's (0x41-0x43, 0x50-0x54) or the slots' (0x60,
  * 0x61). */
 #define WIFI_CMD_REPORT 0x62u
 #define WIFI_CMD_RUN 0x63u
 #define WIFI_CMD_NET 0x64u
+#define WIFI_CMD_LIVE 0x65u
 #define WIFI_CHUNK 512u
 enum { WIFI_OK, WIFI_E_REQ, WIFI_E_NONE, WIFI_E_RUNNING, WIFI_E_EDIT };
 enum { WR_NONE, WR_RUNNING, WR_DONE };
@@ -149,6 +155,23 @@ static void wifi_net_cmd(const uint8_t *d, uint32_t n)
     wifi_reply(WIFI_CMD_NET, h, sizeof h, 0, 0);
 }
 
+/* the live state: answered at once, also while a run goes on (the run serves USB between its steps) */
+static void wifi_live_cmd(const uint8_t *d, uint32_t n)
+{
+    uint8_t h[10] = { 0 };
+    uint32_t left = 0, answered = 0, step = 0;
+    (void)d;
+    if (n != 7u) h[0] = WIFI_E_REQ;
+    else {
+        step = wifi_live(h + 2, &left, &answered);
+        h[0] = WIFI_OK;
+    }
+    h[1] = (uint8_t)step;
+    wr_put16(h + 6, left > 0xFFFFu ? 0xFFFFu : left);
+    wr_put16(h + 8, answered > 0xFFFFu ? 0xFFFFu : answered);
+    wifi_reply(WIFI_CMD_LIVE, h, sizeof h, 0, 0);
+}
+
 /* a frame in the updater's framing that is not the updater's (d: decoded, n: its length); 1 = it was ours */
 static int wifi_sysex(const uint8_t *d, uint32_t n)
 {
@@ -156,5 +179,6 @@ static int wifi_sysex(const uint8_t *d, uint32_t n)
     if (d[2] == WIFI_CMD_REPORT) { wifi_report_cmd(d, n); return 1; }
     if (d[2] == WIFI_CMD_RUN) { wifi_run_cmd(d, n); return 1; }
     if (d[2] == WIFI_CMD_NET) { wifi_net_cmd(d, n); return 1; }
+    if (d[2] == WIFI_CMD_LIVE) { wifi_live_cmd(d, n); return 1; }
     return 0;
 }

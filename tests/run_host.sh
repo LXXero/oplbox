@@ -6,9 +6,14 @@ set -e
 cd "$(dirname "$0")/.."
 mkdir -p build/host
 rm -f build/host/oplbox-*.ppm build/host/oplbox-*.png build/host/oplbox.wav
+# lwIP 2.1.3 (firmware/wifi/lwip/, stage 7) for the simulator's WiFi page (stage 9) and the IP tests below: its own files
+# without -Werror (upstream code, a newer compiler may warn), C11 (glibc's SSIZE_MAX in GNU mode would make lwIP's arch.h
+# want unistd.h), with its assertions on (FM1WIFI_NET_DEBUG); fm1wifi_net.c the same way, with -Werror
+cc -std=c11 -O2 -Wall -Wextra -Werror -DFM1WIFI_NET_DEBUG -Ifirmware/wifi $LWIP_INC -c -o build/host/fm1wifi_net.o firmware/wifi/fm1wifi_net.c
 cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -DDBOPL2_SCOPE_N=512 -Ifirmware/src -Ifirmware/gen \
    -Ifirmware/wifi -Itests/wifi -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c \
-   firmware/wifi/fm1wifi_wpa.c firmware/wifi/wpa_eapol.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c tests/wifi/sdio_model.c tests/wifi/wpa_ap.c
+   firmware/wifi/fm1wifi_wpa.c firmware/wifi/wpa_eapol.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c firmware/wifi/fm1wifi_ip.c \
+   tests/wifi/sdio_model.c tests/wifi/wpa_ap.c build/host/fm1wifi_net.o build/host/lwip/*.o
 build/host/oplbox build/host/oplbox
 # the editor's undo and live recording, checked against the song in memory: each script exits 1 when a check fails
 build/host/oplbox build/host/undo tests/script_undo.txt
@@ -105,38 +110,38 @@ HOST_WIFI_REPORT=build/host/wifi_report.bin build/host/oplbox build/host/wifi te
 HOST_WIFI_MODEL=tests/wifi/core_bbp_stuck.txt build/host/oplbox build/host/wifi_stuck tests/script_wifi.txt > build/host/wifi_page_stuck.txt
 HOST_WIFI_MODEL=tests/wifi/core_silent.txt build/host/oplbox build/host/wifi_silent tests/script_wifi.txt > build/host/wifi_page_silent.txt
 HOST_WIFI_MODEL=tests/wifi/core_trim_hang.txt build/host/oplbox build/host/wifi_trim tests/script_wifi.txt > build/host/wifi_page_trim.txt
-for want in "wifi page 0: WIFI TEST (STAGE 8)" "wifi page 1: PLAY: POWER UP, TRIM, READ" "wifi page 2: SAVE: LEAVE" \
-            "wifi page 0: WIFI TEST (STAGE 8)   1/11" "wifi page 1: RESULT: OK" "wifi page 2: MAC_CSR0     35920200" \
+for want in "wifi page 0: WIFI TEST (STAGE 9)" "wifi page 1: PLAY: POWER UP, TRIM, READ" "wifi page 2: SAVE: LEAVE" \
+            "wifi page 0: WIFI TEST (STAGE 9)   1/14" "wifi page 1: RESULT: OK" "wifi page 2: MAC_CSR0     35920200" \
             "wifi page 3: MAC_SYS_CTRL 0000000C" "wifi page 4: BBP 0        21" "wifi page 5: PLL BANK  64  MID  95" \
             "wifi page 6: FILTER  141  80  44" "wifi page 7: RAM CHECK: 0 CHANGED" "wifi page 9: PLAY: PAGE 2   SAVE: LEAVE" \
-            "wifi page 0: TRIM  CH  6  PWR 6   2/11" "wifi page 1: TX LO  57  41  DC   -1   0" \
+            "wifi page 0: TRIM  CH  6  PWR 6   2/14" "wifi page 1: TX LO  57  41  DC   -1   0" \
             "wifi page 2: TX GAIN   +5  PHASE   +2 Q" "wifi page 3: RX GAIN  -20  PHASE   +7 I" \
             "wifi page 4: RX DC I +123 +103  +76  +22" "wifi page 5: RX DC Q  -77  -66  -51  -21" \
             "wifi page 6: CCA  1- 5   2K  2K  1K  2K  4K" "wifi page 8: CCA 11-13   2K  1K  1K" \
-            "wifi page 9: PLAY: PAGE 3   SAVE: LEAVE" "wifi page 0: RX CHECK  CH  6       3/11" \
+            "wifi page 9: PLAY: PAGE 3   SAVE: LEAVE" "wifi page 0: RX CHECK  CH  6       3/14" \
             "wifi page 1: VGA GAIN    7   7   7" "wifi page 2: VGA PEAK   50  50  50" "wifi page 3: PEAK AT VGA  0    0" \
             "wifi page 4: PEAK AT VGA 41    0" "wifi page 5: RXFE 80 00  23 82" "wifi page 6: RXFE 0  3A  19 00  20 00" \
-            "wifi page 7: BBP 25  00" "wifi page 9: PLAY: PAGE 4   SAVE: LEAVE" "wifi page 0: SURVEY  200 MS EACH   4/11" \
+            "wifi page 7: BBP 25  00" "wifi page 9: PLAY: PAGE 4   SAVE: LEAVE" "wifi page 0: SURVEY  200 MS EACH   4/14" \
             "wifi page 1:     CCA   BUSY     CCA   BUSY" "wifi page 2: 1  2800  28000  8  2400  24000" \
             "wifi page 7: 6  6400  64000 13  1000  10000" "wifi page 8: 7  4400  44000" \
             "wifi page 9: PLAY: PAGE 5   SAVE: LEAVE" \
-            "wifi page 0: STEPS                 5/11" "wifi page 1: RADIO   OK" "wifi page 2: SURVEY  OK 13 OF 13 CH" \
+            "wifi page 0: STEPS                 5/14" "wifi page 1: RADIO   OK" "wifi page 2: SURVEY  OK 13 OF 13 CH" \
             "wifi page 3: LINK    OK" "wifi page 4: PASSIVE OK 4 NETWORKS" "wifi page 5: ACTIVE  OK 4 ANSWERS" \
             "wifi page 6: JOIN    OK AID 1" "wifi page 7: 4-WAY   NOT NEEDED (OPEN)" "wifi page 8: GROUP KEY NOT NEEDED (OPEN)" \
             "wifi page 9: STAY 2S OK 20 BEACONS" "wifi page 10: REJOIN  OK" \
-            "wifi page 0: SCAN LIST   4 NETS   6/11" "wifi page 1: HOME        1  -61 WPA2 P" \
+            "wifi page 0: SCAN LIST   4 NETS   6/14" "wifi page 1: HOME        1  -61 WPA2 P" \
             "wifi page 2: OPLBOX      6  -40 OPEN P" "wifi page 3: OLDROUTER  11  -75 WPA P" "wifi page 4: (HIDDEN)   11  -55 OPEN" \
-            "wifi page 0: RAW FRAMES 1-2       7/11" "wifi page 1: 1 CH  1  BYTES 104" "wifi page 4: FFFFFFFF FFFF0200 00000001" \
-            "wifi page 0: RAW FRAMES 3-4       8/11" "wifi page 0: RX/TX COUNTS          9/11" "wifi page 3: FRAMES 33 BAD 0 TO ME 8" \
+            "wifi page 0: RAW FRAMES 1-2       7/14" "wifi page 1: 1 CH  1  BYTES 104" "wifi page 4: FFFFFFFF FFFF0200 00000001" \
+            "wifi page 0: RAW FRAMES 3-4       8/14" "wifi page 0: RX/TX COUNTS          9/14" "wifi page 3: FRAMES 33 BAD 0 TO ME 8" \
             "wifi page 6: SENT 32 ERR 0" "wifi page 7: TX OK 32 FAIL 0 RETRY 0" "wifi page 8: MAC 16:C6:87:70:CF:3D UID" \
-            "wifi page 0: JOIN OPLBOX          10/11" "wifi page 1: BSSID 02:00:00:00:00:06" "wifi page 2: CH  6  RSSI  -40  OPEN" \
+            "wifi page 0: JOIN OPLBOX          10/14" "wifi page 1: BSSID 02:00:00:00:00:06" "wifi page 2: CH  6  RSSI  -40  OPEN" \
             "wifi page 3: AUTH  OK" "wifi page 4: ASSOC OK  AID 1" "wifi page 5: 2 S: UP, 20 BEACONS" "wifi page 6: LEFT, REJOIN UP" \
             "wifi page 9: PLAY: PAGE 1   SAVE: LEAVE"; do
   grep -qF "$want" build/host/wifi_page.txt || { echo "FAIL: WiFi page: no line '$want'" >&2; exit 1; }
 done
 for want in "wifi page 1: RESULT: TIMEOUT" "wifi page 2: MAC_CSR0     35920200" "wifi page 4: BBP 0        TIMEOUT" \
-            "wifi page 5: PLL BANK  -" "wifi page 1: NOT REACHED" "wifi page 0: RX CHECK              3/11" \
-            "wifi page 0: SURVEY                4/11" "wifi page 3: LINK    NOT REACHED" "wifi page 6: JOIN    NOT REACHED"; do
+            "wifi page 5: PLL BANK  -" "wifi page 1: NOT REACHED" "wifi page 0: RX CHECK              3/14" \
+            "wifi page 0: SURVEY                4/14" "wifi page 3: LINK    NOT REACHED" "wifi page 6: JOIN    NOT REACHED"; do
   grep -qF "$want" build/host/wifi_page_stuck.txt || { echo "FAIL: WiFi page, BBP stuck: no line '$want'" >&2; exit 1; }
 done
 for want in "wifi page 1: RESULT: NO ANSWER" "wifi page 2: MAC_CSR0     00000000" "wifi page 6: FILTER  -"; do
@@ -179,14 +184,14 @@ echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) 
 # leaves and the report stays; EDIT refuses; bad requests are refused
 HOST_WIFI_REPORT=build/host/wifi_usb_report.bin build/host/oplbox build/host/wifi_usb tests/script_wifi_usb.txt > build/host/wifi_usb.txt
 for want in "   200 ms  USB reply 62: 02 00 00 00 00 00 00 00 00 | 0 bytes" "   250 ms  USB reply 63: 00 01 00 | 0 bytes" \
-            "   250 ms  wifi page 0: WIFI TEST (STAGE 8)" "   251 ms  USB reply 62: 03 00 00 00" "   252 ms  USB reply 63: 03 01 00 |" \
+            "   250 ms  wifi page 0: WIFI TEST (STAGE 9)" "   251 ms  USB reply 62: 03 00 00 00" "   252 ms  USB reply 63: 03 01 00 |" \
             "  2000 ms  USB reply 62: 00 66 0E 00 00 00 00 01 00 | 512 bytes" "  2001 ms  USB reply 62: 00 66 0E 00 00 0E 00 01 00 | 102 bytes" \
             "  2100 ms  USB reply 63: 00 02 00 |" "  2101 ms  USB reply 62: 03 " "  4000 ms  USB reply 62: 00 6A 0E 00 00 00 00 02 00 | 512 bytes" \
             "  4300 ms  USB reply 62: 00 6A 0E 00 00 00 00 02 00 | 512 bytes" "  4500 ms  USB reply 63: 04 00 00 |" \
             "  4800 ms  USB reply 62: 01 " "  4900 ms  USB reply 62: 01 "; do
   grep -qF -- "$want" build/host/wifi_usb.txt || { echo "FAIL: WiFi page over USB: no line '$want'" >&2; exit 1; }
 done
-[ "$(grep -c 'wifi page 0: WIFI TEST (STAGE 8)   1/11' build/host/wifi_usb.txt)" = 2 ] || { echo "FAIL: WiFi page over USB: not two runs" >&2; exit 1; }
+[ "$(grep -c 'wifi page 0: WIFI TEST (STAGE 9)   1/14' build/host/wifi_usb.txt)" = 2 ] || { echo "FAIL: WiFi page over USB: not two runs" >&2; exit 1; }
 # stage 8 (docs/WIFI_STAGE8.md): the WPA2 network set over USB (0x64; a bad one refused, none taken while a run goes
 # on), joined against the model's WPA2 AP (tests/wifi/aps_wpa.txt): the steps, page 10 and 11, the PMK cached for the
 # second run, a wrong passphrase (no msg 3, the AP's deauthentication), the network forgotten; the passphrase, the PMK
@@ -195,8 +200,8 @@ HOST_WIFI_MODEL=tests/wifi/core_model.txt:tests/wifi/aps_wpa.txt HOST_WIFI_REPOR
   build/host/oplbox build/host/wifi_wpa tests/script_wifi_wpa.txt > build/host/wifi_wpa_page.txt
 for want in "   100 ms  USB reply 64: 01 00 | 0 bytes" "   200 ms  USB reply 64: 00 08 | 0 bytes" "   251 ms  USB reply 64: 03 00 | 0 bytes" \
             "  3400 ms  wifi page 6: JOIN    OK AID 1" "  3400 ms  wifi page 7: 4-WAY   OK 1 MS" "  3400 ms  wifi page 8: GROUP KEY OK KEY ID 2" \
-            "  3400 ms  wifi page 9: STAY 2S OK 20 BEACONS" "  3400 ms  wifi page 10: REJOIN  OK" "  3900 ms  wifi page 0: JOIN TESTWPA2        10/11" \
-            "  3900 ms  wifi page 2: CH  6  RSSI  -57  WPA2" "  4000 ms  wifi page 0: WPA2                 11/11" \
+            "  3400 ms  wifi page 9: STAY 2S OK 20 BEACONS" "  3400 ms  wifi page 10: REJOIN  OK" "  3900 ms  wifi page 0: JOIN TESTWPA2        10/14" \
+            "  3900 ms  wifi page 2: CH  6  RSSI  -57  WPA2" "  4000 ms  wifi page 0: WPA2                 11/14" \
             "  4000 ms  wifi page 1: NETWORK TESTWPA2" "  4000 ms  wifi page 2: PMK  127 MS" "  4000 ms  wifi page 3: EAPOL IN 3 OUT 3 REFUSED 0" \
             "  4000 ms  wifi page 4: SEEN M1 M2 M3 M4 G1 G2" "  4000 ms  wifi page 5: PTK ATTR 09 IV 20000001 OK" \
             "  4000 ms  wifi page 6: GTK ID 2 MODE 0440 IV A0 OK" "  4000 ms  wifi page 7: DECRYPTED 7/7 GROUP 6/6" \
@@ -276,6 +281,16 @@ done
 cc -std=c11 -O2 -Wall -Wextra -Werror -DFM1WIFI_NET_DEBUG -Ifirmware/wifi $LWIP_INC -o build/host/wifi_net \
    tests/wifi_net.c firmware/wifi/fm1wifi_net.c build/host/lwip/*.o
 build/host/wifi_net
+# IP on the WPA2 station (firmware/wifi/fm1wifi_ip.c, docs/WIFI_STAGE9.md): the DHCP, ICMP and data frame readers, then
+# against the model's WPA2 AP with a router behind it (tests/wifi/sdio_model.h "ap ... net="): DHCP (OFFER under the GTK,
+# ACK under the PTK), ARP, ten pings, a host that pings us, a rekey meanwhile, the DHCPRELEASE; a silent server, a NAK,
+# no replies, late replies, a wrong GTK, frames in the clear, a CCMP header left in, a deauthentication during DHCP.
+# Then the test must catch deliberate bugs in fm1wifi_ip.c (tests/wifi_ip_mutants.py)
+cc -std=c11 -O2 -Wall -Wextra -Werror -DFM1WIFI_NET_DEBUG -Ifirmware/wifi -Itests/wifi $LWIP_INC -o build/host/wifi_ip \
+   tests/wifi_ip.c tests/wifi/sdio_model.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c firmware/wifi/fm1wifi_wpa.c \
+   firmware/wifi/wpa_eapol.c firmware/wifi/fm1wifi_ip.c build/host/fm1wifi_net.o $WIFI_AP build/host/lwip/*.o
+build/host/wifi_ip tests/wifi
+python3 tests/wifi_ip_mutants.py build/host
 # the BLE HCI layer (firmware/ble/hci.c, docs/BLUETOOTH.md stage 1) stands alone like firmware/wifi/: warning-free with
 # only its own directory, and it includes nothing from outside it. Then against the fake controller
 # (tests/ble/hci_model.c): the packets byte for byte, H4, a whole session diffed against tests/ble/session_expect.txt
