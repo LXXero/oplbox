@@ -9,6 +9,11 @@ rm -f build/host/oplbox-*.ppm build/host/oplbox-*.png build/host/oplbox.wav
 # lwIP 2.1.3 (firmware/wifi/lwip/, stage 7) for the simulator's WiFi page (stage 9) and the IP tests below: its own files
 # without -Werror (upstream code, a newer compiler may warn), C11 (glibc's SSIZE_MAX in GNU mode would make lwIP's arch.h
 # want unistd.h), with its assertions on (FM1WIFI_NET_DEBUG); fm1wifi_net.c the same way, with -Werror
+mkdir -p build/host/lwip
+LWIP_INC="-Ifirmware/wifi/lwip/port -Ifirmware/wifi/lwip/src/include"
+for f in firmware/wifi/lwip/src/core/*.c firmware/wifi/lwip/src/core/ipv4/*.c firmware/wifi/lwip/src/netif/*.c; do
+  cc -std=c11 -O2 -Wall -Wextra -DFM1WIFI_NET_DEBUG $LWIP_INC -c "$f" -o "build/host/lwip/$(basename "$f" .c).o"
+done
 cc -std=c11 -O2 -Wall -Wextra -Werror -DFM1WIFI_NET_DEBUG -Ifirmware/wifi $LWIP_INC -c -o build/host/fm1wifi_net.o firmware/wifi/fm1wifi_net.c
 cc -O2 -Wall -Wno-unused-function -DDINGHY_HOST -DAPP_VER="\"${APP_VER:-dev}\"" -DDBOPL2_SCOPE_N=512 -Ifirmware/src -Ifirmware/gen \
    -Ifirmware/wifi -Itests/wifi -o build/host/oplbox firmware/src/oplbox.c firmware/src/dbopl2.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c \
@@ -185,9 +190,9 @@ echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) 
 HOST_WIFI_REPORT=build/host/wifi_usb_report.bin build/host/oplbox build/host/wifi_usb tests/script_wifi_usb.txt > build/host/wifi_usb.txt
 for want in "   200 ms  USB reply 62: 02 00 00 00 00 00 00 00 00 | 0 bytes" "   250 ms  USB reply 63: 00 01 00 | 0 bytes" \
             "   250 ms  wifi page 0: WIFI TEST (STAGE 9)" "   251 ms  USB reply 62: 03 00 00 00" "   252 ms  USB reply 63: 03 01 00 |" \
-            "  2000 ms  USB reply 62: 00 66 0E 00 00 00 00 01 00 | 512 bytes" "  2001 ms  USB reply 62: 00 66 0E 00 00 0E 00 01 00 | 102 bytes" \
-            "  2100 ms  USB reply 63: 00 02 00 |" "  2101 ms  USB reply 62: 03 " "  4000 ms  USB reply 62: 00 6A 0E 00 00 00 00 02 00 | 512 bytes" \
-            "  4300 ms  USB reply 62: 00 6A 0E 00 00 00 00 02 00 | 512 bytes" "  4500 ms  USB reply 63: 04 00 00 |" \
+            "  2000 ms  USB reply 62: 00 30 10 00 00 00 00 01 00 | 512 bytes" "  2001 ms  USB reply 62: 00 30 10 00 00 10 00 01 00 | 48 bytes" \
+            "  2100 ms  USB reply 63: 00 02 00 |" "  2101 ms  USB reply 62: 03 " "  4000 ms  USB reply 62: 00 34 10 00 00 00 00 02 00 | 512 bytes" \
+            "  4300 ms  USB reply 62: 00 34 10 00 00 00 00 02 00 | 512 bytes" "  4500 ms  USB reply 63: 04 00 00 |" \
             "  4800 ms  USB reply 62: 01 " "  4900 ms  USB reply 62: 01 "; do
   grep -qF -- "$want" build/host/wifi_usb.txt || { echo "FAIL: WiFi page over USB: no line '$want'" >&2; exit 1; }
 done
@@ -204,11 +209,24 @@ for want in "   100 ms  USB reply 64: 01 00 | 0 bytes" "   200 ms  USB reply 64:
             "  3900 ms  wifi page 2: CH  6  RSSI  -57  WPA2" "  4000 ms  wifi page 0: WPA2                 11/14" \
             "  4000 ms  wifi page 1: NETWORK TESTWPA2" "  4000 ms  wifi page 2: PMK  127 MS" "  4000 ms  wifi page 3: EAPOL IN 3 OUT 3 REFUSED 0" \
             "  4000 ms  wifi page 4: SEEN M1 M2 M3 M4 G1 G2" "  4000 ms  wifi page 5: PTK ATTR 09 IV 20000001 OK" \
-            "  4000 ms  wifi page 6: GTK ID 2 MODE 0440 IV A0 OK" "  4000 ms  wifi page 7: DECRYPTED 7/7 GROUP 6/6" \
+            "  4000 ms  wifi page 6: GTK ID 2 MODE 0440 IV A0 OK" "  4000 ms  wifi page 7: DECRYPTED 41/41 GROUP 20/20" \
             "  4000 ms  wifi page 8: REKEYS 1  RNG REG CHANGES" "  8000 ms  wifi page 2: PMK  CACHED" "  7400 ms  wifi page 10: REJOIN  OK" \
             " 13400 ms  wifi page 7: 4-WAY   FAIL DEAUTH 15" " 13400 ms  wifi page 8: GROUP KEY NOT REACHED" \
             " 14000 ms  wifi page 4: SEEN M1 M2" " 14000 ms  wifi page 5: PTK  NOT LOADED" " 14000 ms  wifi page 8: NO MSG 3: WRONG PASSPHRASE?" \
-            " 14100 ms  USB reply 64: 00 00 | 0 bytes"; do
+            " 14100 ms  USB reply 64: 00 00 | 0 bytes" \
+            "  4030 ms  wifi page 0: IP STEPS             12/14" "  4030 ms  wifi page 1: DHCP    OK 1 MS" \
+            "  4030 ms  wifi page 2: ARP GW  OK 1 MS" "  4030 ms  wifi page 3: PING GW OK 10/10 0/0/0 MS" "  4030 ms  wifi page 4: PING IN OK 5 IN 2 S" \
+            "  4030 ms  wifi page 5: ADDR 192.168.7.23/24" "  4030 ms  wifi page 6: GW 192.168.7.1" "  4030 ms  wifi page 7: GW MAC 02:47:57:00:00:01" \
+            "  4030 ms  wifi page 8: DNS 192.168.7.1 +1" "  4060 ms  wifi page 0: DHCP, DATA           13/14" \
+            "  4060 ms  wifi page 1: SENT DISC 1 REQ 1 REL 1" "  4060 ms  wifi page 2: GOT OFFER 1 ACK 1 NAK 0" \
+            "  4060 ms  wifi page 3: SERVER 192.168.7.1" "  4060 ms  wifi page 4: LEASE 86400 S" "  4060 ms  wifi page 5: OFFER BCAST  ACK UNICAST" \
+            "  4060 ms  wifi page 6: TX 24 ERR 0  RX 34 LWIP 34" "  4060 ms  wifi page 7: DECR 7>41 ERR 0>0 GRP 6>20" \
+            "  4060 ms  wifi page 8: ICV 0 MIC 0 KEY 0 CLR 0 IV 0" "  4090 ms  wifi page 0: IP FRAMES 1-2        14/14" \
+            "  4090 ms  wifi page 1: 1 OUT 368 B DHCP DISCOVER" "  4090 ms  wifi page 2: 08410000 02000000 006616C6" \
+            "  4090 ms  wifi page 5: 2 IN 338 B DHCP OFFER" "  4090 ms  wifi page 6: 08020000 FFFFFFFF FFFF0200" \
+            "  8030 ms  wifi page 1: DHCP    OK 1 MS" " 14030 ms  wifi page 1: DHCP    NOT REACHED" " 14060 ms  wifi page 1: NOT REACHED: SEE PAGE 12" \
+            "USB reply 65: 00 05 C0 A8 07 17 " "USB reply 65: 00 04 C0 A8 07 17 00 00 " "   260 ms  USB reply 65: 00 01 00 00 00 00 00 00 " \
+            "   980 ms  USB reply 65: 00 00 00 00 00 00 00 00 00 00 | 0 bytes"; do
   grep -qF -- "$want" build/host/wifi_wpa_page.txt || { echo "FAIL: WiFi page, WPA2: no line '$want'" >&2; exit 1; }
 done
 python3 - <<'PY'
@@ -242,6 +260,31 @@ if steps != [("eapol_from_ap", 1), ("eapol_to_ap", 2), ("eapol_from_ap", 3), ("e
     bad.append(f"report 1: EAPOL frames {steps}")
 if "PTK MAC_WCID_ENTRY 00000002 FFFF6600 ATTR 00000009 IV/EIV 20000001 00000000 KEY WORDS AS WRITTEN 8/8" not in r1["text"]:
     bad.append("report 1: no PTK read-back line")
+# stage 9: the IP steps' counters, the DHCP messages in the text, the IP frames (DISCOVER first, Protected; the OFFER as
+# decrypted), the listening window
+want = {"steps_reached": 0x3FF, "ip_start_err": 0, "dhcp_err": 0, "arp_err": 0, "ping_err": 0, "listen_err": 0,
+        "dhcp_discover_tx": 1, "dhcp_request_tx": 1, "dhcp_release_tx": 1, "dhcp_offer_rx": 1, "dhcp_ack_rx": 1, "dhcp_nak_rx": 0,
+        "ip_addr": 0xC0A80717, "ip_mask": 0xFFFFFF00, "ip_gateway": 0xC0A80701, "dhcp_server": 0xC0A80701,
+        "dns_1": 0xC0A80701, "dns_2": 0x01010101, "lease_s": 86400, "gateway_mac_hi": 0x02475700, "gateway_mac_lo": 0x0001,
+        "pings_sent": 10, "pings_answered": 10, "pings_late": 0, "listen_out": 5, "data_rx_clear": 0,
+        "data_rx_not_decrypted": 0, "data_rx_key_err": 0, "data_rx_mic_err": 0, "data_tx_err": 0}
+for k, v in want.items():
+    if c.get(k) != v:
+        bad.append(f"report 1: {k} {c.get(k)!r}, want {v:#x}")
+if not (c.get("listen_in", 0) >= 5 and c.get("echo_out") == c.get("echo_in") and c.get("data_tx", 0) >= 20):
+    bad.append(f"report 1: echo / data counts {c.get('listen_in')} {c.get('echo_in')} {c.get('echo_out')} {c.get('data_tx')}")
+for line in ("DHCP OFFER YIADDR 192.168.7.23 SERVER 192.168.7.1 MASK 255.255.255.0 ROUTER 192.168.7.1 DNS (2) 192.168.7.1 1.1.1.1 LEASE 86400",
+             "DHCP ACK YIADDR 192.168.7.23 ", "ADDRESS 192.168.7.23 MASK 255.255.255.0 GATEWAY 192.168.7.1 GATEWAY MAC 02:47:57:00:00:01",
+             "PINGS (MS, - NO REPLY): 0 0 0 0 0 0 0 0 0 0  LATE 0", "IP FRAMES 1-2        14/14"):
+    if line not in r1["text"]:
+        bad.append(f"report 1: no line {line!r}")
+ipf = [f for f in r1["frames"] if f["step"].startswith("ip_")]
+if len(ipf) != 8 or (ipf[0]["step"], ipf[0]["ch"]) != ("ip_to_ap", 9) or (ipf[1]["step"], ipf[1]["ch"]) != ("ip_from_ap", 10) \
+        or not ipf[0]["data"][1] & 0x40 or ipf[1]["data"][1] & 0x40 or ipf[0]["had"] != len(ipf[0]["data"]):
+    bad.append(f"report 1: IP frames {[(f['step'], f['ch'], f['had']) for f in ipf]}")
+r3c = wr.decode(Path("build/host/wifi_wpa_report-3.bin").read_bytes())["counters"]
+if r3c.get("steps_reached", 0) & 0x3C0 or r3c.get("pings_sent") != 0:
+    bad.append(f"report 3 (wrong passphrase): IP steps reached {r3c.get('steps_reached')}")
 if "PMK  CACHED" not in wr.decode(Path("build/host/wifi_wpa_report-2.bin").read_bytes())["text"]:
     bad.append("report 2: the PMK not from the cache")
 r3 = wr.decode(Path("build/host/wifi_wpa_report-3.bin").read_bytes())
@@ -251,7 +294,8 @@ if "NO NETWORK SET OVER USB:" not in wr.decode(Path("build/host/wifi_wpa_report-
     bad.append("report 4: the network not forgotten")
 for b in bad: print("FAIL: WiFi page, WPA2:", b, file=sys.stderr)
 if bad: sys.exit(1)
-print("WiFi page, WPA2: joined, keys read back, rekeyed, PMK cached, a wrong passphrase said so; no secret in the output")
+print("WiFi page, WPA2: joined, keys read back, rekeyed, PMK cached, a wrong passphrase said so; IP (stage 9): DHCP, "
+      "ARP, 10 pings, pinged, the live command; no secret in the output")
 PY
 # ... and tools/fm1_wifi_report.py reads the button run's report through wifi_sysex.c: its text is the ten pages' text
 python3 tests/wifi_report_tool.py build/host/slot_sysex_test build/host/wifi_report.bin build/host/wifi_page.txt build/host
@@ -272,12 +316,7 @@ cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -Itests/wifi -o build/host/wif
 build/host/wifi_wpa tests/wifi
 # IP over WiFi (firmware/wifi/fm1wifi_net.c on lwIP 2.1.3, docs/WIFI.md stage 7): a test that plays the AP, a DHCP
 # server and two pinging hosts as 802.11 data frames (DHCP with a silent server, ARP, ICMP echo, the drop rules,
-# EAPOL to its callback). lwIP's own files without -Werror (upstream code, a newer compiler may warn), ours with it
-mkdir -p build/host/lwip
-LWIP_INC="-Ifirmware/wifi/lwip/port -Ifirmware/wifi/lwip/src/include"
-for f in firmware/wifi/lwip/src/core/*.c firmware/wifi/lwip/src/core/ipv4/*.c firmware/wifi/lwip/src/netif/*.c; do
-  cc -std=c11 -O2 -Wall -Wextra -DFM1WIFI_NET_DEBUG $LWIP_INC -c "$f" -o "build/host/lwip/$(basename "$f" .c).o"
-done
+# EAPOL to its callback, our own ARP requests and pings), against the lwIP objects built at the top
 cc -std=c11 -O2 -Wall -Wextra -Werror -DFM1WIFI_NET_DEBUG -Ifirmware/wifi $LWIP_INC -o build/host/wifi_net \
    tests/wifi_net.c firmware/wifi/fm1wifi_net.c build/host/lwip/*.o
 build/host/wifi_net

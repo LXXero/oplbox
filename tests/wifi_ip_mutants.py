@@ -5,9 +5,11 @@ deliberate bug, built into wifi_ip and run. The test must fail on every one.
 
     wifi_ip_mutants.py <out>      <out> is build/host (lwip/*.o and fm1wifi_net.o must be there); exit 1 if one survives
 """
+import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,32 +55,44 @@ def main():
     work = out / "ip_mutants"
     survived = 0
     lwip = sorted(str(p) for p in (out / "lwip").glob("*.o"))
-    for n, (name, old, new) in enumerate(MUTANTS):
+    common = work / "common"                                     # everything but fm1wifi_ip.c, compiled once
+    common.mkdir(parents=True, exist_ok=True)
+    srcs = [ROOT / "tests/wifi_ip.c", ROOT / "tests/wifi/sdio_model.c", LIB / "fm1wifi.c", LIB / "fm1wifi_frame.c",
+            LIB / "fm1wifi_wpa.c", LIB / "wpa_eapol.c", ROOT / "tests/wifi/wpa_ap.c", LIB / "wpa_crypto.c",
+            *sorted((LIB / "bearssl").glob("*.c"))]
+    flags = ["-std=c11", "-O1", "-w", "-DFM1WIFI_NET_DEBUG", "-I" + str(LIB), "-I" + str(ROOT / "tests/wifi")]
+    objs = []
+    for i, src in enumerate(srcs):
+        o = common / f"{i:02d}_{src.stem}.o"
+        subprocess.run(["cc", *flags, "-c", "-o", str(o), str(src)], check=True)
+        objs.append(str(o))
+    def one(n):
+        name, old, new = MUTANTS[n]
         d = work / str(n)
         if d.exists():
             shutil.rmtree(d)
         d.mkdir(parents=True)
         text = (LIB / "fm1wifi_ip.c").read_text()
         if text.count(old) != 1:
-            print("FAIL: mutant %r: its text is not in fm1wifi_ip.c exactly once (the code moved: update the mutant)" % name)
-            survived += 1
-            continue
+            return name, "moved"
         (d / "fm1wifi_ip.c").write_text(text.replace(old, new))
         exe = d / "wifi_ip"
-        subprocess.run(["cc", "-std=c11", "-O1", "-w", "-DFM1WIFI_NET_DEBUG", "-I" + str(LIB), "-I" + str(ROOT / "tests/wifi"),
-                        "-o", str(exe), str(ROOT / "tests/wifi_ip.c"), str(ROOT / "tests/wifi/sdio_model.c"),
-                        str(LIB / "fm1wifi.c"), str(LIB / "fm1wifi_frame.c"), str(LIB / "fm1wifi_wpa.c"), str(LIB / "wpa_eapol.c"),
-                        str(d / "fm1wifi_ip.c"), str(out / "fm1wifi_net.o"), str(ROOT / "tests/wifi/wpa_ap.c"),
-                        str(LIB / "wpa_crypto.c"), *map(str, sorted((LIB / "bearssl").glob("*.c"))), *lwip], check=True)
+        subprocess.run(["cc", *flags, "-o", str(exe), str(d / "fm1wifi_ip.c"), *objs, str(out / "fm1wifi_net.o"), *lwip],
+                       check=True)
         try:
             r = subprocess.run([str(exe), str(ROOT / "tests/wifi")], capture_output=True, text=True, timeout=120)
-            code, err = r.returncode, r.stderr
+            return name, "caught" if r.returncode != 0 else "survived"
         except subprocess.TimeoutExpired:
-            code, err = None, "hung"
-        caught = code not in (0, None) or code is None
-        print("%s: %s" % ("caught" if caught else "SURVIVED", name))
-        if not caught:
-            survived += 1
+            return name, "caught"                                 # a hang fails the test too
+
+    with ThreadPoolExecutor(os.cpu_count() or 4) as ex:
+        results = list(ex.map(one, range(len(MUTANTS))))
+    for name, what in results:
+        if what == "moved":
+            print("FAIL: mutant %r: its text is not in fm1wifi_ip.c exactly once (the code moved: update the mutant)" % name)
+        else:
+            print("%s: %s" % ("caught" if what == "caught" else "SURVIVED", name))
+        survived += what != "caught"
     shutil.rmtree(work)
     if survived:
         sys.exit("FAIL: %d mutant(s) not caught" % survived)
