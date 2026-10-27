@@ -171,7 +171,10 @@ def build_app():
             ("cc", *CFLAGS, "-Ifirmware/wifi", "-c", FW / "wifi" / "fm1wifi_frame.c", "-o", OUT / "fm1wifi_frame.o"),
             ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-c", FW / "hal" / "fm1wifi_port_bsp.c", "-o", OUT / "fm1wifi_port_bsp.o"),
             # the Bluetooth test run (firmware/ble/fm1ble_test.c, docs/BLUETOOTH_PAGE.md) for the Bluetooth test page
-            ("cc", *CFLAGS, *libc_inc(), "-Ifirmware/ble", "-c", FW / "ble" / "fm1ble_test.c", "-o", OUT / "fm1ble_test.o")]
+            ("cc", *CFLAGS, *libc_inc(), "-Ifirmware/ble", "-c", FW / "ble" / "fm1ble_test.c", "-o", OUT / "fm1ble_test.o"),
+            ("cc", *CFLAGS, *libc_inc(), "-Ifirmware/ble", "-c", FW / "ble" / "fm1ble.c", "-o", OUT / "fm1ble.o"),
+            ("cc", *CFLAGS, "-Ifirmware/ble", "-c", FW / "ble" / "ble_midi.c", "-o", OUT / "ble_midi.o"),
+            ("cc", *CFLAGS, *BSP_INC, "-Ifirmware/wifi", "-Ifirmware/ble", "-c", FW / "hal" / "fm1ble_port_bsp.c", "-o", OUT / "fm1ble_port_bsp.o")]
     # stage 8 (docs/WIFI_STAGE8.md): the WPA2 station, the EAPOL handshakes, the key primitives and their BearSSL subset
     wpa = [FW / "wifi" / "fm1wifi_wpa.c", FW / "wifi" / "wpa_eapol.c", FW / "wifi" / "wpa_crypto.c",
            *sorted((FW / "wifi" / "bearssl").glob("*.c"))]
@@ -181,7 +184,7 @@ def build_app():
     elf = OUT / "oplbox.elf"
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o",
        OUT / "fm1_isr.o", OUT / "oplbox.o", OUT / "dbopl2.o", OUT / "fm1wifi.o", OUT / "fm1wifi_frame.o",
-       OUT / "fm1wifi_port_bsp.o", OUT / "fm1ble_test.o", *wpa_objs, "-o", elf)
+       OUT / "fm1wifi_port_bsp.o", OUT / "fm1ble_test.o", OUT / "fm1ble.o", OUT / "ble_midi.o", OUT / "fm1ble_port_bsp.o", *wpa_objs, "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin", "ramcode.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),
