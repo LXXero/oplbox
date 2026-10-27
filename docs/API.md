@@ -189,13 +189,20 @@ reaches here: the stock keys `F0 22 24 35 7D/7F F7` and Felucca's editor `F0 7D 
 
 ## WiFi test page over SysEx
 
-`tools/fm1_wifi_report.py` reads the WiFi test page's results (docs/WIFI_STAGE4.md) and can start a run, so nobody has
-to photograph ten pages (`firmware/src/wifi_sysex.c`). Same framing as the song slots.
+`tools/fm1_wifi_report.py` reads the WiFi test page's results (docs/WIFI_STAGE4.md, docs/WIFI_STAGE8.md), can start a
+run and can set the WPA2 network a run joins, so nobody has to photograph eleven pages (`firmware/src/wifi_sysex.c`).
+Same framing as the song slots.
 
 | cmd | from the computer | from the FM-1 |
 | --- | --- | --- |
 | `0x62` report | `off24` | `status total24 off24 serial16 data`: up to 512 bytes of the report from `off` |
 | `0x63` run | (nothing) | `status run16`, at once |
+| `0x64` network | `ssid_len8 SSID pass_len8 passphrase`, or a single `00` to forget it | `status ssid_len8` |
+
+The network (stage 8) is the WPA2-PSK network the runs join: an SSID of 1-32 bytes and a passphrase of 8-63
+printable ASCII characters (IEEE 802.11 J.4.1); anything else is status 1. The FM-1 keeps both in RAM only, until it
+restarts or the command comes again, refuses a change while a run is going on (status 3), and never sends the
+passphrase back, draws it or puts it in the report. With no network set a run joins the open network OPLBOX.
 
 `serial16` changes when the FM-1 rebuilds the report (it does while the page is open and its RAM check changes); a
 reader that sees it change between chunks starts again. A run asked for starts in the main loop as SAVE then PLAY
@@ -206,9 +213,9 @@ will have (1 for the first since the FM-1 started); the report's header carries 
 | status | |
 | --- | --- |
 | 0 | report: done, the chunk follows. run: the run will start |
-| 1 | bad request (a body of the wrong length, an offset past the end) |
+| 1 | bad request (a body of the wrong length, an offset past the end, a network out of range) |
 | 2 | report: no run since the FM-1 started |
-| 3 | a run is asked for or going on (run: `run16` is its number); the report is not there until it ends |
+| 3 | a run is asked for or going on (run: `run16` is its number); the report is not there until it ends; network: not changed |
 | 4 | run: EDIT is open (SAVE writes the song there, so the page cannot open); nothing started |
 
 The report, in RAM until the next run (numbers little-endian):
@@ -219,12 +226,13 @@ The report, in RAM until the next run (numbers little-endian):
 | 1 | version, 1 |
 | 1 | flags: bit 0 the text was cut short, bit 1 counters or frames were (the buffer holds 6 KiB of text and every frame) |
 | 2 | the run's number |
-| 2 | T, then T bytes of text: every line pages 1-10 show, in order (not the `PLAY: PAGE n` footers), a blank line between pages, then `ALL NETWORKS: ...` and one line per network the scan kept (SSID whole, BSSID, channel, RSSI, security, `P` probed), `n MORE NOT KEPT` when the list was full |
-| 1 | K, then K 32-bit counters: 0x30F04 before and after, `TXRXQ_PCNT` before and after, frames read, those that did not parse, those to our address, frames sent, sends that failed, `RX_STA_CNT0` CRC and PHY errors, `RX_STA_CNT2` duplicates and overflows, `TX_STA_CNT` OK, failed, retries, underflows, beacons, probe responses (K is 19) |
-| 1 | F, then F frames: step (1 passive scan, 2 active scan, 3 join), channel, the bytes it had (16 bits: N + 8), the bytes kept (16 bits, at most 512), then those bytes as the FIFO gave them (length word, RXWI, the frame, the trailer) |
+| 2 | T, then T bytes of text: every line pages 1-11 show, in order (not the `PLAY: PAGE n` footers), a blank line between pages, then `ALL NETWORKS: ...` and one line per network the scan kept (SSID whole, BSSID, channel, RSSI, security, `P` probed), `n MORE NOT KEPT` when the list was full; after a WPA2 join, the key tables as read back (each key's words only as written or not), `TX_SEC_CNT0` / `RX_SEC_CNT0` before the join and at the end, and two reads of the random number register |
+| 1 | K, then K 32-bit counters: 0x30F04 before and after, `TXRXQ_PCNT` before and after, frames read, those that did not parse, those to our address, frames sent, sends that failed, `RX_STA_CNT0` CRC and PHY errors, `RX_STA_CNT2` duplicates and overflows, `TX_STA_CNT` OK, failed, retries, underflows, beacons, probe responses; then (stage 8, K is 58) the WPA2 station's: PMK ms, PMK cached, state, why, RSN refusal, EAPOL refusal, messages seen, keys loaded, 4-way ms, EAPOL in, refused, protected frames in, decrypted, not, group in, decrypted, group key handshakes, key table error; the pairwise entries read back (WCID entry 2 words, attribute, IV, EIV, key words as written as a bit mask), the group's (mode, attribute, IV, EIV, mask), the random register twice, `TX_STA_CNT` OK, failed, retries and CRC errors before the join, `TX_SEC_CNT0` before and after, `RX_SEC_CNT0` before and after (`tools/fm1_wifi_report.py` names them all) |
+| 1 | F, then F frames: step (1 passive scan, 2 active scan, 3 join, 4 / 5 an EAPOL frame from / to the AP in the join, 6 / 7 in the rejoin), channel (an EAPOL frame: the message, 1-4, 5 group msg 1, 6 group msg 2), the bytes it had (16 bits: N + 8; EAPOL: the PDU's length), the bytes kept (16 bits, at most 512; EAPOL 192), then those bytes as the FIFO gave them (length word, RXWI, the frame, the trailer; EAPOL: the 802.1X header onward) |
 
 Up to four frames are kept per step. The tool prints the text and the counters; `--out DIR` writes `report.txt`,
-`report.bin`, `counters.txt` and `frame-NN-<step>-chNN.bin`.
+`report.bin`, `counters.txt` and `frame-NN-<step>-chNN.bin` (EAPOL frames `frame-NN-<step>-msgN.bin`). EAPOL
+msg 1 and 2 allow offline passphrase guesses: keep a WPA2 run's report private.
 
 ## Settings
 

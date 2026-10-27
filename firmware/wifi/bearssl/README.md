@@ -14,7 +14,7 @@ SHA-1, HMAC and AES decryption for the WPA2 key primitives in `../wpa_crypto.c` 
 | `aes_small_dec.c` | `src/symcipher/aes_small_dec.c` | SPDX and provenance comment only |
 | `dec32be.c`, `enc32be.c` | `src/codec/` | SPDX and provenance comment only |
 | `bearssl_hmac.h` | `inc/bearssl_hmac.h` | SPDX and provenance comment only |
-| `bearssl_hash.h` | `inc/bearssl_hash.h` | `#include <string.h>` replaced by declarations of `memcpy` and `memset` (the firmware has no C library headers; `firmware/src/libc.c` defines both) |
+| `bearssl_hash.h` | `inc/bearssl_hash.h` | `#include <string.h>` replaced by declarations of `memcpy` and `memset` (the firmware has no C library headers; `firmware/bsp/chip/libc.c` defines both), left out when `BR_LIBC_DECLARED` is defined: `oplbox.c` has libc.c's own (`unsigned` lengths) in view when it includes the WPA2 headers |
 | `inner.h` | `src/inner.h` | reduced to the declarations and inline helpers the files above use; the big-endian helpers keep only their portable branch |
 
 ## Why BearSSL and not wpa_supplicant's `src/crypto`

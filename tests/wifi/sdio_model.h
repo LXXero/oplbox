@@ -58,6 +58,23 @@
  *                                     (not when hidden) or for its SSID, open-system authentication and association
  *                                     (AID 1) answered as given, and kick / gone: a deauthentication, or no more
  *                                     beacons, that many ms after the association
+ *   ap ... sec=wpa2 psk=PASSPHRASE [eapol=normal|silent|badmic] [rekey=MS] [bcast=MS] [rsn=HEX]
+ *                                     WPA2-PSK (stage 8, docs/WIFI_STAGE8.md): after the association the AP runs the
+ *                                     4-way handshake (tests/wifi/wpa_ap.c, the PMK from PASSPHRASE and the SSID) as
+ *                                     EAPOL data frames, msg 1 at once, msg 1 or 3 again after 1 s, 4 tries, then a
+ *                                     deauthentication (reason 15); silent: no msg 1; badmic: msg 3 with a bad MIC.
+ *                                     rekey: a group key handshake (a new GTK, key ID 1 <-> 2) that many ms after it;
+ *                                     bcast: a protected broadcast frame (an ARP request) every MS. rsn: the RSN
+ *                                     element in its beacons, whole (default CCMP / CCMP / PSK).
+ *                                     The MAC's key tables are played as the hardware would use them: a protected
+ *                                     frame from the AP reaches the library decrypted (RXD bit 16, IV and MIC off,
+ *                                     the RXWI's WCID the AP's entry) only when MAC_WCID_ENTRY holds the AP's address
+ *                                     with its attribute pairwise AES and the TK in its PAIRWISE_KEY_ENTRY (a group
+ *                                     frame: the GTK in SHARED_KEY_ENTRY(key ID), AES in SHARED_KEY_MODE_ENTRY(0)'s
+ *                                     bits, WCID 0's attribute shared AES); else as it came over the air with a key
+ *                                     error (RXD bits 10-9 = 3). A protected frame the library sends is taken only
+ *                                     when JieLi's WIV is 0 and the TXWI's WCID holds the TK as above (with Ext IV in
+ *                                     its IV/EIV entry); after the 4-way handshake nothing is taken in the clear.
  *
  * Stages 4-6 (docs/WIFI_STAGE4.md): the WL30 host block's DMA moves frames between the model's RX FIFO or its
  * access points and the library's buffers (fm1wifi_port_bus hands out the addresses), 0x04's bits 17, 20 and 21
@@ -126,3 +143,6 @@ unsigned sdio_model_polls(const sdio_model *m);   /* the longest run of busy ans
 void sdio_model_on_wr(sdio_model *m, void (*fn)(void *ctx, uint32_t addr, uint32_t v), void *ctx);
 const wifi_fix *sdio_model_frames(const sdio_model *m);   /* frames sent (tx) and handed to the library (rx) */
 uint64_t sdio_model_now_us(const sdio_model *m);          /* the model's clock */
+/* access point i (in script order), WPA2: the 4-way handshake done and the station still joined, group key handshakes
+ * finished, station frames refused, the PTK it agreed (or NULL) */
+void sdio_model_ap_wpa(const sdio_model *m, int i, int *done, int *group_done, uint32_t *refused, uint8_t ptk[48]);

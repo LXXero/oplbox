@@ -73,7 +73,7 @@ const char *fm1wifi_step_name(uint32_t step)
         "RX IQ START", "RX GAIN", "RX PHASE", "RF_DONE", "PA CONFIG", "RF_GAIN", "VGA GAIN 0", "PHY_INIT_A 2",
         "AGC TABLE 2", "PHY_INIT_B 2", "CFR1", "RAPP", "RF RAM TABLE", "BSB_AUTO", "POWER 6 CH 6", "MCS GAINS",
         "SET CHANNEL", "SET POWER", "ADC PEAK", "RX PROBE", "CHANNEL SURVEY", "LINK UP", "SET BSSID", "TUNE",
-        "RX READ", "TX SEND", "COUNTERS",
+        "RX READ", "TX SEND", "COUNTERS", "KEY TABLES",
     };
     return step < FM1WIFI_STEP_N ? NAME[step] : "?";
 }
@@ -1371,6 +1371,105 @@ int fm1wifi_counters_add(fm1wifi_counters *c)
     if (r == FM1WIFI_OK) { r = cnt_rd(TX_STA_CNT0, &v); c->tx_fail += v & 0xFFFFu; }
     if (r == FM1WIFI_OK) { r = cnt_rd(TX_STA_CNT1, &v); c->tx_ok += v & 0xFFFFu; c->tx_retry += v >> 16; }
     if (r == FM1WIFI_OK) { r = cnt_rd(TX_STA_CNT2, &v); c->tx_underflow += v >> 16; }
+    if (r == FM1WIFI_OK) r = cnt_rd(TX_SEC_CNT0, &c->tx_sec);
+    if (r == FM1WIFI_OK) r = cnt_rd(RX_SEC_CNT0, &c->rx_sec);
+    END();
+    return r;
+}
+
+/* ---- the key tables (stage 8, fm1wifi.h; docs/WIFI_STAGE8.md "The key tables") */
+
+static int key_words(uint32_t at, const uint8_t *key, uint8_t *same)   /* a 32-byte entry: key, 16 bytes of MIC 0 */
+{
+    uint32_t k, v = 0;
+    int r = FM1WIFI_OK;
+    for (k = 0; k < 8u && r == FM1WIFI_OK; k++)
+        r = mac_w4(at + 4u * k, k < 4u && key ? addr_lo(key + 4u * k) : 0u);
+    if (same) *same = 0;
+    for (k = 0; k < 8u && r == FM1WIFI_OK && same; k++) {
+        r = mac_r4(at + 4u * k, &v);
+        if (r == FM1WIFI_OK && v == (k < 4u && key ? addr_lo(key + 4u * k) : 0u)) *same |= (uint8_t)(1u << k);
+        v = 0;
+    }
+    return r;
+}
+
+static void key_read(fm1wifi_keyread *rb, uint32_t wcid, int pairwise)
+{
+    int r = FM1WIFI_OK;
+    if (pairwise) {
+        r = mac_r4(MAC_WCID_ENTRY(wcid), &rb->wcid[0]);
+        if (r == FM1WIFI_OK) r = mac_r4(MAC_WCID_ENTRY(wcid) + 4u, &rb->wcid[1]);
+    } else r = mac_r4(SHARED_KEY_MODE_ENTRY(0), &rb->mode);
+    if (r == FM1WIFI_OK) r = mac_r4(MAC_WCID_ATTR_ENTRY(wcid), &rb->attr);
+    if (r == FM1WIFI_OK) r = mac_r4(MAC_IVEIV_ENTRY(wcid), &rb->iv[0]);
+    if (r == FM1WIFI_OK) r = mac_r4(MAC_IVEIV_ENTRY(wcid) + 4u, &rb->iv[1]);
+    if (rb->err == FM1WIFI_OK) rb->err = r;
+}
+
+/* IV/EIV and the attribute as JieLi's RTMPSetWcidSecurityInfo writes them for AES: the IV word PN 1 with Ext IV and the
+ * key ID in its top byte, the EIV 0; the attribute the table (1 pairwise, 0 shared), the cipher in bits 3-1, BSS 0 */
+static int key_wcid(uint32_t wcid, uint32_t key_id, int pairwise)
+{
+    int r = mac_w4(MAC_IVEIV_ENTRY(wcid), (FM1WIFI_IV3_EXT_IV | key_id << 6) << 24 | 1u);
+    if (r == FM1WIFI_OK) r = mac_w4(MAC_IVEIV_ENTRY(wcid) + 4u, 0);
+    if (r == FM1WIFI_OK) r = mac_w4(MAC_WCID_ATTR_ENTRY(wcid), (pairwise ? MAC_WCID_ATTRIBUTE_KEYTAB : 0u) | FM1WIFI_CIPHER_AES << 1);
+    return r;
+}
+
+int fm1wifi_key_pairwise(unsigned wcid, const uint8_t addr[6], const uint8_t tk[16], fm1wifi_keyread *rb)
+{
+    uint8_t same = 0;
+    int r;
+    if (rb) { uint8_t *z = (uint8_t *)rb; for (unsigned i = 0; i < sizeof *rb; i++) z[i] = 0; }
+    if (!link) return FM1WIFI_ESTATE;
+    if (wcid > 255u) return FM1WIFI_ERANGE;
+    BEGIN(FM1WIFI_STEP_KEYS);
+    r = mac_w4(MAC_WCID_ENTRY(wcid), addr_lo(addr));
+    if (r == FM1WIFI_OK) r = mac_w4(MAC_WCID_ENTRY(wcid) + 4u, addr_hi(addr) | 0xFFFF0000u);
+    if (r == FM1WIFI_OK) r = key_words(PAIRWISE_KEY_ENTRY(wcid), tk, rb ? &same : 0);
+    if (r == FM1WIFI_OK) r = key_wcid(wcid, 0, 1);
+    if (rb) { rb->err = r; rb->key_same = same; if (r == FM1WIFI_OK) key_read(rb, wcid, 1); }
+    END();
+    return r;
+}
+
+int fm1wifi_key_group(unsigned wcid, unsigned idx, const uint8_t gtk[16], fm1wifi_keyread *rb)
+{
+    uint32_t mode = 0;
+    uint8_t same = 0;
+    int r;
+    if (rb) { uint8_t *z = (uint8_t *)rb; for (unsigned i = 0; i < sizeof *rb; i++) z[i] = 0; }
+    if (!link) return FM1WIFI_ESTATE;
+    if (wcid > 255u || idx > 3u) return FM1WIFI_ERANGE;
+    BEGIN(FM1WIFI_STEP_KEYS);
+    r = key_words(SHARED_KEY_ENTRY(idx), gtk, rb ? &same : 0);             /* BSS 0: entry 4 * 0 + idx */
+    if (r == FM1WIFI_OK) r = mac_r4(SHARED_KEY_MODE_ENTRY(0), &mode);
+    if (r == FM1WIFI_OK) r = mac_w4(SHARED_KEY_MODE_ENTRY(0), (mode & ~(0xFu << 4u * idx)) | FM1WIFI_CIPHER_AES << 4u * idx);
+    if (r == FM1WIFI_OK) r = key_wcid(wcid, idx, 0);
+    if (rb) { rb->err = r; rb->key_same = same; if (r == FM1WIFI_OK) key_read(rb, wcid, 0); }
+    END();
+    return r;
+}
+
+int fm1wifi_key_clear(unsigned wcid_pair, unsigned wcid_group)
+{
+    unsigned i;
+    int r;
+    if (!link) return FM1WIFI_ESTATE;
+    if (wcid_pair > 255u || wcid_group > 255u) return FM1WIFI_ERANGE;
+    BEGIN(FM1WIFI_STEP_KEYS);
+    r = mac_w4(MAC_WCID_ENTRY(wcid_pair), 0xFFFFFFFFu);
+    if (r == FM1WIFI_OK) r = mac_w4(MAC_WCID_ENTRY(wcid_pair) + 4u, 0xFFFFFFFFu);
+    if (r == FM1WIFI_OK) r = key_words(PAIRWISE_KEY_ENTRY(wcid_pair), 0, 0);
+    for (i = 0; i < 4u && r == FM1WIFI_OK; i++) r = key_words(SHARED_KEY_ENTRY(i), 0, 0);
+    if (r == FM1WIFI_OK) r = mac_w4(SHARED_KEY_MODE_ENTRY(0), 0);
+    for (i = 0; i < 2u && r == FM1WIFI_OK; i++) {
+        uint32_t w = i ? wcid_group : wcid_pair;
+        r = mac_w4(MAC_IVEIV_ENTRY(w), 0);
+        if (r == FM1WIFI_OK) r = mac_w4(MAC_IVEIV_ENTRY(w) + 4u, 0);
+        if (r == FM1WIFI_OK) r = mac_w4(MAC_WCID_ATTR_ENTRY(w), 0);
+    }
     END();
     return r;
 }
@@ -1412,6 +1511,11 @@ static int take(fm1wifi_rx *f, unsigned ch, fm1wifi_frames *fr)
     }
     return 1;
 }
+
+int fm1wifi_poll(fm1wifi_rx *f, unsigned ch, fm1wifi_frames *fr) { return link ? take(f, ch, fr) : FM1WIFI_ESTATE; }
+int fm1wifi_send(const uint8_t *frame, uint32_t len, unsigned flags, fm1wifi_frames *fr) { return send(frame, len, flags, fr); }
+uint32_t fm1wifi_now_ms(void) { return now_ms(); }
+void fm1wifi_wait_us(uint32_t us) { tick(us); }
 
 #define FRAMES_PER_MS 50u         /* frames taken without advancing the clock, at most: a FIFO that never empties ends */
 

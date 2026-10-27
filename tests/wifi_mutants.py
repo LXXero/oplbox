@@ -62,8 +62,9 @@ def main():
         f.write_text(text.replace(old, new))
         exe = d / "wifi_model"
         subprocess.run(["cc", "-std=c11", "-O1", "-w", "-I" + str(d), "-I" + str(ROOT / "tests/wifi"),
-                        "-o", str(exe), str(ROOT / "tests/wifi_model.c"), str(ROOT / "tests/wifi/sdio_model.c"),
-                        str(d / "fm1wifi.c"), str(d / "fm1wifi_frame.c")], check=True)
+                        "-I" + str(LIB), "-o", str(exe), str(ROOT / "tests/wifi_model.c"), str(ROOT / "tests/wifi/sdio_model.c"),
+                        str(d / "fm1wifi.c"), str(d / "fm1wifi_frame.c"), str(ROOT / "tests/wifi/wpa_ap.c"),
+                        str(LIB / "wpa_crypto.c"), *map(str, sorted((LIB / "bearssl").glob("*.c")))], check=True)
         try:
             r = subprocess.run([str(exe), str(ROOT / "tests/wifi"), str(out)], capture_output=True, text=True, timeout=120)
             code, err = r.returncode, r.stderr

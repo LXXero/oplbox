@@ -124,6 +124,9 @@ without it the page says `FAIL NO OPLBOX` and the scans still show what they hea
 
 ## Reading pages 5-10
 
+(Since stage 8 the page has eleven pages and page 5 ten steps: 4-WAY and GROUP KEY after JOIN, `NOT NEEDED (OPEN)`
+for an open network; page 11 is WPA2's. docs/WIFI_STAGE8.md has those. Below is the page as stages 4-6 drew it.)
+
 Page 5, each step's result: `OK` with what it found, `FAIL` with the reason, or `NOT REACHED` when an earlier step
 failed.
 
@@ -178,7 +181,7 @@ and the reason code), the rejoin, the frames sent and received.
 
 ## Reading the results over USB
 
-The ten pages are also a report the FM-1 keeps in RAM until the next run, which `tools/fm1_wifi_report.py` reads over
+The pages (eleven since stage 8) are also a report the FM-1 keeps in RAM until the next run, which `tools/fm1_wifi_report.py` reads over
 USB-MIDI from the computer the FM-1 is plugged into (docs/API.md "WiFi test page over SysEx"):
 
 ```

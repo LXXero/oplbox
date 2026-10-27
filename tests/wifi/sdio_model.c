@@ -8,6 +8,7 @@
 #include "fm1wifi_port.h"
 #include "fm1wifi_regs.h"
 #include "sdio_model.h"
+#include "wpa_ap.h"
 
 static void *xrealloc(void *p, size_t n)
 {
@@ -343,6 +344,16 @@ typedef struct {
     uint64_t next_beacon, joined_at;
     uint16_t seq;
     uint8_t sta[6];
+    /* WPA2-PSK (psk=...): the authenticator, how it behaves, where it is (sdio_model.h "ap") */
+    uint8_t rsn[64], rsn_len;   /* its RSN element (the default CCMP / CCMP / PSK, or rsn=HEX) */
+    int psk, eapol, rekey_ms, bcast_ms;   /* eapol: 0 normal, 1 silent, 2 msg 3 with a bad MIC */
+    uint8_t pmk[32];
+    struct wpa_auth wa;
+    int tries, done, rekeyed;
+    uint64_t sent_at, done_at, next_bcast;
+    uint32_t refused;           /* station frames the AP dropped: bad MIC, wrong counter, not encrypted as it must be */
+    uint8_t bc_gtk[16], bc_idx; /* the GTK its group addressed frames go out under (the new one once group msg 2 came) */
+    int group_done;             /* group key handshakes finished (group msg 2 taken) */
 } model_ap;
 enum { POLL_TUNE, POLL_MEASURE, POLL_ANL, POLL_STUCK, N_POLL };
 
@@ -506,7 +517,7 @@ int sdio_model_script(sdio_model *m, const char *text, const char *name, FILE *e
             continue;
         }
         if (!strcmp(t, "ap")) {
-            if (m->nap >= AP_MAX || ap_line(m, p)) { rc = perr(err, name, line, "ap: ch=1-13 bssid=xx:..:xx ssid=NAME [sec=open|wep|wpa|wpa2] [rssi=-N] [hidden] [auth=accept|refuse|silent] [assoc=...] [kick=MS] [gone=MS], 8 at most"); break; }
+            if (m->nap >= AP_MAX || ap_line(m, p)) { rc = perr(err, name, line, "ap: ch=1-13 bssid=xx:..:xx ssid=NAME [sec=open|wep|wpa|wpa2] [rssi=-N] [hidden] [auth=accept|refuse|silent] [assoc=...] [kick=MS] [gone=MS] [psk=PASS (wpa2) eapol=normal|silent|badmic rekey=MS bcast=MS rsn=HEX], 8 at most"); break; }
             continue;
         }
         if (!strcmp(t, "rxbad")) { m->rx_bad = 1; continue; }   /* the first frame's length word reads 0 */
@@ -717,7 +728,7 @@ static int answer(const char *v)
 static int ap_line(sdio_model *m, char *p)
 {
     model_ap *a = &m->ap[m->nap];
-    char *t;
+    char *t, pass[64] = "";
     int have = 0;
     memset(a, 0, sizeof *a);
     a->rssi = -50;
@@ -737,10 +748,31 @@ static int ap_line(sdio_model *m, char *p)
         else if (!strcmp(t, "auth")) { if ((a->auth = answer(v)) < 0) return -1; }
         else if (!strcmp(t, "assoc")) { if ((a->assoc = answer(v)) < 0) return -1; }
         else if (!strcmp(t, "kick")) a->kick_ms = atoi(v);
+        else if (!strcmp(t, "psk")) { if (strlen(v) > 63) return -1; strcpy(pass, v); a->psk = 1; }
+        else if (!strcmp(t, "eapol")) { a->eapol = !strcmp(v, "silent") ? 1 : !strcmp(v, "badmic") ? 2 : !strcmp(v, "normal") ? 0 : -1; if (a->eapol < 0) return -1; }
+        else if (!strcmp(t, "rekey")) a->rekey_ms = atoi(v);
+        else if (!strcmp(t, "bcast")) a->bcast_ms = atoi(v);
+        else if (!strcmp(t, "rsn")) {
+            unsigned b, k = 0;
+            while (v[2 * k] && k < sizeof a->rsn && sscanf(v + 2 * k, "%2x", &b) == 1) a->rsn[k++] = (uint8_t)b;
+            if (k < 4 || a->rsn[0] != 48 || a->rsn[1] + 2u != k) return -1;
+            a->rsn_len = (uint8_t)k;
+        }
         else if (!strcmp(t, "gone")) a->gone_ms = atoi(v);
         else return -1;
     }
-    if (have != 7) return -1;
+    if (have != 7 || (a->psk && a->sec != 3)) return -1;
+    if (a->psk) {                                                /* the PMK from the passphrase and the SSID (J.4) */
+        struct wpa_pmk_job j;
+        if (wpa_pmk_begin(&j, pass, strlen(pass), (const uint8_t *)a->ssid, strlen(a->ssid))) return -1;
+        while (!wpa_pmk_step(&j, 4096)) {}
+        if (wpa_pmk_take(&j, a->pmk)) return -1;
+    }
+    if (a->sec == 3 && !a->rsn_len) {
+        static const uint8_t rsn[] = { 48, 20, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 2, 0, 0 };
+        memcpy(a->rsn, rsn, sizeof rsn);
+        a->rsn_len = sizeof rsn;
+    }
     a->next_beacon = (uint64_t)(m->nap + 1) * 7000u;            /* each its own phase */
     m->nap++;
     return 0;
@@ -763,9 +795,9 @@ static void frame_rec(sdio_model *m, int tx, unsigned ch, const uint8_t *f, unsi
 
 /* A frame on the air to the library: kept when the receiver is on (MAC_SYS_CTRL RX, a filter written: the link is
  * up) and the filter lets it through, then into the FIFO as length word (big-endian), RXWI, frame, pad, trailer. */
-static void deliver(sdio_model *m, const uint8_t *f, unsigned n, int8_t rssi)
+static void deliver_x(sdio_model *m, const uint8_t *f, unsigned n, int8_t rssi, uint32_t info, uint32_t wcid)
 {
-    uint32_t filt = m->core[RX_FILTER_CFG / 4u], N = 16u + ((n + 3u) & ~3u), info = 0;
+    uint32_t filt = m->core[RX_FILTER_CFG / 4u], N = 16u + ((n + 3u) & ~3u);
     const uint32_t *ad = &m->core[MAC_ADDR_DW0 / 4u];
     uint8_t me[6] = { (uint8_t)ad[0], (uint8_t)(ad[0] >> 8), (uint8_t)(ad[0] >> 16), (uint8_t)(ad[0] >> 24),
                       (uint8_t)ad[1], (uint8_t)(ad[1] >> 8) };
@@ -779,13 +811,15 @@ static void deliver(sdio_model *m, const uint8_t *f, unsigned n, int8_t rssi)
     memset(p, 0, N + 8u);
     put32be(p, m->rx_bad ? 0u : N);
     m->rx_bad = 0;
-    put32le(p + 4, (uint32_t)n << 16 | 0xFFu);                              /* RXWI: MPDU byte count, WCID */
+    put32le(p + 4, (uint32_t)n << 16 | (wcid & 0xFFu));                     /* RXWI: MPDU byte count, WCID */
     put32le(p + 12, (uint8_t)rssi);                                          /* RSSI0 */
     memcpy(p + 20, f, n);
     put32be(p + 4 + N, info);
     m->fifo_n += N + 8u;
     frame_rec(m, 0, channel_now(m), f, n);
 }
+
+static void deliver(sdio_model *m, const uint8_t *f, unsigned n, int8_t rssi) { deliver_x(m, f, n, rssi, 0, 0xFFu); }
 
 static unsigned mgmt_hdr(uint8_t *f, uint8_t kind, const uint8_t *da, const uint8_t *sa, const uint8_t *bssid, uint16_t *seq)
 {
@@ -799,7 +833,6 @@ static unsigned mgmt_hdr(uint8_t *f, uint8_t kind, const uint8_t *da, const uint
 static unsigned ap_body(const sdio_model *m, const model_ap *a, uint8_t *f, int show_ssid)
 {
     static const uint8_t rates[] = { 1, 8, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24 };
-    static const uint8_t rsn[] = { 48, 20, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 4, 1, 0, 0x00, 0x0F, 0xAC, 2, 0, 0 };
     static const uint8_t wpa[] = { 221, 22, 0x00, 0x50, 0xF2, 1, 1, 0, 0x00, 0x50, 0xF2, 2, 1, 0, 0x00, 0x50, 0xF2, 2, 1, 0, 0x00, 0x50, 0xF2, 2 };
     unsigned n = 0, k = show_ssid ? (unsigned)strlen(a->ssid) : 0;
     put32le(f, (uint32_t)m->now_us); put32le(f + 4, (uint32_t)(m->now_us >> 32));   /* timestamp */
@@ -809,7 +842,7 @@ static unsigned ap_body(const sdio_model *m, const model_ap *a, uint8_t *f, int 
     f[n++] = 0; f[n++] = (uint8_t)k; memcpy(f + n, a->ssid, k); n += k;
     memcpy(f + n, rates, sizeof rates); n += sizeof rates;
     f[n++] = 3; f[n++] = 1; f[n++] = a->ch;
-    if (a->sec == 3) { memcpy(f + n, rsn, sizeof rsn); n += sizeof rsn; }
+    if (a->sec == 3) { memcpy(f + n, a->rsn, a->rsn_len); n += a->rsn_len; }
     if (a->sec == 2) { memcpy(f + n, wpa, sizeof wpa); n += sizeof wpa; }
     return n;
 }
@@ -827,6 +860,130 @@ static void ap_mgmt(sdio_model *m, model_ap *a, uint8_t kind, const uint8_t *bod
     ap_send(m, a, f, n + nb);
 }
 
+/* ---- WPA2: the MAC's key tables as the hardware would use them, and the AP's side of the handshakes */
+
+static uint32_t core_at(const sdio_model *m, uint32_t a) { return m->core[a / 4u]; }
+
+static int key_is(const sdio_model *m, uint32_t at, const uint8_t *key)   /* a 32-byte entry: the key, 16 bytes of 0 */
+{
+    for (unsigned k = 0; k < 8u; k++)
+        if (core_at(m, at + 4u * k) != (k < 4u ? rd32le(key + 4u * k) : 0u)) return 0;
+    return 1;
+}
+
+static int wcid_of(const sdio_model *m, const uint8_t *a)   /* the WCID whose MAC_WCID_ENTRY holds address a, or -1 */
+{
+    for (int w = 0; w < 256; w++)
+        if (core_at(m, MAC_WCID_ENTRY(w)) == rd32le(a) && (core_at(m, MAC_WCID_ENTRY(w) + 4u) & 0xFFFFu) == (a[4] | (uint32_t)a[5] << 8u))
+            return w;
+    return -1;
+}
+
+/* Would the MAC decrypt a protected frame from a: unicast, the AP's WCID (looked up by its address) pairwise AES
+ * with the TK; group, the shared key with the frame's key ID AES in SHARED_KEY_MODE_ENTRY(0), WCID 0 shared AES */
+static int rx_key_ok(const sdio_model *m, const model_ap *a, int group, unsigned idx, const uint8_t *gtk, int *wcid)
+{
+    *wcid = wcid_of(m, a->bssid);
+    if (group)
+        return (core_at(m, SHARED_KEY_MODE_ENTRY(0)) >> 4u * idx & 0xFu) == FM1WIFI_CIPHER_AES &&
+               key_is(m, SHARED_KEY_ENTRY(idx), gtk) && (core_at(m, MAC_WCID_ATTR_ENTRY(0)) & 0xFu) == FM1WIFI_CIPHER_AES << 1;
+    return *wcid >= 0 && (core_at(m, MAC_WCID_ATTR_ENTRY(*wcid)) & 0xFu) == (MAC_WCID_ATTRIBUTE_KEYTAB | FM1WIFI_CIPHER_AES << 1) &&
+           key_is(m, PAIRWISE_KEY_ENTRY(*wcid), a->wa.ptk + 32);
+}
+
+/* Would the MAC encrypt a frame the library sent with JieLi's WIV and the TXWI's WCID under the TK a agreed */
+static int tx_key_ok(const sdio_model *m, const model_ap *a, unsigned wiv, unsigned w)
+{
+    return !wiv && w < 256u && (core_at(m, MAC_WCID_ATTR_ENTRY(w)) & 0xFu) == (MAC_WCID_ATTRIBUTE_KEYTAB | FM1WIFI_CIPHER_AES << 1) &&
+           (core_at(m, MAC_IVEIV_ENTRY(w)) >> 24 & FM1WIFI_IV3_EXT_IV) && key_is(m, PAIRWISE_KEY_ENTRY(w), a->wa.ptk + 32);
+}
+
+/* A data frame from a to da (From DS), RFC 1042 LLC/SNAP with ethertype type, then p. Protected, it arrives as the MAC
+ * hands it over: decrypted (RXD DECRYPTED, IV and MIC taken off) when the key tables hold the key, else as it came
+ * over the air (the CCMP header, the body encrypted, the MIC) with a key error */
+static void ap_data(sdio_model *m, model_ap *a, const uint8_t *da, uint32_t type, const uint8_t *p, unsigned n, int protect,
+                    unsigned idx, const uint8_t *gtk)
+{
+    static const uint8_t snap[6] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00 };
+    uint8_t f[640];
+    unsigned h = mgmt_hdr(f, 0x08, da, a->bssid, a->bssid, &a->seq);
+    int w = -1;
+    f[1] = (uint8_t)(0x02u | (protect ? 0x40u : 0u));                      /* From DS, Protected */
+    if (channel_now(m) != a->ch) return;
+    if (protect && !rx_key_ok(m, a, da[0] & 1u, idx, gtk, &w)) {
+        uint8_t ccmp[8] = { 1, 0, 0, (uint8_t)(0x20u | idx << 6), 0, 0, 0, 0 };
+        memcpy(f + h, ccmp, 8);
+        for (unsigned i = 0; i < 8u + n; i++) f[h + 8 + i] = (uint8_t)((i < 6 ? snap[i] : i == 6 ? type >> 8 : i == 7 ? type : p[i - 8]) ^ 0xA5u);
+        memset(f + h + 16 + n, 0x3C, 8);                                    /* MIC */
+        deliver_x(m, f, h + 24 + n, a->rssi, 3u << 9, w < 0 ? 0xFFu : (uint32_t)w);   /* cipher error 3: key */
+        return;
+    }
+    memcpy(f + h, snap, 6);
+    f[h + 6] = (uint8_t)(type >> 8); f[h + 7] = (uint8_t)type;
+    memcpy(f + h + 8, p, n);
+    if (!protect) deliver(m, f, h + 8 + n, a->rssi);
+    else deliver_x(m, f, h + 8 + n, a->rssi, 1u << 16, w < 0 ? 0xFFu : (uint32_t)w);
+}
+
+static void ap_eapol(sdio_model *m, model_ap *a, const uint8_t *pdu, size_t n, int protect)
+{
+    ap_data(m, a, a->sta, 0x888Eu, pdu, (unsigned)n, protect, 0, 0);
+    a->sent_at = m->now_us;
+}
+
+static void ap_send_msg(sdio_model *m, model_ap *a, int which)   /* 1 msg 1, 3 msg 3 (a bad MIC when told so) */
+{
+    uint8_t f[256];
+    size_t n = which == 1 ? wpa_auth_msg1(&a->wa, f) : wpa_auth_msg3(&a->wa, f);
+    if (which == 3 && a->eapol == 2) f[F_MIC] ^= 0x01;
+    ap_eapol(m, a, f, n, 0);
+}
+
+/* the association taken: the 4-way handshake starts with the RSNE the station sent */
+static void ap_wpa_start(sdio_model *m, model_ap *a, const uint8_t *f, unsigned n)
+{
+    const uint8_t *e = f + 28, *rsne = 0;
+    uint8_t gtk[16];
+    for (; e + 2 <= f + n && e + 2 + e[1] <= f + n; e += 2 + e[1])
+        if (e[0] == 48) { rsne = e; break; }
+    for (int i = 0; i < 16; i++) gtk[i] = (uint8_t)(0x60 + i);
+    wpa_auth_init(&a->wa, a->pmk, a->bssid, a->sta, a->rsn, a->rsn_len, rsne ? rsne : f, rsne ? 2u + rsne[1] : 0u, gtk, 1,
+                  (uint8_t)(m->now_us >> 10));
+    a->done = a->rekeyed = 0;
+    a->tries = 1;
+    if (a->eapol != 1) ap_send_msg(m, a, 1);
+}
+
+/* A data frame the library sent to a (To DS): EAPOL to the authenticator. Protected, the MAC must have encrypted it
+ * with the TK (WIV 0, the TXWI's WCID the AP's entry); after the 4-way handshake nothing is taken in the clear. */
+static void ap_hear_data(sdio_model *m, model_ap *a, const uint8_t *f, unsigned n, unsigned wiv, unsigned wcid)
+{
+    unsigned prot = f[1] & 0x40u, h = (f[0] & 0x80u) ? 26u : 24u;
+    int r;
+    if (!a->psk || !a->joined || (f[1] & 3u) != 1u || memcmp(f + 10, a->sta, 6)) return;
+    if (prot ? !tx_key_ok(m, a, wiv, wcid) : a->done) { a->refused++; return; }
+    if (n < h + 8u || f[h] != 0xAA || f[h + 6] != 0x88 || f[h + 7] != 0x8E) return;
+    r = wpa_auth_take(&a->wa, f + h + 8, n - h - 8);
+    if (r == 2) { a->tries = 1; ap_send_msg(m, a, 3); }
+    else if (r == 4) {
+        a->done = 1;
+        a->done_at = m->now_us;
+        a->next_bcast = m->now_us + (uint64_t)a->bcast_ms * 1000u;
+        memcpy(a->bc_gtk, a->wa.gtk, 16);
+        a->bc_idx = a->wa.gtk_idx;
+    } else if (r == 6) { memcpy(a->bc_gtk, a->wa.gtk, 16); a->bc_idx = a->wa.gtk_idx; a->group_done++; }
+    else a->refused++;
+}
+
+void sdio_model_ap_wpa(const sdio_model *m, int i, int *done, int *group_done, uint32_t *refused, uint8_t ptk[48])
+{
+    const model_ap *a = &m->ap[i];
+    *done = a->joined && a->done;
+    *group_done = a->group_done;
+    *refused = a->refused;
+    if (ptk) memcpy(ptk, a->wa.ptk, 48);
+}
+
 /* Beacons, a planned deauthentication: whatever is due by the model's clock. */
 static void air(sdio_model *m)
 {
@@ -838,6 +995,24 @@ static void air(sdio_model *m)
             uint8_t b[2] = { 2, 0 };                                         /* reason 2: no longer valid */
             ap_mgmt(m, a, 0xC0, b, 2);
             a->joined = a->authed = 0;
+        }
+        if (a->psk && a->joined && !a->done && a->eapol != 1 && m->now_us - a->sent_at >= 1000000u) {
+            if (a->tries < 4) { a->tries++; ap_send_msg(m, a, a->wa.stage == WPA_AUTH_MSG3 ? 3 : 1); }
+            else { uint8_t b[2] = { 15, 0 }; ap_mgmt(m, a, 0xC0, b, 2); a->joined = a->authed = 0; }   /* 15: 4-way timeout */
+        }
+        if (a->psk && a->joined && a->done && a->rekey_ms && !a->rekeyed && m->now_us >= a->done_at + (uint64_t)a->rekey_ms * 1000u) {
+            uint8_t g[256];
+            size_t gn;
+            for (int k = 0; k < 16; k++) a->wa.gtk[k] = (uint8_t)(a->wa.gtk[k] + 0x11);
+            a->wa.gtk_idx = a->wa.gtk_idx == 1 ? 2 : 1;
+            gn = wpa_auth_group1(&a->wa, g);
+            a->rekeyed = 1;
+            ap_eapol(m, a, g, gn, 1);
+        }
+        if (a->psk && a->joined && a->done && a->bcast_ms && m->now_us >= a->next_bcast) {
+            static const uint8_t arp[28] = { 0, 1, 8, 0, 6, 4, 0, 1, 2, 0, 0, 0, 0, 1, 192, 168, 1, 1, 0, 0, 0, 0, 0, 0, 192, 168, 1, 77 };
+            ap_data(m, a, bcast, 0x0806u, arp, sizeof arp, 1, a->bc_idx, a->bc_gtk);
+            a->next_bcast += (uint64_t)a->bcast_ms * 1000u;
         }
         while (a->next_beacon <= m->now_us) {
             if (!gone) {
@@ -852,7 +1027,7 @@ static void air(sdio_model *m)
 }
 
 /* A frame the library sent, on the current channel: the access points there answer as IEEE 802.11 says. */
-static void ap_hear(sdio_model *m, const uint8_t *f, unsigned n)
+static void ap_hear(sdio_model *m, const uint8_t *f, unsigned n, unsigned wiv, unsigned wcid)
 {
     unsigned ch = channel_now(m);
     uint8_t kind = f[0] & 0xFC;
@@ -871,6 +1046,7 @@ static void ap_hear(sdio_model *m, const uint8_t *f, unsigned n)
             continue;
         }
         if (memcmp(f + 4, a->bssid, 6)) continue;
+        if ((kind & 0x0C) == 0x08) { ap_hear_data(m, a, f, n, wiv, wcid); continue; }   /* data */
         memcpy(a->sta, f + 10, 6);
         if (kind == 0xB0 && a->auth != 2) {                                  /* authentication */
             uint8_t b[6] = { 0, 0, 2, 0, (uint8_t)(a->auth ? 1 : 0), 0 };
@@ -880,7 +1056,7 @@ static void ap_hear(sdio_model *m, const uint8_t *f, unsigned n)
             if (!a->authed) { uint8_t b[2] = { 6, 0 }; ap_mgmt(m, a, 0xC0, b, 2); continue; }
             uint8_t b[16] = { 0x01, 0x04, (uint8_t)(a->assoc ? 17 : 0), 0, 1, 0xC0, 1, 8, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24 };
             ap_mgmt(m, a, 0x10, b, 16);
-            if (!a->assoc) { a->joined = 1; a->joined_at = m->now_us; }
+            if (!a->assoc) { a->joined = 1; a->joined_at = m->now_us; if (a->psk) ap_wpa_start(m, a, f, n); }
         } else if (kind == 0xC0) {                                           /* the station leaves */
             a->joined = a->authed = 0;
         }
@@ -918,7 +1094,7 @@ static void tx_dma(sdio_model *m, uint32_t len)
     frame_rec(m, 1, channel_now(m), s + 20, n);
     m->tx_done = 1;
     m->tx_ok++;
-    ap_hear(m, s + 20, n);
+    ap_hear(m, s + 20, n, s[0] & 1u, (rd32le(s + 8) >> 8) & 0xFFu);   /* JieLi's WIV, the TXWI's WCID */
 }
 
 /* ---- the port */

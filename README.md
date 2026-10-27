@@ -70,7 +70,7 @@ RAM CHECK: n CHANGED          bytes of free RAM the hardware wrote (0 is the goo
 FIRST AT xxxxxxxx             the first changed byte's address (only when n is not 0)
 ```
 
-Press **PLAY** again for page 2, and so on to page 10, then back to page 1. Page 2:
+Press **PLAY** again for page 2, and so on to page 11, then back to page 1. Page 2:
 
 ```
 TRIM  CH  6  PWR 6            the channel and TX power the radio was left on
@@ -119,14 +119,17 @@ point on them or next to them count more (JieLi's channel select picks the lowes
 `CCA` is not: the busy-time accounting is off on this chip. Both 0 everywhere with access points near: these counters
 do not count either, and a level waits for received frames (stage 4).
 
-Pages 5-10 are stages 4-6 (how to read them, and what a failure would mean: docs/WIFI_STAGE4.md "Reading pages
-5-10"): page 5 each step's result (`RADIO`, `SURVEY`, `LINK`, `PASSIVE`, `ACTIVE`, `JOIN`, `STAY 2S`, `REJOIN`: OK
-with what it found, FAIL with the reason, or NOT REACHED), page 6 the networks heard (SSID, channel, RSSI, security,
-`P` when it answered a probe), pages 7 and 8 the first four received frames' bytes in hex, page 9 the core's FIFO and
-counter registers and the FM-1's WiFi address, page 10 the join in detail.
+Pages 5-11 are stages 4-8 (how to read them, and what a failure would mean: docs/WIFI_STAGE4.md "Reading pages
+5-10" and docs/WIFI_STAGE8.md): page 5 each step's result (`RADIO`, `SURVEY`, `LINK`, `PASSIVE`, `ACTIVE`, `JOIN`,
+`4-WAY`, `GROUP KEY`, `STAY 2S`, `REJOIN`: OK with what it found, FAIL with the reason, or NOT REACHED), page 6 the
+networks heard (SSID, channel, RSSI, security, `P` when it answered a probe), pages 7 and 8 the first four received
+frames' bytes in hex, page 9 the core's FIFO and counter registers and the FM-1's WiFi address, page 10 the join in
+detail, page 11 the WPA2 handshake and key tables. The run joins the WPA2 network set from a computer
+(`python3 tools/fm1_wifi_report.py --ssid NAME --psk-from-nm CONNECTION --run`; the FM-1 keeps it in RAM only), or
+without one the open network OPLBOX.
 
-Read back everything on all ten pages: from a computer the FM-1 is plugged into, `python3 tools/fm1_wifi_report.py`
-prints the last run's report (all ten pages as text, every network, the counters) and `--run` starts a run first, with
+Read back everything on all eleven pages: from a computer the FM-1 is plugged into, `python3 tools/fm1_wifi_report.py`
+prints the last run's report (all eleven pages as text, every network, the counters) and `--run` starts a run first, with
 no button pressed (refused in EDIT; `--out DIR` also writes each received frame's bytes; docs/WIFI_STAGE4.md "Reading
 the results over USB"). Without a computer, a photo of each page is enough. What would look wrong: `RESULT` other than OK (the word after `AT` says which
 step stopped: PHY, PLL, TRIM, RF, TABLE), `BBP 0` still `00`, a PLL bank of 0 or 127, a middle bank of 15 (the scan

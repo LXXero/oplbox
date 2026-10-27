@@ -239,6 +239,18 @@
 #define MAC_WCID_ATTRIBUTE_KEYTAB 0x00000001u
 #define MAC_WCID_ATTRIBUTE_CIPHER 0x0000000eu
 #define MAC_WCID_ATTRIBUTE_BSS_IDX 0x00000070u
+#define MAC_WCID_ATTRIBUTE_RX_WIUDF 0x00000380u
+#define MAC_WCID_ATTRIBUTE_CIPHER_EXT 0x00000400u
+#define MAC_WCID_ATTRIBUTE_BSS_IDX_EXT 0x00000800u
+/* The peer address per WCID (rt2800.h MAC_WCID_BASE, struct mac_wcid_entry: the address, 2 reserved bytes; 8 x 256).
+ * The MAC looks a received frame's transmitter up here: its RXWI's WCID, and the key the frame decrypts with. */
+#define MAC_WCID_BASE 0x1800u
+#define MAC_WCID_ENTRY(i) (MAC_WCID_BASE + 8u * (i))
+/* The cipher numbers in MAC_WCID_ATTRIBUTE's CIPHER and SHARED_KEY_MODE's 3-bit fields (rt2x00reg.h enum cipher) */
+#define FM1WIFI_CIPHER_NONE 0u
+#define FM1WIFI_CIPHER_AES 4u
+/* MAC_IVEIV byte 3 (rt2800lib.c rt2800_config_wcid_attr_cipher): Ext IV (TKIP and CCMP), the key ID in bits 7-6 */
+#define FM1WIFI_IV3_EXT_IV 0x20u
 
 /* JieLi's own WiFi-core addresses (docs/WIFI.md); no rt2800.h name, so named by address [no standard term].
  * 0x0434 is read with TXRXQ_PCNT in get_txrxq_pcnt; 0x0308, 0x030C, 0x0324, 0x0328 are written in

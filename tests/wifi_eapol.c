@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "wpa_eapol.h"
+#include "wpa_ap.h"
 
 static int fails, checks;
 
@@ -49,202 +50,21 @@ static int same_hex(const uint8_t *got, size_t len, const char *want)
     return unhex(want, w) == len && memcmp(got, w, len) == 0;
 }
 
-/* ---- AES-128 encryption (FIPS-197) and RFC 3394 2.2.1 key wrap, for the AP side only */
-
-static uint8_t sbox[256];
-
-static uint8_t xt(uint8_t a)
-{
-    return (uint8_t)(a << 1 ^ (a & 0x80 ? 0x1b : 0));
-}
-
-static uint8_t gmul(uint8_t a, uint8_t b)
-{
-    uint8_t r = 0;
-    for (; b; b >>= 1, a = xt(a))
-        if (b & 1)
-            r ^= a;
-    return r;
-}
-
-static void sbox_init(void)                     /* FIPS-197 5.1.1: the inverse in GF(2^8), then the affine map */
-{
-    for (int i = 0; i < 256; i++) {
-        uint8_t inv = 0, s, x;
-        for (int j = 1; i && j < 256; j++)
-            if (gmul((uint8_t)i, (uint8_t)j) == 1) {
-                inv = (uint8_t)j;
-                break;
-            }
-        s = x = inv;
-        for (int k = 0; k < 4; k++) {
-            x = (uint8_t)(x << 1 | x >> 7);
-            s ^= x;
-        }
-        sbox[i] = s ^ 0x63;
-    }
-}
-
-static void aes128(const uint8_t key[16], const uint8_t in[16], uint8_t out[16])
-{
-    uint8_t rk[176], s[16], t[16], rcon = 1;
-    memcpy(rk, key, 16);
-    for (int i = 16; i < 176; i += 4) {
-        uint8_t w[4];
-        memcpy(w, rk + i - 4, 4);
-        if (i % 16 == 0) {
-            uint8_t u = w[0];
-            w[0] = sbox[w[1]] ^ rcon;
-            w[1] = sbox[w[2]];
-            w[2] = sbox[w[3]];
-            w[3] = sbox[u];
-            rcon = xt(rcon);
-        }
-        for (int k = 0; k < 4; k++)
-            rk[i + k] = rk[i - 16 + k] ^ w[k];
-    }
-    for (int i = 0; i < 16; i++)
-        s[i] = in[i] ^ rk[i];
-    for (int r = 1; r <= 10; r++) {
-        for (int i = 0; i < 16; i++)            /* SubBytes and ShiftRows: row i%4 moves left by i%4 columns */
-            t[i] = sbox[s[((i / 4 + i % 4) % 4) * 4 + i % 4]];
-        if (r < 10)
-            for (int c = 0; c < 4; c++) {       /* MixColumns */
-                uint8_t *p = t + 4 * c, a0 = p[0], a1 = p[1], a2 = p[2], a3 = p[3], all = a0 ^ a1 ^ a2 ^ a3;
-                p[0] ^= all ^ xt(a0 ^ a1);
-                p[1] ^= all ^ xt(a1 ^ a2);
-                p[2] ^= all ^ xt(a2 ^ a3);
-                p[3] ^= all ^ xt(a3 ^ a0);
-            }
-        for (int i = 0; i < 16; i++)
-            s[i] = t[i] ^ rk[16 * r + i];
-    }
-    memcpy(out, s, 16);
-}
-
-/* n 64-bit blocks of plain to n + 1 of cipher */
-static void wrap(const uint8_t kek[16], size_t n, const uint8_t *plain, uint8_t *cipher)
-{
-    uint8_t b[16];
-    memset(b, 0xA6, 8);
-    memcpy(cipher + 8, plain, n * 8);
-    for (unsigned j = 0; j <= 5; j++)
-        for (size_t i = 1; i <= n; i++) {
-            uint32_t t = (uint32_t)(n * j + i);
-            memcpy(b + 8, cipher + i * 8, 8);
-            aes128(kek, b, b);
-            b[4] ^= (uint8_t)(t >> 24);
-            b[5] ^= (uint8_t)(t >> 16);
-            b[6] ^= (uint8_t)(t >> 8);
-            b[7] ^= (uint8_t)t;
-            memcpy(cipher + i * 8, b + 8, 8);
-        }
-    memcpy(cipher, b, 8);
-}
-
 static void test_aes(void)
 {
     uint8_t k[16], p[32], c[40], q[32];
-    sbox_init();
-    check(sbox[0] == 0x63 && sbox[0x53] == 0xED && sbox[0xFF] == 0x16, "AES S-box (FIPS-197 figure 7)");
+    wpa_ap_aes_init();
+    check(wpa_ap_sbox[0] == 0x63 && wpa_ap_sbox[0x53] == 0xED && wpa_ap_sbox[0xFF] == 0x16, "AES S-box (FIPS-197 figure 7)");
     unhex("000102030405060708090a0b0c0d0e0f", k);
     unhex("00112233445566778899aabbccddeeff", p);
-    aes128(k, p, c);
+    wpa_ap_aes128(k, p, c);
     check(same_hex(c, 16, "69c4e0d86a7b0430d8cdb78070b4c55a"), "AES-128 FIPS-197 C.1");
-    wrap(k, 2, p, c);                           /* KEK 000102..0F, key 00112233..FF */
+    wpa_ap_wrap(k, 2, p, c);                           /* KEK 000102..0F, key 00112233..FF */
     check(same_hex(c, 24, "1fa68b0a8112b447aef34bd8fb5a7b829d3e862371d2cfe5"), "key wrap RFC 3394 4.1");
     for (int i = 0; i < 32; i++)
         p[i] = (uint8_t)(i * 7 + 1);
-    wrap(k, 4, p, c);
+    wpa_ap_wrap(k, 4, p, c);
     check(wpa_aes_unwrap(k, 16, 4, c, q) == 0 && memcmp(p, q, 32) == 0, "key wrap of 4 blocks unwraps");
-}
-
-/* ---- frames */
-
-#define F_INFO 5
-#define F_KEYLEN 7
-#define F_REPLAY 9
-#define F_NONCE 17
-#define F_RSC 65
-#define F_MIC 81
-#define F_KDLEN 97
-#define F_KD 99
-
-static void put16(uint8_t *p, unsigned v)
-{
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
-/* the MIC as 12.7.2 has it, done on a copy with the field zeroed (not the library's incremental form) */
-static void test_mic(const uint8_t *kck, const uint8_t *f, size_t len, uint8_t out[16])
-{
-    uint8_t c[512], h[20];
-    memcpy(c, f, len);
-    memset(c + F_MIC, 0, 16);
-    wpa_hmac_sha1(kck, 16, c, len, h);
-    memcpy(out, h, 16);
-}
-
-static int test_mic_ok(const uint8_t *kck, const uint8_t *f, size_t len)
-{
-    uint8_t m[16];
-    test_mic(kck, f, len, m);
-    return memcmp(m, f + F_MIC, 16) == 0;
-}
-
-/* An AP's EAPOL-Key frame. kd/kdl are the key data as sent (already wrapped); kck NULL leaves the MIC zero. */
-static size_t ap_frame(uint8_t *f, unsigned info, unsigned keylen, uint64_t rc, const uint8_t *nonce,
-                       const uint8_t *rsc, const uint8_t *kd, size_t kdl, const uint8_t *kck)
-{
-    size_t len = 99 + kdl;
-    memset(f, 0, len);
-    f[0] = 2;
-    f[1] = 3;
-    put16(f + 2, (unsigned)(95 + kdl));
-    f[4] = 2;
-    put16(f + F_INFO, info);
-    put16(f + F_KEYLEN, keylen);
-    for (int i = 0; i < 8; i++)
-        f[F_REPLAY + i] = (uint8_t)(rc >> (56 - 8 * i));
-    if (nonce)
-        memcpy(f + F_NONCE, nonce, 32);
-    if (rsc)
-        memcpy(f + F_RSC, rsc, 8);
-    put16(f + F_KDLEN, (unsigned)kdl);
-    memcpy(f + F_KD, kd, kdl);
-    if (kck)
-        test_mic(kck, f, len, f + F_MIC);
-    return len;
-}
-
-/* key data padded as 12.7.2 has it (0xDD then zeros, to a multiple of 8 and at least 16) and wrapped */
-static size_t ap_key_data(const uint8_t *plain, size_t n, const uint8_t *kek, uint8_t *out)
-{
-    uint8_t p[256];
-    size_t m = n < 16 ? 16 : (n + 7) / 8 * 8;
-    memcpy(p, plain, n);
-    if (m > n) {
-        p[n] = 0xDD;
-        memset(p + n + 1, 0, m - n - 1);
-    }
-    wrap(kek, m / 8, p, out);
-    return m + 8;
-}
-
-/* GTK KDE: DD, length, 00-0F-AC, 1, key ID / Tx, reserved, GTK */
-static size_t gtk_kde(uint8_t *p, const uint8_t *gtk, size_t len, uint8_t key_id)
-{
-    p[0] = 0xDD;
-    p[1] = (uint8_t)(6 + len);
-    p[2] = 0x00;
-    p[3] = 0x0F;
-    p[4] = 0xAC;
-    p[5] = 1;
-    p[6] = key_id;
-    p[7] = 0;
-    memcpy(p + 8, gtk, len);
-    return 8 + len;
 }
 
 /* the nonce source: hands out its nonce, then the nonce plus 1 in its last byte, ...; or fails */
@@ -263,17 +83,6 @@ static int nonce_cb(void *arg, uint8_t out[32])
     return 0;
 }
 
-#define KI_V2 0x0002u
-#define KI_P 0x0008u
-#define KI_INSTALL 0x0040u
-#define KI_ACK 0x0080u
-#define KI_MIC 0x0100u
-#define KI_SECURE 0x0200u
-#define KI_REQUEST 0x0800u
-#define KI_ENC 0x1000u
-#define MSG1_INFO (KI_V2 | KI_P | KI_ACK)
-#define MSG3_INFO (KI_V2 | KI_P | KI_INSTALL | KI_ACK | KI_MIC | KI_SECURE | KI_ENC)
-#define GROUP1_INFO (KI_V2 | KI_ACK | KI_MIC | KI_SECURE | KI_ENC)
 
 /* ---- 1. the recorded handshake */
 
@@ -326,18 +135,18 @@ static void test_capture(void)
     check(same_hex(s.tptk, 48, ptk), "capture: PTK");
     wlen = unhex(ind_msg2, want);
     check(rlen == wlen && r[F_KEYLEN] == 0 && r[F_KEYLEN + 1] == 0, "capture: msg 2 length and key length 0");
-    check(test_mic_ok(kck, r, rlen), "capture: msg 2 MIC verifies");
+    check(wpa_ap_mic_ok(kck, r, rlen), "capture: msg 2 MIC verifies");
     r[F_KEYLEN + 1] = 16;                       /* the recorded station's key length, and the MIC over it */
-    test_mic(kck, r, rlen, r + F_MIC);
+    wpa_ap_mic(kck, r, rlen, r + F_MIC);
     check(rlen == wlen && memcmp(r, want, wlen) == 0, "capture: msg 2 is the recorded one (key length 16 put back)");
 
     len = unhex(ind_msg3, m);
     check(wpa_eapol_rx(&s, m, len, r, sizeof r, &rlen) == WPA_EAPOL_OK && s.state == WPA_EAPOL_DONE &&
           s.new_keys == (WPA_EAPOL_NEW_PTK | WPA_EAPOL_NEW_GTK), "capture: msg 3 taken, PTK and GTK new");
     wlen = unhex(ind_msg4, want);
-    check(test_mic_ok(kck, r, rlen), "capture: msg 4 MIC verifies");
+    check(wpa_ap_mic_ok(kck, r, rlen), "capture: msg 4 MIC verifies");
     r[F_KEYLEN + 1] = 16;
-    test_mic(kck, r, rlen, r + F_MIC);
+    wpa_ap_mic(kck, r, rlen, r + F_MIC);
     check(rlen == wlen && memcmp(r, want, wlen) == 0, "capture: msg 4 is the recorded one (key length 16 put back)");
     check(same_hex(s.tk, 16, "15798d511beae0028313c8ab32f12c7e"), "capture: TK");
     check(s.gtk_len == 32 && s.gtk_idx == 2 && s.gtk_tx == 0 &&
@@ -383,7 +192,7 @@ static void sta_init(struct wpa_eapol *s, const struct ap *a, struct nonces *nc)
 static size_t ap_msg1(struct ap *a, uint8_t *f)
 {
     static const uint8_t z[1];
-    return ap_frame(f, MSG1_INFO, 16, a->rc, a->anonce, 0, z, 0, 0);
+    return wpa_ap_frame(f, MSG1_INFO, 16, a->rc, a->anonce, 0, z, 0, 0);
 }
 
 /* msg 3 with the AP's RSNE (rsne, n) and a GTK KDE (key ID gid); the PTK from the station's msg 2 */
@@ -392,18 +201,18 @@ static size_t ap_msg3(struct ap *a, uint8_t *f, const uint8_t *rsne, size_t n, u
     static const uint8_t rsc[8] = {5, 0, 0, 0, 0, 0, 0, 0};
     uint8_t p[128], kd[136];
     memcpy(p, rsne, n);
-    n += gtk_kde(p + n, a->gtk, 16, gid);
-    size_t kdl = ap_key_data(p, n, a->ptk + 16, kd);
-    return ap_frame(f, MSG3_INFO, 16, a->rc, a->anonce, rsc, kd, kdl, a->ptk);
+    n += wpa_ap_gtk_kde(p + n, a->gtk, 16, gid);
+    size_t kdl = wpa_ap_key_data(p, n, a->ptk + 16, kd);
+    return wpa_ap_frame(f, MSG3_INFO, 16, a->rc, a->anonce, rsc, kd, kdl, a->ptk);
 }
 
 static size_t ap_group1(struct ap *a, uint8_t *f, uint8_t gid)
 {
     static const uint8_t rsc[8] = {0x34, 0x12, 0, 0, 0, 0, 0, 0};
     uint8_t p[64], kd[72];
-    size_t n = gtk_kde(p, a->gtk, 16, gid);
-    size_t kdl = ap_key_data(p, n, a->ptk + 16, kd);
-    return ap_frame(f, GROUP1_INFO, 0, a->rc, 0, rsc, kd, kdl, a->ptk);
+    size_t n = wpa_ap_gtk_kde(p, a->gtk, 16, gid);
+    size_t kdl = wpa_ap_key_data(p, n, a->ptk + 16, kd);
+    return wpa_ap_frame(f, GROUP1_INFO, 0, a->rc, 0, rsc, kd, kdl, a->ptk);
 }
 
 /* runs msg 1 and msg 2: the AP takes the PTK from the SNonce in msg 2 */
@@ -414,7 +223,7 @@ static int run_msg12(struct ap *a, struct wpa_eapol *s)
     if (wpa_eapol_rx(s, f, len, r, sizeof r, &rlen) != WPA_EAPOL_OK || rlen != 99 + a->rsne_len)
         return 0;
     wpa_ptk(a->pmk, a->aa, a->spa, a->anonce, r + F_NONCE, a->ptk);
-    return test_mic_ok(a->ptk, r, rlen);
+    return wpa_ap_mic_ok(a->ptk, r, rlen);
 }
 
 static void test_made_up(void)
@@ -437,7 +246,7 @@ static void test_made_up(void)
           r[F_REPLAY + 7] == 1 && r[F_NONCE] == 0x10 && r[F_KDLEN + 1] == a.rsne_len &&
           memcmp(r + F_KD, a.rsne, a.rsne_len) == 0, "made-up: msg 2 fields (key info, counter, SNonce, RSNE)");
     wpa_ptk(a.pmk, a.aa, a.spa, a.anonce, r + F_NONCE, a.ptk);
-    check(test_mic_ok(a.ptk, r, rlen), "made-up: msg 2 MIC verifies at the AP");
+    check(wpa_ap_mic_ok(a.ptk, r, rlen), "made-up: msg 2 MIC verifies at the AP");
     check(same_hex(a.ptk, 48, "b881c51e62b05850c697361ee6cd6ceaadcb13753f96b7a88b328e239e7df7c7"
                               "d83db6939b4ac59141f08fc5e04144bb"), "made-up: PTK as Python's hashlib has it");
     memcpy(saved_reply, r, rlen);
@@ -452,7 +261,7 @@ static void test_made_up(void)
           s.new_keys == (WPA_EAPOL_NEW_PTK | WPA_EAPOL_NEW_GTK), "made-up: msg 3 taken");
     info = (unsigned)r[F_INFO] << 8 | r[F_INFO + 1];
     check(rlen == 99 && info == (KI_V2 | KI_P | KI_MIC | KI_SECURE) && r[F_REPLAY + 7] == 2 &&
-          r[F_KEYLEN + 1] == 0 && r[F_KDLEN + 1] == 0 && test_mic_ok(a.ptk, r, rlen), "made-up: msg 4");
+          r[F_KEYLEN + 1] == 0 && r[F_KDLEN + 1] == 0 && wpa_ap_mic_ok(a.ptk, r, rlen), "made-up: msg 4");
     check(memcmp(s.tk, a.ptk + 32, 16) == 0, "made-up: TK is the AP's");
     check(s.gtk_len == 16 && s.gtk_idx == 1 && memcmp(s.gtk, a.gtk, 16) == 0 && s.gtk_rsc[0] == 5,
           "made-up: GTK, key index 1, receive counter");
@@ -565,15 +374,15 @@ static void test_refusals(void)
     for (unsigned v = 0; v < 8; v++) {
         if (v == 2)
             continue;
-        ap_frame(g, (MSG1_INFO & ~7u) | v, 16, 1, a.anonce, 0, kd, 0, 0);
+        wpa_ap_frame(g, (MSG1_INFO & ~7u) | v, 16, 1, a.anonce, 0, kd, 0, 0);
         snprintf(what, sizeof what, "msg 1 with key descriptor version %u", v);
         refused(&s, g, len, WPA_EAPOL_E_VERSION, WPA_EAPOL_WAIT_MSG1, what);
     }
-    ap_frame(g, MSG1_INFO | KI_REQUEST, 16, 1, a.anonce, 0, kd, 0, 0);
+    wpa_ap_frame(g, MSG1_INFO | KI_REQUEST, 16, 1, a.anonce, 0, kd, 0, 0);
     refused(&s, g, len, WPA_EAPOL_E_KEY_INFO, WPA_EAPOL_WAIT_MSG1, "request bit");
-    ap_frame(g, MSG1_INFO & ~KI_ACK, 16, 1, a.anonce, 0, kd, 0, 0);
+    wpa_ap_frame(g, MSG1_INFO & ~KI_ACK, 16, 1, a.anonce, 0, kd, 0, 0);
     refused(&s, g, len, WPA_EAPOL_E_KEY_INFO, WPA_EAPOL_WAIT_MSG1, "no ack bit");
-    ap_frame(g, MSG1_INFO | KI_INSTALL, 16, 1, a.anonce, 0, kd, 0, 0);
+    wpa_ap_frame(g, MSG1_INFO | KI_INSTALL, 16, 1, a.anonce, 0, kd, 0, 0);
     refused(&s, g, len, WPA_EAPOL_E_KEY_INFO, WPA_EAPOL_WAIT_MSG1, "msg 1 with install");
     memcpy(g, f, len);
     g[3] += 1;                                  /* body length one past the frame */
@@ -617,11 +426,11 @@ static void test_refusals(void)
     len = ap_msg3(&a, f, a.rsne, a.rsne_len, 1);
     memcpy(g, f, len);
     g[F_KEYLEN + 1] = 32;
-    test_mic(a.ptk, g, len, g + F_MIC);
+    wpa_ap_mic(a.ptk, g, len, g + F_MIC);
     refused(&s, g, len, WPA_EAPOL_E_KEY_LEN, WPA_EAPOL_WAIT_MSG3, "msg 3 with key length 32");
-    ap_frame(g, MSG3_INFO & ~KI_ENC, 16, 2, a.anonce, 0, f + F_KD, len - 99, a.ptk);
+    wpa_ap_frame(g, MSG3_INFO & ~KI_ENC, 16, 2, a.anonce, 0, f + F_KD, len - 99, a.ptk);
     refused(&s, g, len, WPA_EAPOL_E_KEY_INFO, WPA_EAPOL_WAIT_MSG3, "msg 3 without encrypted key data");
-    ap_frame(g, (MSG3_INFO & ~7u) | 1, 16, 2, a.anonce, 0, f + F_KD, len - 99, a.ptk);
+    wpa_ap_frame(g, (MSG3_INFO & ~7u) | 1, 16, 2, a.anonce, 0, f + F_KD, len - 99, a.ptk);
     refused(&s, g, len, WPA_EAPOL_E_VERSION, WPA_EAPOL_WAIT_MSG3, "msg 3 with key descriptor version 1");
     memcpy(g, f, len);
     g[F_MIC + 15] ^= 0x80;
@@ -644,7 +453,7 @@ static void test_refusals(void)
           s.new_keys == 0 && s.state == WPA_EAPOL_DONE, "same-counter msg 3 retransmit answered without reloading keys");
     memcpy(g, f, len);
     g[F_RSC] ^= 1;
-    test_mic(a.ptk, g, len, g + F_MIC);
+    wpa_ap_mic(a.ptk, g, len, g + F_MIC);
     refused(&s, g, len, WPA_EAPOL_E_REPLAY, WPA_EAPOL_DONE, "same-counter msg 3 with changed authenticated body");
 
     /* key data length: not a multiple of 8, too short, too long (each with a valid MIC) */
@@ -653,13 +462,13 @@ static void test_refusals(void)
         if (l % 8 == 0 && l >= 24)
             continue;
         memset(kd, 0x5A, l);
-        len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, l, a.ptk);
+        len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, l, a.ptk);
         snprintf(what, sizeof what, "msg 3 with %zu bytes of key data", l);
         refused(&s, f, len, WPA_EAPOL_E_KEY_DATA_LEN, WPA_EAPOL_WAIT_MSG3, what);
     }
     at_msg3(&a, &s, &nc);
     memset(kd, 0x5A, 264);
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, 264, a.ptk);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, 264, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_KEY_DATA_LEN, WPA_EAPOL_WAIT_MSG3, "msg 3 with 264 bytes of key data");
 
     /* after a valid MIC: the RSNE, the unwrap, the GTK KDE. These end the association and wipe the keys. */
@@ -682,73 +491,73 @@ static void test_refusals(void)
     len = ap_msg3(&a, f, p, a.rsne_len - 2, 1);
     refused(&s, f, len, WPA_EAPOL_E_RSNE, WPA_EAPOL_FAILED, "msg 3 RSNE shorter than the beacon's");
     at_msg3(&a, &s, &nc);
-    n = gtk_kde(p, a.gtk, 16, 1);
-    kdl = ap_key_data(p, n, a.ptk + 16, kd);
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
+    n = wpa_ap_gtk_kde(p, a.gtk, 16, 1);
+    kdl = wpa_ap_key_data(p, n, a.ptk + 16, kd);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_RSNE, WPA_EAPOL_FAILED, "msg 3 without an RSNE");
     at_msg3(&a, &s, &nc);
     memcpy(p, a.rsne, a.rsne_len);
     memcpy(p + a.rsne_len, a.rsne, a.rsne_len);
-    n = 2 * a.rsne_len + gtk_kde(p + 2 * a.rsne_len, a.gtk, 16, 1);
-    kdl = ap_key_data(p, n, a.ptk + 16, kd);
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
+    n = 2 * a.rsne_len + wpa_ap_gtk_kde(p + 2 * a.rsne_len, a.gtk, 16, 1);
+    kdl = wpa_ap_key_data(p, n, a.ptk + 16, kd);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_RSNE, WPA_EAPOL_FAILED, "msg 3 with a second RSNE");
     at_msg3(&a, &s, &nc);
     memcpy(p, a.rsne, a.rsne_len);
-    kdl = ap_key_data(p, a.rsne_len, a.ptk + 16, kd);
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
+    kdl = wpa_ap_key_data(p, a.rsne_len, a.ptk + 16, kd);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_GTK, WPA_EAPOL_FAILED, "msg 3 without a GTK KDE");
     at_msg3(&a, &s, &nc);
     memcpy(p, a.rsne, a.rsne_len);
-    n = a.rsne_len + gtk_kde(p + a.rsne_len, a.gtk, 4, 1);
-    kdl = ap_key_data(p, n, a.ptk + 16, kd);
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
+    n = a.rsne_len + wpa_ap_gtk_kde(p + a.rsne_len, a.gtk, 4, 1);
+    kdl = wpa_ap_key_data(p, n, a.ptk + 16, kd);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_GTK, WPA_EAPOL_FAILED, "msg 3 with a 4-byte GTK");
     at_msg3(&a, &s, &nc);                       /* two GTK KDEs */
     memcpy(p, a.rsne, a.rsne_len);
-    n = a.rsne_len + gtk_kde(p + a.rsne_len, a.gtk, 16, 1);
-    n += gtk_kde(p + n, a.gtk, 16, 2);
-    kdl = ap_key_data(p, n, a.ptk + 16, kd);
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
+    n = a.rsne_len + wpa_ap_gtk_kde(p + a.rsne_len, a.gtk, 16, 1);
+    n += wpa_ap_gtk_kde(p + n, a.gtk, 16, 2);
+    kdl = wpa_ap_key_data(p, n, a.ptk + 16, kd);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_GTK, WPA_EAPOL_FAILED, "msg 3 with two GTK KDEs");
     at_msg3(&a, &s, &nc);                       /* a PMKID KDE (type 4) where the GTK KDE should be */
     memcpy(p, a.rsne, a.rsne_len);
-    n = a.rsne_len + gtk_kde(p + a.rsne_len, a.gtk, 16, 1);
+    n = a.rsne_len + wpa_ap_gtk_kde(p + a.rsne_len, a.gtk, 16, 1);
     p[a.rsne_len + 5] = 4;
-    kdl = ap_key_data(p, n, a.ptk + 16, kd);
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
+    kdl = wpa_ap_key_data(p, n, a.ptk + 16, kd);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_GTK, WPA_EAPOL_FAILED, "msg 3 with a KDE of type 4 and no GTK KDE");
     at_msg3(&a, &s, &nc);                       /* an IGTK KDE (type 9) and an unknown element before the GTK KDE */
     memcpy(p, a.rsne, a.rsne_len);
-    n = a.rsne_len + gtk_kde(p + a.rsne_len, a.gtk + 1, 15, 3);
+    n = a.rsne_len + wpa_ap_gtk_kde(p + a.rsne_len, a.gtk + 1, 15, 3);
     p[a.rsne_len + 5] = 9;
     p[n++] = 221;
     p[n++] = 3;
     p[n++] = 0x00;
     p[n++] = 0x0F;
     p[n++] = 0xAC;
-    n += gtk_kde(p + n, a.gtk, 16, 1);
-    kdl = ap_key_data(p, n, a.ptk + 16, kd);
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
+    n += wpa_ap_gtk_kde(p + n, a.gtk, 16, 1);
+    kdl = wpa_ap_key_data(p, n, a.ptk + 16, kd);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
     check(wpa_eapol_rx(&s, f, len, r, sizeof r, &rlen) == WPA_EAPOL_OK && s.gtk_idx == 1 && s.gtk_len == 16 &&
           memcmp(s.gtk, a.gtk, 16) == 0, "msg 3: other KDEs and elements skipped, the GTK KDE taken");
     at_msg3(&a, &s, &nc);
     memcpy(p, a.rsne, a.rsne_len);
-    n = a.rsne_len + gtk_kde(p + a.rsne_len, a.gtk, 16, 1);
+    n = a.rsne_len + wpa_ap_gtk_kde(p + a.rsne_len, a.gtk, 16, 1);
     p[a.rsne_len + 1] += 8;                     /* the KDE's length past the key data */
-    kdl = ap_key_data(p, n, a.ptk + 16, kd);
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
+    kdl = wpa_ap_key_data(p, n, a.ptk + 16, kd);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_GTK, WPA_EAPOL_FAILED, "msg 3 with a KDE longer than the key data");
     at_msg3(&a, &s, &nc);
     memcpy(p, a.rsne, a.rsne_len);
-    n = a.rsne_len + gtk_kde(p + a.rsne_len, a.gtk, 16, 1);
+    n = a.rsne_len + wpa_ap_gtk_kde(p + a.rsne_len, a.gtk, 16, 1);
     {
         uint8_t kek[16];
         memcpy(kek, a.ptk + 16, 16);
         kek[0] ^= 1;
-        kdl = ap_key_data(p, n, kek, kd);
+        kdl = wpa_ap_key_data(p, n, kek, kd);
     }
-    len = ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
+    len = wpa_ap_frame(f, MSG3_INFO, 16, 2, a.anonce, 0, kd, kdl, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_UNWRAP, WPA_EAPOL_FAILED, "msg 3 key data wrapped under another KEK");
     ap_init(&a);
     sta_init(&s, &a, &nc);
@@ -785,16 +594,16 @@ static void test_refusals(void)
     refused(&s, f, len, WPA_EAPOL_E_REPLAY, WPA_EAPOL_DONE, "msg 1 with a counter below the last valid MIC's");
     a.rc = (1ull << 40) + 1;
     memset(kd, 0x5A, 20);
-    len = ap_frame(f, GROUP1_INFO, 0, a.rc, 0, 0, kd, 20, a.ptk);
+    len = wpa_ap_frame(f, GROUP1_INFO, 0, a.rc, 0, 0, kd, 20, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_KEY_DATA_LEN, WPA_EAPOL_DONE, "group msg 1 with 20 bytes of key data");
-    n = gtk_kde(p, a.gtk, 16, 1);
+    n = wpa_ap_gtk_kde(p, a.gtk, 16, 1);
     {
         uint8_t kek[16];
         memcpy(kek, a.ptk + 16, 16);
         kek[15] ^= 0x80;
-        kdl = ap_key_data(p, n, kek, kd);
+        kdl = wpa_ap_key_data(p, n, kek, kd);
     }
-    len = ap_frame(f, GROUP1_INFO, 0, a.rc, 0, 0, kd, kdl, a.ptk);
+    len = wpa_ap_frame(f, GROUP1_INFO, 0, a.rc, 0, 0, kd, kdl, a.ptk);
     refused(&s, f, len, WPA_EAPOL_E_UNWRAP, WPA_EAPOL_FAILED, "group msg 1 wrapped under another KEK");
     check(!memcmp(s.tk, zero16, 16) && !memcmp(s.ptk, zero48, 48) && !memcmp(s.tptk, zero48, 48) &&
           !memcmp(s.gtk, zero48, 32) && s.gtk_len == 0, "refused: TK, PTK and GTK wiped on a failure once done");

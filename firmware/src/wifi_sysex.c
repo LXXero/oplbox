@@ -4,6 +4,8 @@
  *
  *   0x62 report  host: off24     device: status total24 off24 serial16 data (512 bytes at most)
  *   0x63 run     host: (none)    device: status run16
+ *   0x64 network host: ssid_len8 ssid pass_len8 passphrase      device: status ssid_len8
+ *                (ssid_len 0, nothing after it: forget the network)
  *
  * The report is the last run's results, kept in RAM until the next run: every line the page's ten pages show, as
  * text, then the counters and the frames the FIFO gave, as bytes (wr_* below build it; docs/API.md has the layout).
@@ -11,16 +13,24 @@
  * that sees it change between chunks starts again. A run is started by the main loop as SAVE then PLAY would; the
  * run command only asks for it and answers at once with the number the run will have.
  *
+ * The network command sets the WPA2 network the next runs join (stage 8, docs/WIFI_STAGE8.md): an SSID of 1-32 bytes and
+ * a passphrase of 8-63 printable ASCII characters (IEEE 802.11 J.4.1), kept in RAM only, until the FM-1 restarts or
+ * the command comes again. The passphrase is never answered back, drawn, put in the report or written to flash; the
+ * reply only says whether it was taken and the SSID's length.
+ *
  * Include it with the app's:
  *   wifi_report_state()         WR_NONE (no run since start), WR_RUNNING (asked for or running), WR_DONE
  *   wifi_report(&n, &serial)    the report and its length (WR_DONE)
  *   wifi_run_ask(&run)          0: a run will start, *run its number; else WIFI_E_RUNNING (*run the one running) or
  *                               WIFI_E_EDIT
+ *   wifi_net_set(ssid, ns, pass, np)   0: taken (ns 0: forgotten); WIFI_E_RUNNING while a run is going on. Called
+ *                               with lengths already checked; it copies what it keeps
  *   wifi_reply(cmd, head, nh, data, nd)   one message to the computer (slot_sysex.c's slot_reply)
  * The command bytes are none of the updater's (0x11, 0x30), fm1-base's (0x41-0x43, 0x50-0x54) or the slots' (0x60,
  * 0x61). */
 #define WIFI_CMD_REPORT 0x62u
 #define WIFI_CMD_RUN 0x63u
+#define WIFI_CMD_NET 0x64u
 #define WIFI_CHUNK 512u
 enum { WIFI_OK, WIFI_E_REQ, WIFI_E_NONE, WIFI_E_RUNNING, WIFI_E_EDIT };
 enum { WR_NONE, WR_RUNNING, WR_DONE };
@@ -121,11 +131,30 @@ static void wifi_run_cmd(const uint8_t *d, uint32_t n)
     wifi_reply(WIFI_CMD_RUN, h, sizeof h, 0, 0);
 }
 
+/* body: ssid_len ssid pass_len pass, or a single 0 (forget). The reply never carries the passphrase. */
+static void wifi_net_cmd(const uint8_t *d, uint32_t n)
+{
+    const uint8_t *b = d + 6;
+    uint32_t len = n - 7u, ns = len ? b[0] : 0, np = 0, i, st = WIFI_OK;
+    uint8_t h[2];
+    if (len == 1u && ns == 0u) st = (uint32_t)wifi_net_set(0, 0, 0, 0);
+    else if (len < 2u || ns < 1u || ns > 32u || len < 2u + ns || (np = b[1u + ns]) < 8u || np > 63u || len != 2u + ns + np)
+        st = WIFI_E_REQ;
+    else {
+        for (i = 0; i < np; i++) if (b[2u + ns + i] < 32u || b[2u + ns + i] > 126u) st = WIFI_E_REQ;
+        if (st == WIFI_OK) st = (uint32_t)wifi_net_set(b + 1, ns, (const char *)b + 2u + ns, np);
+    }
+    h[0] = (uint8_t)st;
+    h[1] = (uint8_t)(st == WIFI_OK ? ns : 0u);
+    wifi_reply(WIFI_CMD_NET, h, sizeof h, 0, 0);
+}
+
 /* a frame in the updater's framing that is not the updater's (d: decoded, n: its length); 1 = it was ours */
 static int wifi_sysex(const uint8_t *d, uint32_t n)
 {
     if (n < 7u) return 0;
     if (d[2] == WIFI_CMD_REPORT) { wifi_report_cmd(d, n); return 1; }
     if (d[2] == WIFI_CMD_RUN) { wifi_run_cmd(d, n); return 1; }
+    if (d[2] == WIFI_CMD_NET) { wifi_net_cmd(d, n); return 1; }
     return 0;
 }

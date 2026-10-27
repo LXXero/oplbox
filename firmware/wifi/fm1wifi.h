@@ -9,7 +9,9 @@
  * ADC peak, a channel survey (the false CCA count and busy time JieLi's channel select reads). Its first run on an FM-1 (2026-10-26) crashed (docs/WIFI_STAGE3.md "First run on an FM-1").
  * Stages 4-6 (docs/WIFI_STAGE4.md): the MAC's defaults and address, the frame FIFOs (one received frame, one frame
  * sent), a passive or active scan of one channel, and joining an open network as a station; the frames themselves
- * are fm1wifi_frame.h's. Not run on an FM-1 yet.
+ * are fm1wifi_frame.h's. First FM-1 run 2026-10-27: scans, TX and RX worked; no open network to join.
+ * Stage 8 (docs/WIFI_STAGE8.md): the MAC's key tables, and what fm1wifi_wpa.c's WPA2 station runs on. Not run on an
+ * FM-1 yet.
  */
 #pragma once
 #include <stdint.h>
@@ -201,6 +203,8 @@ typedef struct {
     uint32_t host04, txrxq;
     uint32_t crc_err, phy_err, rx_dup, rx_overflow;    /* RX_STA_CNT0, RX_STA_CNT2 */
     uint32_t tx_fail, tx_ok, tx_retry, tx_underflow;   /* TX_STA_CNT0, CNT1, CNT2 */
+    uint32_t tx_sec, rx_sec;  /* TX_SEC_CNT0, RX_SEC_CNT0 as they read now (rt2800.h names them; what they count on this
+                               * core is not known [unchecked]: stage 8 shows them before and after the join) */
 } fm1wifi_counters;
 void fm1wifi_counters_clear(fm1wifi_counters *c);  /* reads the counters once to clear them */
 int fm1wifi_counters_add(fm1wifi_counters *c);
@@ -237,6 +241,45 @@ int fm1wifi_leave(fm1wifi_sta *s, fm1wifi_frames *fr);
 /* The address the link uses (fm1wifi_link_up's mac). */
 const uint8_t *fm1wifi_link_mac(void);
 
+/* ---- stage 8: what a station outside this file runs on (fm1wifi_wpa.c), and the MAC's key tables
+ *
+ * One frame from the RX FIFO into f, counted and kept in fr as the scan's and the station's are: 1 when one was read
+ * (f->frame is 0 when it did not parse; it points into the library's buffer until the next call), 0 when none
+ * waited, else the read's error (the FIFO's state is then unknown: stop). ch goes with a kept frame. */
+int fm1wifi_poll(fm1wifi_rx *f, unsigned ch, fm1wifi_frames *fr);
+/* Send frame (len bytes, FM1WIFI_TX_* flags), counted in fr. */
+int fm1wifi_send(const uint8_t *frame, uint32_t len, unsigned flags, fm1wifi_frames *fr);
+/* The library's clock in ms (the time it spent in the port's delay), and a wait that advances it. */
+uint32_t fm1wifi_now_ms(void);
+void fm1wifi_wait_us(uint32_t us);
+
+/* The key tables (docs/WIFI.md "Stage 8"), laid out as JieLi's own station code writes them (wl_wifi_sta_sfc.a:
+ * cmm_asic.c's AsicAddPairwiseKeyEntry, AsicAddSharedKeyEntry, AsicUpdateWCIDIVEIV, AsicUpdateWcidAttributeEntry,
+ * cmm_wpa.c's WPAInstallPairwiseKey and WPAInstallSharedKey; the addresses those use, rt2800.h's names), CCMP only.
+ * After fm1wifi_link_up (else FM1WIFI_ESTATE); wcid 0-255, idx 0-3 (else FM1WIFI_ERANGE).
+ *  - pairwise: the peer's address into MAC_WCID_ENTRY(wcid) (its 2 reserved bytes FF, as rt2800_config_wcid), the TK
+ *    into PAIRWISE_KEY_ENTRY(wcid) (then 16 bytes of MIC keys, 0 for CCMP), MAC_IVEIV_ENTRY(wcid) = PN 1, Ext IV, key
+ *    ID 0, and MAC_WCID_ATTR_ENTRY(wcid) = pairwise table, AES, BSS 0. JieLi's station puts the AP at WCID 1.
+ *  - group: the GTK into SHARED_KEY_ENTRY(idx) (BSS 0, key ID idx), AES into idx's 4 bits of SHARED_KEY_MODE_ENTRY(0)
+ *    (the others kept), MAC_IVEIV_ENTRY(wcid) = PN 1, Ext IV, key ID idx, MAC_WCID_ATTR_ENTRY(wcid) = shared table,
+ *    AES, BSS 0. JieLi's station uses WCID 0.
+ * rb (or 0) gets the entries as read back afterwards; of a key only whether each word read back as written, never the
+ * key itself (the report is read over USB). */
+#define FM1WIFI_WCID_AP 1u
+#define FM1WIFI_WCID_GROUP 0u
+typedef struct {
+    int err;                  /* the first register error, or FM1WIFI_OK */
+    uint32_t wcid[2];         /* MAC_WCID_ENTRY (pairwise; 0 for a group key) */
+    uint32_t attr;            /* MAC_WCID_ATTR_ENTRY */
+    uint32_t iv[2];           /* MAC_IVEIV_ENTRY: IV, EIV */
+    uint32_t mode;            /* SHARED_KEY_MODE_ENTRY(0) (group; 0 for a pairwise key) */
+    uint8_t key_same;         /* bit k: word k of the key entry (8 words: key, TX MIC, RX MIC) read back as written */
+} fm1wifi_keyread;
+int fm1wifi_key_pairwise(unsigned wcid, const uint8_t addr[6], const uint8_t tk[16], fm1wifi_keyread *rb);
+int fm1wifi_key_group(unsigned wcid, unsigned idx, const uint8_t gtk[16], fm1wifi_keyread *rb);
+/* Undo both: those entries zeroed, the address entry all FF, the ciphers NONE (all four group key IDs). */
+int fm1wifi_key_clear(unsigned wcid_pair, unsigned wcid_group);
+
 /* ---- where a crash happened: the step the library is in and its last register write
  *
  * fm1wifi_power_up, _power_down, _diag_read, _radio_up, _set_channel, _set_power, _adc_peak, _rx_probe,
@@ -272,6 +315,6 @@ enum {
     FM1WIFI_STEP_BSB_AUTO, FM1WIFI_STEP_CHANNEL6, FM1WIFI_STEP_MCS_GAIN, FM1WIFI_STEP_SET_CHANNEL,
     FM1WIFI_STEP_SET_POWER, FM1WIFI_STEP_ADC_PEAK, FM1WIFI_STEP_RX_PROBE, FM1WIFI_STEP_SURVEY,
     FM1WIFI_STEP_LINK_UP, FM1WIFI_STEP_SET_BSSID, FM1WIFI_STEP_TUNE, FM1WIFI_STEP_RX_READ, FM1WIFI_STEP_TX_SEND,
-    FM1WIFI_STEP_COUNTERS, FM1WIFI_STEP_N
+    FM1WIFI_STEP_COUNTERS, FM1WIFI_STEP_KEYS, FM1WIFI_STEP_N
 };
 const char *fm1wifi_step_name(uint32_t step);   /* "RF_INIT", "TX LO I", ...: at most 18 characters; "?" past the list */
