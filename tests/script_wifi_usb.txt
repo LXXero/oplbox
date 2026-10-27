@@ -14,7 +14,7 @@
 2000 is 0 88 0 1
 2000 is 0 88 2 0
 2000 usb 62 000000
-2001 usb 62 000E00
+2001 usb 62 001000
 # run again with the page open on its results: it leaves as SAVE does and starts a fresh run 2
 2100 usb 63
 2101 usb 62 000000

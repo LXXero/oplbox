@@ -189,8 +189,8 @@ reaches here: the stock keys `F0 22 24 35 7D/7F F7` and Felucca's editor `F0 7D 
 
 ## WiFi test page over SysEx
 
-`tools/fm1_wifi_report.py` reads the WiFi test page's results (docs/WIFI_STAGE4.md, docs/WIFI_STAGE8.md), can start a
-run and can set the WPA2 network a run joins, so nobody has to photograph eleven pages (`firmware/src/wifi_sysex.c`).
+`tools/fm1_wifi_report.py` reads the WiFi test page's results (docs/WIFI_STAGE4.md, docs/WIFI_STAGE8.md,
+docs/WIFI_STAGE9.md), can start a run and can set the WPA2 network a run joins, so nobody has to photograph 14 pages (`firmware/src/wifi_sysex.c`).
 Same framing as the song slots.
 
 | cmd | from the computer | from the FM-1 |
@@ -198,11 +198,17 @@ Same framing as the song slots.
 | `0x62` report | `off24` | `status total24 off24 serial16 data`: up to 512 bytes of the report from `off` |
 | `0x63` run | (nothing) | `status run16`, at once |
 | `0x64` network | `ssid_len8 SSID pass_len8 passphrase`, or a single `00` to forget it | `status ssid_len8` |
+| `0x65` live | (nothing) | `status step8 addr4 left16 answered16`, at once, also while a run goes on |
 
 The network (stage 8) is the WPA2-PSK network the runs join: an SSID of 1-32 bytes and a passphrase of 8-63
 printable ASCII characters (IEEE 802.11 J.4.1); anything else is status 1. The FM-1 keeps both in RAM only, until it
 restarts or the command comes again, refuses a change while a run is going on (status 3), and never sends the
 passphrase back, draws it or puts it in the report. With no network set a run joins the open network OPLBOX.
+
+The live command (stage 9) says what a run is doing while it goes on: `step8` 0 no run, 1 running, 2 DHCP, 3 ARP,
+4 pinging the gateway, 5 listening for echo requests; `addr4` the address DHCP gave (0.0.0.0 before it);
+`left16` the listening window's milliseconds left (0 outside it); `answered16` the echo requests answered so far
+(little-endian). `fm1_wifi_report.py --run --ping` uses it to ping the FM-1 from the computer while it listens.
 
 `serial16` changes when the FM-1 rebuilds the report (it does while the page is open and its RAM check changes); a
 reader that sees it change between chunks starts again. A run asked for starts in the main loop as SAVE then PLAY
@@ -242,8 +248,8 @@ chunking and `serial16`.
 
 | cmd | from the computer | from the FM-1 |
 | --- | --- | --- |
-| `0x65` report | `off24` | `status total24 off24 serial16 data`: up to 512 bytes of the report from `off` |
-| `0x66` run | (nothing), or `wait8` | `status run16`, at once |
+| `0x66` report | `off24` | `status total24 off24 serial16 data`: up to 512 bytes of the report from `off` |
+| `0x67` run | (nothing), or `wait8` | `status run16`, at once |
 
 `wait8` is the seconds a central has to connect once advertising is on, 0 to 120 (0 skips the connect and MIDI steps);
 with no body it is 20. A longer wait or a longer body is status 1. The statuses are the WiFi page's (0 done or taken, 1 bad

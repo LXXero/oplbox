@@ -112,3 +112,9 @@ int fm1wifi_wpa_join(fm1wifi_wpa *w, const fm1wifi_bss *b, const uint8_t pmk[WPA
 int fm1wifi_wpa_listen(fm1wifi_wpa *w, unsigned ms, fm1wifi_frames *fr);
 /* Leave (the deauthentication) and clear the key tables. */
 int fm1wifi_wpa_leave_now(fm1wifi_wpa *w, fm1wifi_frames *fr);
+/* One pass of what _join and _listen loop on, for a caller that also wants the frames (stage 9's IP,
+ * fm1wifi_ip.h): one frame from the RX FIFO into f (fm1wifi_poll), the station's step with it, the frame that step
+ * said to send, the keys it agreed into the tables (leaving when that fails), the tables cleared when it went DOWN.
+ * 1 when a frame was read (f->frame is 0 when it did not parse), 0 when none waited, else the FIFO's error (the
+ * tables are then cleared). */
+int fm1wifi_wpa_poll(fm1wifi_wpa *w, fm1wifi_rx *f, fm1wifi_frames *fr);

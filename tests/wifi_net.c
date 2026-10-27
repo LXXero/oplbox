@@ -7,7 +7,9 @@
  * one from a host lwIP must ARP for first), with correct checksums and 802.11 header fields (ToDS, addr1 = BSSID,
  * addr2 = own MAC, addr3 = destination); frames for another MAC or BSSID, ToDS frames, protected frames, fragments,
  * our own broadcasts coming back, A-MSDUs and LLC headers other than RFC 1042 SNAP are dropped; EAPOL frames reach the EAPOL callback and not lwIP,
- * and go out with fm1wifi_net_eapol_send; DHCP stop sends a RELEASE; down and a restart with a new BSSID.
+ * and go out with fm1wifi_net_eapol_send; our own ARP requests and echo requests (stage 9: the gateway looked up, an
+ * echo reply not answered, one to an unknown host held for its ARP reply); DHCP stop sends a RELEASE; down and a
+ * restart with a new BSSID.
  * The clock is sys_now() here (the port's, fm1wifi_port.h), moved by the test.
  */
 #include <stdint.h>
@@ -362,6 +364,50 @@ int main(void) {
     echo_reply_sent(1, PINGER2, IP_PINGER2, 0x77, 9, 100);
     printf("ARP and ICMP echo: answered, checksums and 802.11 headers right\n");
 
+    /* our own ARP requests and pings (stage 9, fm1wifi_ip.c): a gateway's MAC asked for and looked up; an echo request
+     * to it, checksums right; its reply goes nowhere (lwIP drops echo replies); one to a host not in the table goes out
+     * after the ARP reply lwIP waited for */
+    {
+        static const uint8_t IP_FAR[4] = {192, 168, 4, 77}, FAR[6] = {0x02, 0x77, 0x77, 0x77, 0x77, 0x77};
+        static const uint8_t IP_GW[4] = {192, 168, 4, 2}, GW[6] = {0x02, 0x47, 0x57, 0x00, 0x00, 0x02};   /* not the
+                                                                    * router: the DHCP stop below must still ARP for it */
+        uint8_t m6[6];
+        unsigned len;
+        CHECK(fm1wifi_net_arp_lookup(IP_GW, m6) == 0, "a host in the ARP table before any ARP reply from it");
+        ntx = 0;
+        CHECK(fm1wifi_net_arp_request(IP_GW) == FM1WIFI_NET_OK && ntx == 1, "ARP request not sent");
+        arp_sent(0, BCAST, 1, ZERO6, IP_GW);
+        arp(2, MAC, GW, IP_GW, MAC, IP_US);
+        CHECK(fm1wifi_net_arp_lookup(IP_GW, m6) == 1 && memcmp(m6, GW, 6) == 0, "the MAC not looked up after the reply");
+        ntx = 0;
+        CHECK(fm1wifi_net_ping(IP_GW, 0xBEEF, 3, 56) == FM1WIFI_NET_OK && ntx == 1, "ping not sent");
+        const uint8_t *ip = tx_body(0, GW, 0x0800, &len);
+        if (ip_ok(ip, len, IP_US, IP_GW, 1)) {
+            const uint8_t *c = ip + 20;
+            int d = 1;
+            for (unsigned k = 0; k < 56; k++) d &= c[8 + k] == (uint8_t)k;
+            CHECK(len == 20 + 8 + 56 && c[0] == 8 && c[1] == 0 && fold(sum16(c, len - 20, 0)) == 0 &&
+                  get16(c + 4) == 0xBEEF && get16(c + 6) == 3 && d && ip[8] == 64, "our echo request's fields or checksum");
+            uint8_t r[100];
+            memcpy(r, ip, len);
+            memcpy(r + 12, IP_GW, 4); memcpy(r + 16, IP_US, 4);
+            r[10] = r[11] = 0; put16(r + 10, fold(sum16(r, 20, 0)));
+            r[20] = 0; r[22] = r[23] = 0; put16(r + 22, fold(sum16(r + 20, len - 20, 0)));
+            ntx = 0;
+            rx(MAC, GW, 0x0800, r, len, 0);
+            CHECK(ntx == 0, "lwIP answered an echo reply");
+        }
+        CHECK(fm1wifi_net_ping(IP_GW, 1, 1, FM1WIFI_NET_PING_MAX + 1) == FM1WIFI_NET_ERANGE, "a ping too long taken");
+        ntx = 0;
+        CHECK(fm1wifi_net_ping(IP_FAR, 0xBEEF, 4, 8) == FM1WIFI_NET_OK && ntx == 1, "ping to an unknown host: no ARP request");
+        arp_sent(0, BCAST, 1, ZERO6, IP_FAR);
+        arp(2, MAC, FAR, IP_FAR, MAC, IP_US);
+        CHECK(ntx == 2, "the held echo request not sent after the ARP reply (%u frames)", ntx);
+        ip = tx_body(1, FAR, 0x0800, &len);
+        CHECK(ip_ok(ip, len, IP_US, IP_FAR, 1) && ip[20] == 8 && get16(ip + 26) == 4, "the held echo request");
+        printf("our ARP request and pings: sent, the gateway's MAC looked up, echo replies not answered\n");
+    }
+
     /* dropped: each of these sends nothing and reaches neither lwIP nor the EAPOL callback */
     n = echo_req(pkt, IP_PINGER, 0x1234, 5, 56, 0);
     struct { const char *what; unsigned fc0, fc1; const uint8_t *a1, *a2, *a3; int snap_bad; } drop[] = {
@@ -458,6 +504,8 @@ int main(void) {
     fm1wifi_net_down();
     CHECK(fm1wifi_net_state() == FM1WIFI_NET_DOWN, "state after down");
     CHECK(fm1wifi_net_dhcp_start() == FM1WIFI_NET_ESTATE, "DHCP while down");
+    CHECK(fm1wifi_net_ping(IP_ROUTER, 1, 1, 8) == FM1WIFI_NET_ESTATE && fm1wifi_net_arp_request(IP_ROUTER) == FM1WIFI_NET_ESTATE,
+          "ping or ARP while down");
     arp(1, BCAST, PINGER, IP_PINGER, ZERO6, IP_US);
     run(10000);
     CHECK(ntx == 0, "%u frames sent while down", ntx);

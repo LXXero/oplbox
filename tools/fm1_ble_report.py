@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fm1_install as fi  # noqa: E402
 from fm1_slot import SlotError, message, wait_reply  # noqa: E402
 
-REPORT, RUN = 0x65, 0x66
+REPORT, RUN = 0x66, 0x67
 OK, E_REQ, E_NONE, E_RUNNING, E_EDIT = range(5)
 STATUS = {E_REQ: "bad request", E_NONE: "no Bluetooth test run since the FM-1 started (--run starts one)",
           E_RUNNING: "a run is going on", E_EDIT: "EDIT is open on the FM-1: leave it (EDIT) and try again"}

@@ -180,11 +180,25 @@ def build_app():
            *sorted((FW / "wifi" / "bearssl").glob("*.c"))]
     wpa_objs = [OUT / ("wpa_" + s.stem + ".o") for s in wpa]
     cmds += [("cc", *CFLAGS, "-Ifirmware/wifi", "-c", s, "-o", o) for s, o in zip(wpa, wpa_objs)]
+    # stage 9 (docs/WIFI_STAGE9.md): IP on the WPA2 link: fm1wifi_net.c (lwIP's interface), fm1wifi_ip.c (DHCP, ARP,
+    # ping, echo answers) and the vendored lwIP 2.1.3 subset (wifi/lwip/README.md). lwIP's own files include the C
+    # library's string.h, so they alone get the toolchain's headers (-isystem); its functions come from libc.c
+    lwip_inc = ["-Ifirmware/wifi/lwip/port", "-Ifirmware/wifi/lwip/src/include"]
+    ip = [FW / "wifi" / "fm1wifi_net.c", FW / "wifi" / "fm1wifi_ip.c"]
+    lwip = sorted([*(FW / "wifi" / "lwip" / "src" / "core").glob("*.c"),
+                   *(FW / "wifi" / "lwip" / "src" / "core" / "ipv4").glob("*.c"),
+                   *(FW / "wifi" / "lwip" / "src" / "netif").glob("*.c")])
+    ip_objs = [OUT / (s.stem + ".o") for s in ip]
+    lwip_objs = [OUT / ("lwip_" + s.stem + ".o") for s in lwip]
+    cmds += [("cc", *CFLAGS, "-Ifirmware/wifi", *lwip_inc, "-c", s, "-o", o) for s, o in zip(ip, ip_objs)]
+    cmds += [("cc", *CFLAGS, "-Ifirmware/wifi", *lwip_inc, *libc_inc(), "-c", s, "-o", o)
+             for s, o in zip(lwip, lwip_objs)]
     tc_all(*cmds)
     elf = OUT / "oplbox.elf"
     tc("pi32v2/bin/ld", "--gc-sections", "-e", "_start", "-T", FW / "app.ld", OUT / "crt0.o", OUT / "fm1_vec.o",
        OUT / "fm1_isr.o", OUT / "oplbox.o", OUT / "dbopl2.o", OUT / "fm1wifi.o", OUT / "fm1wifi_frame.o",
-       OUT / "fm1wifi_port_bsp.o", OUT / "fm1ble_test.o", OUT / "fm1ble.o", OUT / "ble_midi.o", OUT / "fm1ble_port_bsp.o", *wpa_objs, "-o", elf)
+       OUT / "fm1wifi_port_bsp.o", OUT / "fm1ble_test.o", OUT / "fm1ble.o", OUT / "ble_midi.o", OUT / "fm1ble_port_bsp.o",
+       *wpa_objs, *ip_objs, *lwip_objs, "-o", elf)
     for sect in ("text.bin", "data.bin", "ramtext.bin", "ramcode.bin"):
         (OUT / sect).unlink(missing_ok=True)
     *_, syms, dis, rt = tc_all(("common/bin/objcopy", "-O", "binary", "-j", ".text", elf, OUT / "text.bin"),
@@ -222,9 +236,9 @@ def build_app():
 # ---- the WiFi library (firmware/wifi/, docs/WIFI.md): every file compiled alone with the app's flags and only its
 # own directory on the include path, so a dependency on OPLBOX or the bsp fails here, and its size is known
 # against the budget there. fm1wifi.c, fm1wifi_frame.c and stage 8's WPA2 files (fm1wifi_wpa.c, wpa_eapol.c,
-# wpa_crypto.c, bearssl/) are linked (the WiFi test page); fm1wifi_net.c (IP) not yet.
-# fm1wifi_net.c (stage 7) also gets lwIP's headers and options (wifi/lwip/, still inside the library); the vendored
-# lwIP sources themselves are not compiled here (they need the C library's string.h: wifi/lwip/README.md).
+# wpa_crypto.c, bearssl/) and stage 9's IP (fm1wifi_net.c, fm1wifi_ip.c, and lwIP: build_app) are linked (the WiFi
+# test page). fm1wifi_net.c and fm1wifi_ip.c also get lwIP's headers and options (wifi/lwip/, still inside the
+# library); the vendored lwIP sources are not compiled here (they need the C library's string.h: build_app does that).
 # Object sizes without --gc-sections: an upper bound.
 
 def build_wifi():
@@ -242,7 +256,7 @@ def build_wifi():
                 code += int(p[2], 16)
             elif len(p) > 3 and re.match(r"\.(data|bss)", p[1]):
                 data += int(p[2], 16)
-    return f"firmware/wifi/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (fm1wifi_net.c not linked yet)"
+    return f"firmware/wifi/ alone: {len(objs)} objects, {code} B code+rodata, {data} B data+bss (lwIP not counted here: build_app links it)"
 
 
 # ---- the BLE stack (firmware/ble/, docs/BLUETOOTH.md "Cordio path as built"): every file compiled alone with the app's

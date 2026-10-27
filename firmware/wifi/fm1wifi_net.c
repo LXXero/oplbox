@@ -12,8 +12,11 @@
 #include "lwip/pbuf.h"
 #include "lwip/dhcp.h"
 #include "lwip/etharp.h"
+#include "lwip/inet_chksum.h"
+#include "lwip/ip4.h"
 #include "lwip/timeouts.h"
 #include "lwip/prot/dhcp.h"
+#include "lwip/prot/icmp.h"
 #include "netif/ethernet.h"
 
 #define HDR 24u                                   /* the 802.11 data header without QoS: FC, duration, 3 addresses, seq */
@@ -234,4 +237,46 @@ void fm1wifi_net_addr(uint8_t addr[4], uint8_t mask[4], uint8_t gw[4]) {
 
 void fm1wifi_net_get_counts(fm1wifi_net_counts *c) {
     if (c != NULL) *c = cnt;
+}
+
+static int have_addr(void) { return running && !ip4_addr_isany_val(*netif_ip4_addr(&nif)); }
+
+int fm1wifi_net_arp_request(const uint8_t ip[4]) {
+    ip4_addr_t a;
+    if (ip == NULL) return FM1WIFI_NET_ERANGE;
+    if (!have_addr()) return FM1WIFI_NET_ESTATE;
+    IP4_ADDR(&a, ip[0], ip[1], ip[2], ip[3]);
+    err_t e = etharp_request(&nif, &a);
+    return e == ERR_OK ? FM1WIFI_NET_OK : e == ERR_MEM ? FM1WIFI_NET_EMEM : FM1WIFI_NET_ETX;
+}
+
+int fm1wifi_net_arp_lookup(const uint8_t ip[4], uint8_t mac[6]) {
+    ip4_addr_t a;
+    struct eth_addr *e;
+    const ip4_addr_t *ia;
+    if (ip == NULL || mac == NULL || !lwip_ready || !running) return 0;
+    IP4_ADDR(&a, ip[0], ip[1], ip[2], ip[3]);
+    if (etharp_find_addr(&nif, &a, &e, &ia) < 0) return 0;      /* only an entry with a reply (stable) */
+    cpy(mac, e->addr, 6);
+    return 1;
+}
+
+int fm1wifi_net_ping(const uint8_t dst[4], uint16_t id, uint16_t seq, unsigned len) {
+    ip4_addr_t d;
+    if (dst == NULL || len > FM1WIFI_NET_PING_MAX) return FM1WIFI_NET_ERANGE;
+    if (!have_addr()) return FM1WIFI_NET_ESTATE;
+    struct pbuf *p = pbuf_alloc(PBUF_IP, (u16_t)(sizeof(struct icmp_echo_hdr) + len), PBUF_RAM);   /* one pbuf */
+    if (p == NULL) return FM1WIFI_NET_EMEM;
+    uint8_t *b = p->payload;
+    b[0] = ICMP_ECHO; b[1] = 0; b[2] = b[3] = 0;
+    b[4] = (uint8_t)(id >> 8); b[5] = (uint8_t)id; b[6] = (uint8_t)(seq >> 8); b[7] = (uint8_t)seq;
+    for (unsigned i = 0; i < len; i++) b[8 + i] = (uint8_t)i;
+    u16_t c = inet_chksum(b, (u16_t)(8 + len));                  /* in network order as stored */
+    cpy(b + 2, (const uint8_t *)&c, 2);
+    IP4_ADDR(&d, dst[0], dst[1], dst[2], dst[3]);
+    unsigned tx0 = cnt.tx_err;
+    err_t e = ip4_output_if(p, netif_ip4_addr(&nif), &d, 64, 0, IP_PROTO_ICMP, &nif);
+    pbuf_free(p);
+    if (e == ERR_MEM) return FM1WIFI_NET_EMEM;
+    return e == ERR_OK && cnt.tx_err == tx0 ? FM1WIFI_NET_OK : FM1WIFI_NET_ETX;
 }

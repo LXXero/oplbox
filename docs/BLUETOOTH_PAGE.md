@@ -63,7 +63,7 @@ In the order they run (`fm1ble_test.h`). A failed step says in its note what the
 
 ## The report and the tool
 
-The layout is in docs/API.md "Bluetooth test page over SysEx" (commands `0x65` report, `0x66` run). The text is the pages'
+The layout is in docs/API.md "Bluetooth test page over SysEx" (commands `0x66` report, `0x67` run). The text is the pages'
 text, then every step's whole note, then the controller's address; then the counters and the steps' evidence as bytes. The tool
 prints the text, the counters and one line per step with its evidence in hex. `--out DIR` writes `report.txt`, `report.bin`
 (the report as sent), `counters.txt` and `step-N-<name>.bin` for each step that kept evidence, so an HCI trace or a register

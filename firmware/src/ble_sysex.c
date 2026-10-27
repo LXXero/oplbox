@@ -2,8 +2,8 @@
 /* The Bluetooth test page over USB SysEx (docs/BLUETOOTH_PAGE.md), in the updater's framing as wifi_sysex.c and
  * slot_sysex.c: F0 pack7(00 59 cmd len24 body ~sum(body)) F7, numbers little-endian.
  *
- *   0x65 report  host: off24          device: status total24 off24 serial16 data (512 bytes at most)
- *   0x66 run     host: (none) or wait8  device: status run16
+ *   0x66 report  host: off24          device: status total24 off24 serial16 data (512 bytes at most)
+ *   0x67 run     host: (none) or wait8  device: status run16
  *                wait8: seconds a central has to connect once advertising is on (0-120; 0 skips the connect and MIDI
  *                steps); none: 20
  *
@@ -23,9 +23,9 @@
  *   ble_run_ask(wait_s, &run)  0: a run will start, *run its number; else WIFI_E_RUNNING (*run the one running) or
  *                              WIFI_E_EDIT
  * The command bytes are none of the updater's (0x11, 0x30), fm1-base's (0x41-0x43, 0x50-0x54), the slots' (0x60, 0x61)
- * or the WiFi page's (0x62-0x64). */
-#define BLE_CMD_REPORT 0x65u
-#define BLE_CMD_RUN 0x66u
+ * or the WiFi page's (0x62-0x65). */
+#define BLE_CMD_REPORT 0x66u
+#define BLE_CMD_RUN 0x67u
 #define BLE_MAGIC "OPLB"
 #define BLE_WAIT_DEFAULT 20u
 #define BLE_WAIT_MAX 120u

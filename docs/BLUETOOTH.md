@@ -527,7 +527,7 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
    report's raw readbacks say which register to look at. Connections and MIDI over the air need the PAL and the
    receive path (H); not started.
 5. **Test page, USB report, tool: done and host-tested.** docs/BLUETOOTH_PAGE.md; `tools/fm1_ble_report.py --run --out DIR`
-   over SysEx 0x65 (report) and 0x66 (run); `tests/ble_report_tool.py`. Eight steps (radio, block, hci, adv_set, adv_air,
+   over SysEx 0x66 (report) and 0x67 (run); `tests/ble_report_tool.py`. Eight steps (radio, block, hci, adv_set, adv_air,
    connect, midi_in, midi_out), one line each with raw bytes, 24 counters; a failed step's note says what to do next. The host
    build runs a scripted fake (`tests/ble/fm1ble_test_host.c`) to test the page and the tool, the firmware runs
    `firmware/ble/fm1ble_test.c` on the driver.
