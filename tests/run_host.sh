@@ -429,10 +429,17 @@ build/host/ble_cordio
 # in the model: the FM-1 has to show it does. Never run on a chip.
 cc -std=gnu11 -Wall -Wextra -Werror -fshort-enums $CR_DEF $CR_INC -Ifirmware/ble -I$CP -c -o build/host/pal_fm1.o $CP/pal_fm1.c
 cc -std=gnu11 -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Itests/ble -Wl,--gc-sections -o build/host/ble_pal tests/ble_pal.c \
-   tests/ble/bb_model.c firmware/ble/fm1ble.c firmware/ble/ble_midi.c build/host/pal_fm1.o \
+   tests/ble/bb_model.c tests/ble/air_central.c firmware/ble/fm1ble.c firmware/ble/ble_midi.c build/host/pal_fm1.o \
    $(ls build/host/cordio/*.o | grep -v pal_stubs_host)
 build/host/ble_pal
 python3 tests/ble_pal_mutants.py build/host
+# the whole stack minus the chip: NimBLE and the BLE-MIDI service over HCI to Cordio, on the PAL and the driver, against the
+# model's air and the central (tests/ble/air_central.c) doing L2CAP and ATT: it finds the characteristic, subscribes, writes
+# a Note On that comes out of ble_midi_get, gets the app's notification, leaves; the peripheral advertises again
+cc -std=gnu11 -D_GNU_SOURCE -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Itests/ble -Wl,--gc-sections -o build/host/ble_stack \
+   tests/ble_stack.c tests/ble/bb_model.c tests/ble/air_central.c firmware/ble/fm1ble.c firmware/ble/ble_midi.c firmware/ble/hci.c \
+   build/host/pal_fm1.o $(ls build/host/cordio/*.o | grep -v pal_stubs_host) build/host/nimble/*.o
+build/host/ble_stack
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c

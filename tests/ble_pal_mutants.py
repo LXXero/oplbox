@@ -87,7 +87,7 @@ def main():
         inc = ["-I" + str(ROOT / "firmware/ble"), "-I" + str(ROOT / "firmware/ble/cordio_port"), "-I" + str(ROOT / "tests/ble")]
         subprocess.run(["cc", "-std=gnu11", "-O1", "-w", "-fshort-enums", *cr_def, *["-I" + str(ROOT / i[2:]) for i in cr_inc], *inc, "-c", "-o", str(d / "pal_fm1.o"), str(files[PAL])], check=True)
         subprocess.run(["cc", "-std=gnu11", "-O1", "-w", "-fshort-enums", *inc, "-Wl,--gc-sections", "-o", str(exe),
-                        str(ROOT / "tests/ble_pal.c"), str(ROOT / "tests/ble/bb_model.c"), str(files[DRV]),
+                        str(ROOT / "tests/ble_pal.c"), str(ROOT / "tests/ble/bb_model.c"), str(ROOT / "tests/ble/air_central.c"), str(files[DRV]),
                         str(ROOT / "firmware/ble/ble_midi.c"), str(d / "pal_fm1.o"), *objs], check=True)
         try:
             r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=120)
