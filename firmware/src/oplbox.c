@@ -1475,8 +1475,33 @@ static char *cati(char *d, int32_t v, uint32_t w, int plus)   /* v right-aligned
     return d;
 }
 
+/* ---- the page's results over USB (wifi_sysex.c, docs/API.md): the last run's report, the pages' text and the raw
+ * evidence, in RAM until the next run; a run asked for over USB starts in the main loop as SAVE then PLAY would */
+static uint32_t wifi_report_state(void);
+static const uint8_t *wifi_report(uint32_t *n, uint32_t *serial);
+static int wifi_run_ask(uint32_t *run);
+static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint8_t *data, uint32_t nd);
+#include "wifi_sysex.c"
+#define WIFI_TEXT_MAX 6144u
+#define WIFI_REPORT_MAX (WR_HEAD + WIFI_TEXT_MAX + 2u + 4u * 32u + 3u * FM1WIFI_RAW_N * (6u + FM1WIFI_RAW_LEN))
+static uint8_t wifi_rep[WIFI_REPORT_MAX] __attribute__((section(".pool")));
+static uint32_t wifi_rep_n, wifi_rep_serial, wifi_runs, wifi_req, wifi_state;   /* wifi_req: a run asked for over USB */
+static wr_buf *wifi_cap;                      /* set: wifi_line adds the line to the report instead of drawing it */
+static uint32_t wifi_report_state(void) { return wifi_req ? (uint32_t)WR_RUNNING : wifi_state; }
+static const uint8_t *wifi_report(uint32_t *n, uint32_t *serial) { *n = wifi_rep_n; *serial = wifi_rep_serial & 0xFFFFu; return wifi_rep; }
+static int wifi_run_ask(uint32_t *run)
+{
+    if (wifi_req || wifi_state == WR_RUNNING) { *run = (wifi_runs + wifi_req) & 0xFFFFu; return WIFI_E_RUNNING; }
+    *run = 0;
+    if (edit) return WIFI_E_EDIT;             /* SAVE writes the song there: the page is not reachable */
+    wifi_req = 1;
+    *run = (wifi_runs + 1u) & 0xFFFFu;
+    return WIFI_OK;
+}
+
 static void wifi_line(uint32_t i, const char *s, uint16_t c)   /* line i of the page */
 {
+    if (wifi_cap) { if (i != 9u && *s) wr_line(wifi_cap, s); return; }   /* not the footer (PLAY: PAGE n), not a blank */
     draw_text_box(0, 2u + 22u * i, 240, &FONT_S, s, c, 0);
 #ifdef DINGHY_HOST
     printf("%6u ms  wifi page %u: %s\n", fm1_ms, i, s);
@@ -1811,7 +1836,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
 {
     char s[40], *p;
     uint32_t i, k;
-    lcd_fill(0, 0, 240, 240, C_BLACK);
+    if (!wifi_cap) lcd_fill(0, 0, 240, 240, C_BLACK);
     if (page >= 4u) { wifi_more(page, d, r, sv_got); return; }
     if (page == 0u) {
         int ok = d->err == FM1WIFI_OK && r->err == FM1WIFI_OK;
@@ -1923,6 +1948,55 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
     wifi_line(9, "PLAY: PAGE 3   SAVE: LEAVE", C_MUTE);
 }
 
+/* The report (wifi_sysex.c): the ten pages' lines as wifi_show draws them, every network the scan kept (the page
+ * has room for 7), then the counters behind page 9 and every frame kept, as bytes. */
+static void wifi_report_build(const fm1wifi_diag *d, const fm1wifi_radio *r, const fm1wifi_survey *sv, uint32_t sv_got,
+                              const fm1wifi_rxprobe *rx, int rx_ok, fm1wifi_ramcheck rc)
+{
+    static wr_buf w;
+    const fm1wifi_frames *f[3] = { &wl.fp, &wl.fa, &wl.fj };
+    uint32_t c[19] = { 0 }, i, k;
+    char s[96], *p;
+    wr_begin(&w, wifi_rep, sizeof wifi_rep, WIFI_TEXT_MAX, wifi_runs);
+    wifi_cap = &w;
+    for (i = 0; i < 10u; i++) { if (i) wr_line(&w, ""); wifi_show(i, d, r, sv, sv_got, rx, rx_ok, rc); }
+    wifi_cap = 0;
+    if (wl.list.n) {
+        wr_line(&w, "");
+        wr_line(&w, "ALL NETWORKS: SSID, BSSID, CH, RSSI, SECURITY, P: PROBED");
+    }
+    for (i = 0; i < wl.list.n; i++) {
+        const fm1wifi_bss *b = &wl.list.e[i];
+        p = s;
+        if (!b->ssid_len) p = cat(p, "(HIDDEN)");
+        for (k = 0; k < b->ssid_len && b->ssid[k]; k++) *p++ = b->ssid[k] < ' ' || b->ssid[k] > '~' ? '?' : b->ssid[k];
+        p = cat_mac(cat(p, "  "), b->bssid);
+        p = cati(p, b->channel, 3, 0); p = cati(p, b->rssi, 5, 0); *p++ = ' ';
+        cat(cat(p, fm1wifi_sec_name(b->sec)), b->probed ? " P" : "");
+        wr_line(&w, s);
+    }
+    if (wl.list.full) { cat(catu(s, wl.list.full), " MORE NOT KEPT (THE LIST HOLDS 16)"); wr_line(&w, s); }
+    c[0] = wl.w0; c[1] = wl.c.host04; c[2] = wl.q0; c[3] = wl.c.txrxq;
+    for (i = 0; i < 3u; i++) {
+        c[4] += f[i]->frames; c[5] += f[i]->bad; c[6] += f[i]->to_us; c[7] += f[i]->tx; c[8] += f[i]->tx_err;
+        c[17] += f[i]->beacons; c[18] += f[i]->probe_resps;
+    }
+    c[9] = wl.c.crc_err; c[10] = wl.c.phy_err; c[11] = wl.c.rx_dup; c[12] = wl.c.rx_overflow;
+    c[13] = wl.c.tx_ok; c[14] = wl.c.tx_fail; c[15] = wl.c.tx_retry; c[16] = wl.c.tx_underflow;
+    wr_counters(&w, c, 19);
+    for (i = 0; i < 3u; i++)
+        for (k = 0; k < f[i]->n_raw; k++)
+            wr_frame(&w, i + 1u, f[i]->raw_ch[k], f[i]->raw_n[k], f[i]->raw[k], f[i]->raw_n[k] < FM1WIFI_RAW_LEN ? f[i]->raw_n[k] : FM1WIFI_RAW_LEN);
+    wifi_rep_n = w.n;
+    wifi_rep_serial++;
+#ifdef DINGHY_HOST
+    {   const char *path = getenv("HOST_WIFI_REPORT");   /* tests/run_host.sh: the report as the FM-1 would send it */
+        FILE *o = path ? fopen(path, "wb") : 0;
+        if (o) { fwrite(wifi_rep, 1, wifi_rep_n, o); fclose(o); }
+    }
+#endif
+}
+
 /* The crash screen's note (platform.c): the WiFi step and the last register write, when the crash came inside the
  * WiFi library (fm1wifi_where). Called from the fault handler: reads memory only. */
 static const char *app_crash_note(uint32_t i)
@@ -1971,9 +2045,12 @@ static void wifi_page(void)
         platform_poll();
         b = fm1_input_edges(&rel);
         if (b & (1u << BTN_SAVE)) break;
+        if (wifi_req && started) break;      /* a run asked for over USB: leave as SAVE does; the main loop opens the page again */
+        if (wifi_req) b |= 1u << BTN_PLAY;    /* ... and there it starts as PLAY does */
         if ((b & (1u << BTN_PLAY)) && started) { page = (page + 1u) % 10u; wifi_show(page, &d, &r, sv, sv_got, &rx, rx_ok, rc); }
         if ((b & (1u << BTN_PLAY)) && !started) {
             started = 1;
+            wifi_req = 0; wifi_runs++; wifi_state = WR_RUNNING;   /* the report says RUNNING until it is rebuilt */
             chip_off();                       /* no sound while the core comes up: */
             fm1_delay_ms(15);                 /* both output halves rendered silent, so a masked trim stays quiet */
             platform_supply_full();           /* the rails at M-VAVE's levels before the radio's load (platform.c) */
@@ -1993,12 +2070,18 @@ static void wifi_page(void)
             } else wl.reached = 0;
             rc = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             t_check = fm1_ms;
+            wifi_report_build(&d, &r, sv, sv_got, &rx, rx_ok, rc);
+            wifi_state = WR_DONE;
             wifi_show(page, &d, &r, sv, sv_got, &rx, rx_ok, rc);
         }
         if (started && fm1_ms - t_check >= 500u) {   /* the pool again: a later write by the hardware shows too */
             fm1wifi_ramcheck now = fm1wifi_pattern_check(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             t_check = fm1_ms;
-            if (now.changed != rc.changed || now.first != rc.first) { rc = now; if (page == 0u) wifi_ram_line(rc); }
+            if (now.changed != rc.changed || now.first != rc.first) {
+                rc = now;
+                if (page == 0u) wifi_ram_line(rc);
+                wifi_report_build(&d, &r, sv, sv_got, &rx, rx_ok, rc);   /* page 1's RAM CHECK in the report too */
+            }
         }
     }
     fm1wifi_power_down();                     /* nothing if it never came up */
@@ -2116,7 +2199,22 @@ static int slot_store(uint32_t i, uint32_t n)
 }
 #ifndef DINGHY_HOST                           /* tests/slot_sysex.c runs it on a computer */
 #include "slot_sysex.c"
-static void app_usb_cmd(const uint8_t *d, uint32_t n) { slot_sysex(d, n); }
+static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint8_t *data, uint32_t nd)
+{
+    return slot_reply(cmd, head, nh, data, nd);
+}
+static void app_usb_cmd(const uint8_t *d, uint32_t n) { if (!slot_sysex(d, n)) wifi_sysex(d, n); }
+#else                                         /* the host: tests/host.c's "usb" script lines; the replies as text */
+static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint8_t *data, uint32_t nd)
+{
+    uint32_t i;
+    printf("%6u ms  USB reply %02X:", fm1_ms, cmd);
+    for (i = 0; i < nh; i++) printf(" %02X", head[i]);
+    printf(" | %u bytes\n", nd);
+    (void)data;
+    return 0;
+}
+static void app_usb_cmd(const uint8_t *d, uint32_t n) { wifi_sysex(d, n); }
 #endif
 
 static void app_main(void)
@@ -2251,6 +2349,8 @@ static void app_main(void)
         }
         if ((b & (1u << BTN_SAVE)) && edit) { save_song(); redraw = 1; }
         if ((b & (1u << BTN_SAVE)) && !edit) { wifi_page(); redraw = 1; shown_order = ~0u; }   /* the WiFi page */
+        if (wifi_req && edit) wifi_req = 0;   /* asked over USB, then EDIT came first: the page is not reachable */
+        if (wifi_req) { wifi_page(); redraw = 1; shown_order = ~0u; }   /* asked over USB: the page, PLAY pressed */
         if ((b & (1u << BTN_GLO)) && !edit) {   /* the battery's smoothed ADC count, to tune BATT_LEVEL by */
             static char bm[24];
             char *p = cat(bm, "BATTERY ");

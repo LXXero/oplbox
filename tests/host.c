@@ -104,6 +104,7 @@ static void midi_send(uint32_t st, uint32_t d1, uint32_t d2) { printf("%6u ms  M
 static void app_audio(int32_t *out, uint32_t n);
 static uint32_t host_cell(uint32_t order, uint32_t row, uint32_t col);   /* the app: a pattern cell, whole */
 static void app_main(void);
+static void app_usb_cmd(const uint8_t *d, uint32_t n);
 
 /* the script: at t ms, keys down (bit k = key k, 0 = F3), a button edge, a MIDI message. A script file (the second
  * argument) replaces it, a line each: "T keys MASK" (hex or decimal), "T btn ID", "T enc ID CLICKS", "T midi ST D1 D2",
@@ -111,8 +112,10 @@ static void app_main(void);
  * "T save O R C" (remember the cell), "T same O R C" (it is the remembered one), "T differs O R C" (it is not),
  * "T note O R C N" (its note is N), "T empty O R C" (its note is 0), "T is O R C V" (the whole value is V),
  * "T within O R C LO HI" (LO <= the whole value <= HI). The app may answer rows a pattern does not have with
- * other state (oplbox.c host_cell: 99, 98, 97, 96) */
-typedef struct { uint32_t t, keys; int btn; uint8_t st, d1, d2; int enc, clicks; int chk; uint32_t o, r, c, v, v2; } host_ev_t;
+ * other state (oplbox.c host_cell: 99, 98, 97, 96). "T usb CMD [HEX]" hands the app a SysEx frame in the updater's
+ * framing (cmd CMD, the body HEX bytes) as the platform does, from platform_poll; its replies are printed */
+typedef struct { uint32_t t, keys; int btn; uint8_t st, d1, d2; int enc, clicks; int chk; uint32_t o, r, c, v, v2;
+                 uint32_t usb, usb_n; uint8_t body[32]; } host_ev_t;
 enum { CHK_SAVE = 1, CHK_SAME, CHK_DIFFERS, CHK_NOTE, CHK_EMPTY, CHK_IS, CHK_WITHIN };
 static const host_ev_t SCRIPT0[] = {
     {200, 1u << 7, -1, 0, 0, 0},                                /* C4 */
@@ -144,6 +147,12 @@ static void read_script(const char *path)
         if (!strcmp(what, "keys")) { sscanf(line, "%*u %*s %i", (int *)&e.keys); }
         else if (!strcmp(what, "btn")) { sscanf(line, "%*u %*s %d", &e.btn); }
         else if (!strcmp(what, "enc")) { sscanf(line, "%*u %*s %d %d", &e.enc, &e.clicks); }
+        else if (!strcmp(what, "usb")) {
+            char hex[80] = "";
+            sscanf(line, "%*u %*s %x %79s", &a, hex);
+            e.usb = 0x100u | (a & 0xFFu);
+            while (e.usb_n < sizeof e.body && sscanf(hex + 2u * e.usb_n, "%2x", &b) == 1) e.body[e.usb_n++] = (uint8_t)b;
+        }
         else if (!strcmp(what, "midi")) { sscanf(line, "%*u %*s %i %u %u", (int *)&a, &b, &c); e.st = (uint8_t)a; e.d1 = (uint8_t)b; e.d2 = (uint8_t)c; }
         else if (!strcmp(what, "save") || !strcmp(what, "same") || !strcmp(what, "differs") || !strcmp(what, "note") || !strcmp(what, "empty")
                  || !strcmp(what, "is") || !strcmp(what, "within")) {
@@ -215,6 +224,14 @@ static void platform_poll(void)                 /* one call = one millisecond */
             if (e->chk == CHK_SAVE) host_saved = u;
             printf("%6u ms  cell (%u,%u,%u) = %08X: %s\n", fm1_ms, e->o, e->r, e->c, u, ok ? "ok" : "FAIL");
             host_failed += !ok;
+        } else if (script[step].usb) {         /* 00 59 cmd len24 body ~sum(body), as ota_service hands it over */
+            const host_ev_t *e = &script[step];
+            uint8_t d[48];
+            uint32_t i, sum = 0;
+            d[0] = 0; d[1] = 0x59; d[2] = (uint8_t)e->usb; d[3] = (uint8_t)e->usb_n; d[4] = d[5] = 0;
+            for (i = 0; i < e->usb_n; i++) { d[6 + i] = e->body[i]; sum += e->body[i]; }
+            d[6 + e->usb_n] = (uint8_t)~sum;
+            app_usb_cmd(d, 7u + e->usb_n);
         } else if (script[step].st) {
             mq[mq_w % 64u][0] = script[step].st; mq[mq_w % 64u][1] = script[step].d1; mq[mq_w % 64u][2] = script[step].d2;
             mq_w++;

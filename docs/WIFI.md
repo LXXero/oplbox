@@ -9,7 +9,8 @@ driver has to replace, then splits the work into stages small enough for one tas
 Read on 2026-10-24. Corrected on 2026-10-25 after docs/WIFI_REVIEW.md: the WEXT count, the `wl_rf_common.a`
 provenance (new section "What `wl_rf_common.a` carries"), the source of the MAC defaults, a symbol total and the
 GPL source wording. "[unchecked]" marks what nobody has verified yet. This is evidence, not a legal opinion.
-Stage 2 ran on xero's FM-1 on 2026-10-26 (its values are in "Stage 2" below); nothing else here has run on one.
+Stage 2 ran on xero's FM-1 on 2026-10-26 (its values are in "Stage 2" below), stage 3 the same day, and stages 4 and
+5 on 2026-10-27 (docs/WIFI_STAGE4.md "The first run on the FM-1"); nothing else here has run on one.
 
 | Source | Commit read |
 | --- | --- |
@@ -658,9 +659,9 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   **FM-1**: xero flashes, opens the page, reads out four numbers and the pattern check.
 - **Built** (TODO.md 7e): the fm1wifi library ("Standalone library") and the page. Outside EDIT, **SAVE** opens it;
   nothing touches the radio until **PLAY** there, which stops the sound, fills the free pool (from the end of the
-  last `.pool` buffer to the end of the pool region, about 84 KB), powers the core up and shows `RESULT`,
-  `MAC_CSR0`, `MAC_SYS_CTRL`, `BBP 0` and `RAM CHECK` (bytes changed, and the first one's address), checking the
-  pool again every half second. **SAVE** leaves: the core is powered down, the sound comes back.
+  last `.pool` buffer to the end of the pool region, about 72 KB since the WiFi report's buffer took 12 KB of it),
+  powers the core up and shows `RESULT`, `MAC_CSR0`, `MAC_SYS_CTRL`, `BBP 0` and `RAM CHECK` (bytes changed, and the
+  first one's address), checking the pool again every half second. **SAVE** leaves: the core is powered down, the sound comes back.
 - **Run on xero's FM-1** (2026-10-26 02:20 UTC, main c1fc5e8): `RESULT: OK`, `MAC_CSR0` 00300100, `MAC_SYS_CTRL`
   00000003, `BBP 0` 00, `RAM CHECK: 0 CHANGED`, no hang. Read: chipset 0x0030 ("WL30", JieLi's name for the core)
   revision 0x0100, so the window at 0x30000 answers right after `wf_clk_rst_init` and `wdma_init`, before
@@ -710,8 +711,13 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   ready bit (WL30 host 0x04 bit 17), as JieLi's receive thread does without the interrupt; the FIFO read is
   `sdio_recv_int_hdl`'s (0x0324 = 2, a 4-byte DMA for the big-endian length word N, then N + 4 bytes); the RXWI and
   the trailer by rt2800.h's fields; `RX_FILTER_CFG` from the MAC's defaults (written in stage 4, not 5: receiving
-  needs them); a passive scan per channel into a list of 16. The fixtures are hand-written from IEEE 802.11 until the
-  page's raw frames (pages 7-8) come back from the FM-1. Not run on an FM-1.
+  needs them); a passive scan per channel into a list of 16. The fixtures are hand-written from IEEE 802.11, plus the
+  first 36 bytes of the first four frames from the FM-1 (pages 7-8).
+- **Run on xero's FM-1** (2026-10-27, main 82f7fa6): `PASSIVE OK 12 NETWORKS`, 15 networks in the list, `FRAMES 34
+  BAD 0`; the RXWI's WCID, MPDU byte count, PHY mode, MCS and RSSI0 and the header at offset 20 are where rt2800 has
+  them; the length word N is the RXWI plus the MPDU rounded up to 4 bytes. Receiving works by polling with no IRQ and no
+  0x0328. Open: 0x30F04 bit 16 (set after the run), the RXWI's other bytes, RSSI0 against another receiver. The page's
+  results now also come back over USB (docs/API.md "WiFi test page over SysEx"), whole frames included.
 
 ### Stage 5: transmit raw frames, active scan (needs FM-1)
 
@@ -725,7 +731,11 @@ OPLBOX's port is `firmware/hal/fm1wifi_port_bsp.c`.
   (JieLi's two words, the TXWI, the frame; frame + 26 bytes by DMA) behind the same queue checks; the 22 defaults
   with JieLi's `TX_RTY_CFG` (retry limits 31 and 15: what ran on this core, and joining at 1 Mbit/s wants the
   retries); the address made from the flash part's unique ID on every start instead of kept in a settings sector (the
-  same every time without a flash write). Not run on an FM-1.
+  same every time without a flash write).
+- **Run on xero's FM-1** (2026-10-27, main 82f7fa6): `ACTIVE OK 12 ANSWERS`, `SENT 26 ERR 0`, `TX OK 26 FAIL 0
+  RETRY 0`, `TO ME 12`: probe requests leave at CCK 1 Mbit/s through the TX gate, APs answer them, and the MAC passes
+  frames to the address made from the unique ID (CE:62:BC:AE:4D:05 on xero's FM-1). Unicast frames that need an
+  acknowledgement (the join's) have not been sent yet.
 
 ### Stage 6: 802.11 station, open networks (needs FM-1)
 

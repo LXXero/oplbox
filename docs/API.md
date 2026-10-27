@@ -155,7 +155,7 @@ USB-MIDI, class compliant, cable 0.
 `status` includes the channel: `0x90` note on channel 1, `0x93` channel 4; a note on with velocity 0 is a
 note off. SysEx does not reach `midi_get`: the platform takes it (the updater's keys and frames). A frame in the
 updater's framing whose command is not the updater's goes to the app's `app_usb_cmd(d, n)` in the main loop
-(`d` decoded, the command `d[2]`, the body from `d + 6`); OPLBOX's are the song slots below.
+(`d` decoded, the command `d[2]`, the body from `d + 6`); OPLBOX's are the song slots and the WiFi test page below.
 
 ## Song slots over SysEx
 
@@ -186,6 +186,45 @@ it is done; the sound goes on until the slot is written, which stalls it as SAVE
 The command bytes are none of the stock updater's (`0x11` handshake, `0x30` read) or fm1-base's (`0x41`-`0x43`
 backup and restore, `0x50`-`0x54` the screen mirror). The other SysEx in the family has its own header and never
 reaches here: the stock keys `F0 22 24 35 7D/7F F7` and Felucca's editor `F0 7D 46 4C`.
+
+## WiFi test page over SysEx
+
+`tools/fm1_wifi_report.py` reads the WiFi test page's results (docs/WIFI_STAGE4.md) and can start a run, so nobody has
+to photograph ten pages (`firmware/src/wifi_sysex.c`). Same framing as the song slots.
+
+| cmd | from the computer | from the FM-1 |
+| --- | --- | --- |
+| `0x62` report | `off24` | `status total24 off24 serial16 data`: up to 512 bytes of the report from `off` |
+| `0x63` run | (nothing) | `status run16`, at once |
+
+`serial16` changes when the FM-1 rebuilds the report (it does while the page is open and its RAM check changes); a
+reader that sees it change between chunks starts again. A run asked for starts in the main loop as SAVE then PLAY
+would: the sound stops, the page opens and runs (about 15 s), and stays open on page 1 afterwards (SAVE leaves). Asked
+for with the page open on a finished run, the page leaves as SAVE does and runs again. `run16` is the number the run
+will have (1 for the first since the FM-1 started); the report's header carries the number of the run it is from.
+
+| status | |
+| --- | --- |
+| 0 | report: done, the chunk follows. run: the run will start |
+| 1 | bad request (a body of the wrong length, an offset past the end) |
+| 2 | report: no run since the FM-1 started |
+| 3 | a run is asked for or going on (run: `run16` is its number); the report is not there until it ends |
+| 4 | run: EDIT is open (SAVE writes the song there, so the page cannot open); nothing started |
+
+The report, in RAM until the next run (numbers little-endian):
+
+| Bytes | What |
+| --- | --- |
+| 4 | `OPLW` |
+| 1 | version, 1 |
+| 1 | flags: bit 0 the text was cut short, bit 1 counters or frames were (the buffer holds 6 KiB of text and every frame) |
+| 2 | the run's number |
+| 2 | T, then T bytes of text: every line pages 1-10 show, in order (not the `PLAY: PAGE n` footers), a blank line between pages, then `ALL NETWORKS: ...` and one line per network the scan kept (SSID whole, BSSID, channel, RSSI, security, `P` probed), `n MORE NOT KEPT` when the list was full |
+| 1 | K, then K 32-bit counters: 0x30F04 before and after, `TXRXQ_PCNT` before and after, frames read, those that did not parse, those to our address, frames sent, sends that failed, `RX_STA_CNT0` CRC and PHY errors, `RX_STA_CNT2` duplicates and overflows, `TX_STA_CNT` OK, failed, retries, underflows, beacons, probe responses (K is 19) |
+| 1 | F, then F frames: step (1 passive scan, 2 active scan, 3 join), channel, the bytes it had (16 bits: N + 8), the bytes kept (16 bits, at most 512), then those bytes as the FIFO gave them (length word, RXWI, the frame, the trailer) |
+
+Up to four frames are kept per step. The tool prints the text and the counters; `--out DIR` writes `report.txt`,
+`report.bin`, `counters.txt` and `frame-NN-<step>-chNN.bin`.
 
 ## Settings
 
