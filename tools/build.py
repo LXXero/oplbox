@@ -306,11 +306,29 @@ def build_ble():
     tc_all(*[("cc", *CFLAGS, "-fshort-enums", "-Wno-parentheses", *cr_inc, "-Ifirmware/ble", "-Ifirmware/ble/cordio_port", *cr_def, *libc_inc(), "-c", s, "-o", o)
              for s, o in zip(cr_all, cr_objs)])
     kc, kd = section_sizes(cr_objs)
+    # the host stack linked with --gc-sections (the driver and the test run are in the app's own link), to measure what a build that carries it would add: the host stub PAL stands
+    # for the chip's (it counts, so its few bytes are in the number), the BSP's libc.c and ble_libc.c are the C library
+    extra = [(crp / "pal_stubs_host.c", [*cr_inc, "-Ifirmware/ble/cordio_port", "-fshort-enums", "-Wno-parentheses", *cr_def, *libc_inc()]),
+             (FW / "ble" / "ble_libc.c", ["-Ifirmware/ble"]),
+             (BSP / "chip" / "libc.c", [*BSP_INC])]
+    ex_objs = [out / f"measure_{src.stem}.o" for src, _ in extra]
+    tc_all(*[("cc", *CFLAGS, *fl, "-c", src, "-o", o) for (src, fl), o in zip(extra, ex_objs)])
+    elf = out / "ble_measure.elf"
+    tc("pi32v2/bin/ld", "--gc-sections", "-e", "ble_nimble_init", "-u", "cordio_ctrl_init", "-u", "ble_nimble_poll",
+       *own_objs, *[o for o in nim_objs if o.name not in ("nimble_fm1ble.o", "nimble_fm1ble_test.o")], *cr_objs, *ex_objs, "-o", elf)
+    lc = ld = 0
+    for ln in tc("common/bin/objdump", "-h", elf).splitlines():
+        p = ln.split()
+        if len(p) > 3 and re.match(r"\.(text|rodata)", p[1]):
+            lc += int(p[2], 16)
+        elif len(p) > 3 and re.match(r"\.(data|bss)", p[1]):
+            ld += int(p[2], 16)
     oc, od = section_sizes(own_objs)
     nc, nd = section_sizes(nim_objs)
     return (f"firmware/ble/ alone: {len(own_objs)} objects {oc} B code+rodata, {od} B data+bss; "
             f"NimBLE host and port: {len(nim_objs)} objects {nc} B code+rodata, {nd} B data+bss; "
-            f"Cordio controller: {len(cr_objs)} objects {kc} B code+rodata, {kd} B data+bss (not linked yet)")
+            f"Cordio controller: {len(cr_objs)} objects {kc} B code+rodata, {kd} B data+bss; all linked with --gc-sections "
+            f"(stub PAL): {lc} B code+rodata, {ld} B data+bss")
 
 
 # ---- the WiFi trim's RAM code (docs/WIFI_STAGE3.md "What runs from RAM"): the radio's trim must not touch the flash,

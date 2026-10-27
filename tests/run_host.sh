@@ -338,6 +338,36 @@ cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/fm1ble.o firmw
 cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -Ifirmware/ble -Itests/ble -o build/host/ble_radio tests/ble_radio.c \
    tests/ble/bb_model.c firmware/ble/fm1ble.c firmware/ble/fm1ble_test.c firmware/ble/ble_midi.c
 build/host/ble_radio
+# the C library functions the BLE stacks need beyond the BSP's (firmware/ble/ble_libc.c: a small heap, memmove, strlen)
+cc -std=c11 -Wall -Wextra -Werror -Dmalloc=ble_malloc -Dfree=ble_free -Drealloc=ble_realloc -Dmemmove=ble_memmove \
+   -Dstrlen=ble_strlen -D__assert_func=ble_assert_func -fno-builtin -c -o build/host/ble_libc.o firmware/ble/ble_libc.c
+cc -std=c11 -Wall -Wextra -Werror -fno-builtin -o build/host/ble_libc_test tests/ble_libc.c build/host/ble_libc.o
+build/host/ble_libc_test
+# Cordio's LE controller (firmware/ble/cordio/, Apache-2.0, held to the upstream commit by its checksums) in our configuration
+# and glue (firmware/ble/cordio_port/) on host stubs for the chip's PAL: the HCI start-up and advertising commands, the
+# refusals, and the first advertising transmit it asks the baseband for (docs/BLUETOOTH_CORDIO.md). Never run on a chip.
+python3 - <<'PY'
+import hashlib, sys
+from pathlib import Path
+d = Path("firmware/ble/cordio")
+want = dict(reversed(l.split(None, 1)) for l in (d / "SHA256SUMS").read_text().splitlines())
+have = {str(p.relative_to(d)) for p in d.rglob("*") if p.is_file() and p.name != "SHA256SUMS"}
+bad = [f for f in sorted(want) if not (d / f).is_file() or hashlib.sha256((d / f).read_bytes()).hexdigest() != want[f]]
+bad += [f"{f} (not in SHA256SUMS)" for f in sorted(have - set(want))]
+if bad: sys.exit("FAIL: firmware/ble/cordio differs from Cordio 3656312: " + ", ".join(bad))
+print(f"Cordio: {len(want)} files as at 3656312")
+PY
+CR=firmware/ble/cordio; CP=firmware/ble/cordio_port
+CR_INC=$(find $CR -name '*.h' -printf '-I%h\n' | sort -u | tr '\n' ' ')
+CR_DEF=$(sed 's/^/-D/' $CP/DEFINES.txt | tr '\n' ' ')
+mkdir -p build/host/cordio
+sed "s|^|$CR/|" $CP/SOURCES.txt > build/host/cordio/sources.txt
+echo $CP/cordio_ctrl.c >> build/host/cordio/sources.txt; echo $CP/cordio_wsf.c >> build/host/cordio/sources.txt
+echo $CP/pal_stubs_host.c >> build/host/cordio/sources.txt
+xargs -P 4 -I{} sh -c "cc -std=gnu11 -O1 -w -fshort-enums -ffunction-sections -fdata-sections $CR_DEF $CR_INC -Ifirmware/ble -I$CP -c -o build/host/cordio/\$(echo {} | tr / _).o {}" < build/host/cordio/sources.txt
+cc -std=gnu11 -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -I$CP -Wl,--gc-sections -o build/host/ble_cordio tests/ble_cordio.c \
+   firmware/ble/ble_midi.c build/host/cordio/*.o
+build/host/ble_cordio
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c
