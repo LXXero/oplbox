@@ -506,7 +506,8 @@ PY
 # the Bluetooth test page (docs/BLUETOOTH_PAGE.md): firmware/ble/fm1ble_test.c, the run the firmware links, is warning-free
 # alone; the simulator links tests/ble/fm1ble_test_host.c instead (a made-up run), so these test the page, the SysEx
 # report (firmware/src/ble_sysex.c, commands 0x66 and 0x67) and tools/fm1_ble_report.py, not the radio
-cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/fm1ble_test.o firmware/ble/fm1ble_test.c
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -Ifirmware/ble/cordio_port -c -o build/host/fm1ble_test.o firmware/ble/fm1ble_test.c
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -Ifirmware/ble/cordio_port -c -o build/host/fm1ble_stack.o firmware/ble/fm1ble_stack.c
 # over USB SysEx, no button pressed: no run yet (2), the run command with a 2 s wait for a central (none comes: connect
 # fails, the MIDI steps are skipped), both commands say running meanwhile (3), the report whole, a second run asked from
 # the open page (no wait: the connect steps are skipped) leaves it and runs again, SAVE leaves, EDIT refuses (4), bad
