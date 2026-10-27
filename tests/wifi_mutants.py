@@ -12,6 +12,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import limits
+
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "firmware/wifi"
 
@@ -66,8 +69,10 @@ def main():
                         str(d / "fm1wifi.c"), str(d / "fm1wifi_frame.c"), str(ROOT / "tests/wifi/wpa_ap.c"),
                         str(LIB / "wpa_crypto.c"), *map(str, sorted((LIB / "bearssl").glob("*.c")))], check=True)
         try:
-            r = subprocess.run([str(exe), str(ROOT / "tests/wifi"), str(out)], capture_output=True, text=True, timeout=120)
+            r = limits.run([str(exe), str(ROOT / "tests/wifi"), str(out)], capture_output=True, text=True, timeout=120)
             code, err = r.returncode, r.stderr
+            if code < 0:                                          # killed by a signal, e.g. the memory limit
+                code, err = None, "killed (signal %d)" % -code
         except subprocess.TimeoutExpired:
             code, err = None, "hung"
         caught = (code == 3 and "unbounded wait" in err) if want == "unbounded" else (code == 1 and "FAIL" in err)

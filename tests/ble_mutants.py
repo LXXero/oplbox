@@ -11,6 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import limits
+
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "firmware/ble"
 
@@ -97,8 +100,10 @@ def main():
                         "-I" + str(ROOT / "tests/ble"), "-o", str(exe), str(ROOT / "tests/ble_hci.c"),
                         str(ROOT / "tests/ble/hci_model.c"), str(d / "hci.c")], check=True)
         try:
-            r = subprocess.run([str(exe), str(ROOT / "tests/ble")], capture_output=True, text=True, timeout=60)
+            r = limits.run([str(exe), str(ROOT / "tests/ble")], capture_output=True, text=True, timeout=60)
             code, err = r.returncode, r.stderr
+            if code < 0:                                          # killed by a signal, e.g. the memory limit
+                code, err = None, "killed (signal %d)" % -code
         except subprocess.TimeoutExpired:
             code, err = None, "hung"
         caught = code == 1 and "FAIL" in err

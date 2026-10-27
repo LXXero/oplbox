@@ -5,15 +5,21 @@ deliberate bug, built into wifi_ip and run. The test must fail on every one.
 
     wifi_ip_mutants.py <out>      <out> is build/host (lwip/*.o and fm1wifi_net.o must be there); exit 1 if one survives
 """
-import os
 import shutil
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import limits
+
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "firmware/wifi"
+
+# Each mutant's run: address space and wall clock caps (the unmutated test is measured in the commit message).
+MEM_MB = 512      # the unmutated run peaks at 58 MB RSS and needs 64 MB of address space
+TIMEOUT = 30       # the unmutated run takes ~1.5 s
 
 # (name, text in fm1wifi_ip.c, replacement)
 MUTANTS = (
@@ -80,12 +86,12 @@ def main():
         subprocess.run(["cc", *flags, "-o", str(exe), str(d / "fm1wifi_ip.c"), *objs, str(out / "fm1wifi_net.o"), *lwip],
                        check=True)
         try:
-            r = subprocess.run([str(exe), str(ROOT / "tests/wifi")], capture_output=True, text=True, timeout=120)
+            r = limits.run([str(exe), str(ROOT / "tests/wifi")], mem_mb=MEM_MB, capture_output=True, text=True, timeout=TIMEOUT)
             return name, "caught" if r.returncode != 0 else "survived"
         except subprocess.TimeoutExpired:
-            return name, "caught"                                 # a hang fails the test too
+            return name, "caught"                                 # a hang, or the limit killing it, fails the test too
 
-    with ThreadPoolExecutor(os.cpu_count() or 4) as ex:
+    with ThreadPoolExecutor(limits.workers()) as ex:
         results = list(ex.map(one, range(len(MUTANTS))))
     for name, what in results:
         if what == "moved":
