@@ -397,6 +397,8 @@ static void rx_capture(fm1ble *b)
     d->rx_last_len = (uint8_t)len;
     d->rx_last_n = (uint8_t)(len < sizeof d->rx_last ? len : sizeof d->rx_last);
     memcpy(d->rx_last, b->blk + b->rx[k] + FM1BLE_RX_HDR, d->rx_last_n);
+    e16(b, FM1BLE_E_RXSTAT0, 0);                     /* taken: the hardware writes the status of the next packet */
+    e16(b, FM1BLE_E_RXSTAT1, 0);
     if (type == 5)
         d->rx_conn_ind++;
     else if (type == 3)

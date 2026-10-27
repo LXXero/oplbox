@@ -284,7 +284,7 @@ build/host/wifi_net
 # and the test must catch 17 deliberate bugs in hci.c
 for f in firmware/ble/*.c firmware/ble/*.h; do
   if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v -e '"hci\.h"' -e '"ble_midi\.h"' -e '"ble_nimble\.h"' \
-       -e '"ble_nimble_npl\.h"' -e '"fm1ble_test\.h"'; then
+       -e '"ble_nimble_npl\.h"' -e '"fm1ble_test\.h"' -e '"fm1ble\.h"' -e '"fm1ble_port\.h"' -e '"fm1ble_regs\.h"'; then
     echo "FAIL: $f includes a file from outside firmware/ble/" >&2; exit 1; fi
 done
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/ble_hci.o firmware/ble/hci.c
@@ -330,6 +330,14 @@ cc -std=gnu11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror $NB_INC -o build/h
    tests/ble/hci_model.c firmware/ble/hci.c firmware/ble/ble_midi.c build/host/nimble/*.o
 for w in session silent refused refusing never npl; do build/host/ble_nimble tests/ble build/host $w; done
 python3 tests/ble_nimble_mutants.py build/host
+# the BLE baseband driver (firmware/ble/fm1ble.c, docs/BLUETOOTH_RADIO.md) and the test run on it (fm1ble_test.c) against a
+# register model written from the same facts (tests/ble/bb_model.c): the power-up writes in order, the RAM block, the
+# advertising link, polling, stopping, and the run for a baseband that repeats events, one that needs re-arming, one that
+# needs the shared radio's init first and a silent one. Never run on an FM-1.
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/ble -c -o build/host/fm1ble.o firmware/ble/fm1ble.c
+cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -Ifirmware/ble -Itests/ble -o build/host/ble_radio tests/ble_radio.c \
+   tests/ble/bb_model.c firmware/ble/fm1ble.c firmware/ble/fm1ble_test.c firmware/ble/ble_midi.c
+build/host/ble_radio
 # the update path from felucca-bsp (ota.c, the update loader) with a package made in the test: the identity, the
 # firmware's own frames, an install that keeps the song slots and the settings, refusals before any erase
 cc -O2 -Wall -Wno-unused-function -o build/host/loader_test tests/loader_test.c
