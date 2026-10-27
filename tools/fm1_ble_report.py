@@ -51,7 +51,11 @@ COUNTERS = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common",
             "rx_hdr", "rx_stat", "rx_type", "rx_len",
             "pal_adv_ops", "pal_conn_ops", "pal_rx_ok", "pal_rx_timeout",
             "pal_resp_late", "pal_stuck", "pal_timer_late_us", "pal_done_37",
-            "pal_done_38", "pal_done_39", "txpwr", "ram_end"]
+            "pal_done_38", "pal_done_39", "txpwr", "ram_end",
+            "pal_adv_events", "pal_adv_covered", "pal_adv_ended", "pal_adv_conn_ind",
+            "pal_conn_ended", "pal_conn_rx", "pal_refused", "evtcount"]
+# up to 122afe3 the firmware sent the first 32 of these (pal_done_37-39 then counted the driver's one-channel events
+# that ended); a report of 32 reads with those names
 # the 24 counters of the firmware at 48ea034 and before (the first FM-1 run); a pair is two 16-bit counts in one word, low
 # then high, which the tool splits
 COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "events", "rearms", "rx_packets", "rx_scan_req",

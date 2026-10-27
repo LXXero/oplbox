@@ -4,13 +4,18 @@
  * in platform/include/pal_*.h and from Cordio's callers (bb_ble_adv_slave.c, bb_ble_conn_slave.c), not from any chip's PAL.
  * Never run on an FM-1.
  *
- * The translation. Cordio asks for one packet at a time with an absolute time; the driver makes each of Cordio's operations
- * a one-channel hardware event: an advertising packet (PalBbBleTxData on channel 37-39) or a peripheral's connection event
- * (PalBbBleRxData on 0-36). The baseband reports two things per event, a packet received and the event's end, and they
- * become Cordio's completions:
+ * The translation. Cordio asks for one packet at a time with an absolute time. A peripheral's connection event
+ * (PalBbBleRxData on 0-36) is one hardware event on that channel. An advertising event is three of Cordio's packets
+ * (PalBbBleTxData on 37, 38 and 39, bb_ble_adv_slave.c), and the hardware's advertising event covers all three (it hops
+ * by itself): the first of them arms one (fm1ble_op_adv, armed as the driver's own advertising, the only advertising a
+ * central heard from the FM-1: at 122afe3 the one-channel events this PAL armed per packet were never heard, and the
+ * ones on 38 and 39 never ended), and the next ones on a channel not yet asked for in it are served by it ("covered").
+ * The baseband reports two things per event, a packet received and the event's end, and they become Cordio's
+ * completions:
  *   advertising:  the ADV PDU went (txCback) when a request came in or the event ended; the request (rxCback) with the
  *                 packet, or a timeout at the end; the SCAN_RSP Cordio then hands over (PalBbBleTxTifsData) goes into the
- *                 response buffer, and its txCback comes at the end;
+ *                 response buffer (kept for the next events), and its txCback comes at the end; a covered packet
+ *                 completes the same way, at once when the event has already ended; a CONNECT_IND ends the event;
  *   connection:   the master's packet (rxCback), or a timeout at the end; the response goes into the response buffer
  *                 and its txCback comes at the end; a second receive in the same event times out (one exchange per event:
  *                 the hardware's own behaviour after the response is [measure on FM-1]).
@@ -42,7 +47,12 @@
 #define SLACK_US        5000u
 #define PDU_MAX         (2u + 255u)
 
+#define ADV_EVENT_US    25000u  /* three channels, each a packet, a request and a response, and the hardware's random delay
+                                   on events (index 8, up to 10 ms [unchecked]) */
+#define ADV_SPAN_US     100000u /* a hardware advertising event serves Cordio's packets for this long after it was armed */
+
 enum { W_NONE, W_TX, W_RX, W_TIFS_TX };
+enum { K_NONE, K_ADV, K_CONN };          /* the hardware event in flight: advertising (37-39) or a connection event */
 
 static pal_fm1_cfg g_cfg;
 static pal_fm1_stats g_st;
@@ -54,8 +64,13 @@ static PalBbBleRxIsr_t g_rxcb;
 static uint32_t g_due, g_rx_timeout;
 static uint8_t g_chan, g_wait, g_fail, g_done, g_skip_done, g_resp_late, g_armed;
 static uint32_t g_deadline;
+static uint8_t g_kind;
 static uint8_t *g_rxbuf;
 static uint16_t g_rxlen;
+
+/* the hardware advertising event Cordio's packets go in: armed (g_aev), the channels already asked for in it, when */
+static uint8_t g_aev, g_aev_mask;
+static uint32_t g_aev_t;
 
 /* a received packet Cordio has not taken yet */
 static uint8_t g_held, g_held_ok;
@@ -80,6 +95,8 @@ void pal_fm1_attach(const pal_fm1_cfg *cfg)
     if (!g_cfg.b) {
         g_wait = W_NONE;
         g_held = g_done = g_armed = g_skip_done = 0;
+        g_aev = 0;
+        g_kind = K_NONE;
         g_tmr_on = 0;
         g_rng = now() ^ 0x9E3779B9u;
     }
@@ -186,19 +203,45 @@ static void op_refused(void)            /* the completion says FAILED at once */
     g_armed = 0;
 }
 
+/* A packet on a channel not yet asked for in the hardware advertising event armed for this one: it goes in that event.
+ * Done at once when the event has ended; else when it ends or a request comes in. A packet received and not yet taken
+ * stays for this one's receive. */
+static int adv_covered(void)
+{
+    uint8_t bit = (uint8_t)(1u << (g_chan - 37u));
+    if (!g_aev || (g_aev_mask & bit) || (uint32_t)(now() - g_aev_t) > ADV_SPAN_US)
+        return 0;
+    g_aev_mask |= bit;
+    g_wait = W_TX;
+    g_fail = g_resp_late = 0;
+    if (!g_armed)
+        g_done = 1;
+    g_st.adv_ops++;
+    g_st.adv_covered++;
+    return 1;
+}
+
 void PalBbBleTxData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
 {
     uint8_t pdu[PDU_MAX];
     uint16_t n = gather(descs, cnt, pdu);
 
-    op_begin(0);
+    if (g_chan >= 37 && g_chan <= 39 && adv_covered())
+        return;
+    op_begin(ADV_EVENT_US);
     g_wait = W_TX;
+    g_aev = 0;
     if (!n || g_chan < 37 || fm1ble_op_adv(g_cfg.b, delay_to_due(), pdu, n) != FM1BLE_OK) {
         op_refused();                   /* a master's first transmit on a data channel is not built (peripheral only) */
         return;
     }
     g_armed = 1;
+    g_kind = K_ADV;
+    g_aev = 1;
+    g_aev_mask = (uint8_t)(1u << (g_chan - 37u));
+    g_aev_t = now();
     g_st.adv_ops++;
+    g_st.adv_events++;
 }
 
 void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
@@ -207,11 +250,13 @@ void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
     g_wait = W_RX;
     g_rxbuf = pBuf;
     g_rxlen = len;
+    g_aev = 0;
     if (g_chan > 36 || fm1ble_op_conn(g_cfg.b, delay_to_due(), g_rx_timeout) != FM1BLE_OK) {
         op_refused();
         return;
     }
     g_armed = 1;
+    g_kind = K_CONN;
     g_st.conn_ops++;
 }
 
@@ -246,6 +291,7 @@ void PalBbBleCancelData(void)
     fm1ble_op_stop(g_cfg.b);
     g_wait = W_NONE;
     g_held = g_done = g_armed = g_skip_done = 0;
+    g_aev = 0;
 }
 
 void PalBbBleCancelTifs(void) { }       /* nothing is pending apart from the event itself */
@@ -260,6 +306,8 @@ static int deliver(void)
     if (g_wait == W_TX && (g_held || g_done)) {
         g_wait = W_NONE;
         g_st.tx_done++;
+        if (g_chan >= 37 && g_chan <= 39)
+            g_st.adv_done[g_chan - 37]++;
         tx(g_fail ? BB_STATUS_FAILED : BB_STATUS_SUCCESS);
         return 1;
     }
@@ -312,6 +360,14 @@ void pal_fm1_service(void)
             g_held_ts = t - air_us(g_held_n);
             g_held = 1;
             progress = 1;
+            if (g_kind == K_CONN)
+                g_st.conn_rx++;
+            if (g_kind == K_ADV && g_armed && (p.hdr[0] & 0xFu) == 5u) {   /* CONNECT_IND: the advertising event ends here */
+                fm1ble_op_stop(g_cfg.b);
+                g_armed = 0;
+                g_done = 1;
+                g_st.adv_conn_ind++;
+            }
         }
         if (ev & FM1BLE_EV_DONE) {
             if (g_skip_done) {
@@ -320,6 +376,10 @@ void pal_fm1_service(void)
                 g_done = 1;
                 g_armed = 0;
                 fm1ble_op_stop(g_cfg.b);
+                if (g_kind == K_ADV)
+                    g_st.adv_ended++;
+                else if (g_kind == K_CONN)
+                    g_st.conn_ended++;
             }
             progress = 1;
         }

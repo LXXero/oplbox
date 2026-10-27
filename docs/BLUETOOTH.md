@@ -512,7 +512,7 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
    `firmware/ble/cordio/` (143 files, unchanged, commit 3656312), `firmware/ble/cordio_port/` (our configuration, WSF and HCI
    glue, the stub PAL for `tests/ble_cordio.c`, the chip's PAL `pal_fm1.c`, the work order `PAL_NEEDED.md`).
    `tests/ble_cordio.c` (40 checks on the stubs): the HCI commands, the refusals, the first advertising transmit.
-   `tests/ble_pal.c` (38 checks, 17 deliberate bugs caught by `tests/ble_pal_mutants.py`): Cordio on `pal_fm1.c` and the
+   `tests/ble_pal.c` (46 checks, 23 deliberate bugs caught by `tests/ble_pal_mutants.py`): Cordio on `pal_fm1.c` and the
    driver against the register model's air and a central written from the specification (`tests/ble/air_central.c`):
    ADV_IND on 37-39 every interval, a SCAN_REQ answered with the host's scan response, a CONNECT_IND, connection events on
    the channels CSA #1 gives with the anchor taken from the first packet, data both ways with SN/NESN, LL_TERMINATE_IND,
@@ -521,12 +521,12 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
 3. **Radio driver and register map: written, host-tested against a model made from the same facts.**
    docs/BLUETOOTH_RADIO.md (the facts; `tools/ble_ir.py --check` reproduces 35 of them from `btctrler.a`) and
    `firmware/ble/fm1ble.c` (B, C, D, E, G of that file: power-up, analog block, baseband, RAM block, one advertising link,
-   polling, stop; and the one-packet operations the PAL drives: an advertising packet on one channel, a peripheral's
+   polling, stop; and the operations the PAL drives: an advertising event over 37-39 armed as the driver's own, a peripheral's
    connection event on a fixed channel, the response buffer for T_IFS) on `firmware/hal/fm1ble_port_bsp.c`.
    `tests/ble_radio.c` (101 checks) shows the driver writes what the document says in its order; it cannot show the chip does
    what the document says. Guesses are marked in the code: the order of B.2 against B.1, the hop increment, the calibration
    (none), re-arming the next event, the receive buffer choice, `wf_rf_common_init` (the second variant of the test run
-   replaces it with our own WiFi power-up), and for the operations: a one-channel map, state 7 with a fixed channel, the
+   replaces it with our own WiFi power-up), and for the operations: state 7 with a fixed channel, the
    response read at T_IFS, the data header words, the window's unit, where the slot counter's boundaries lie.
 4. **Receive path and the stack together: host-tested, not run.** `firmware/ble/fm1ble_stack.c` joins the PAL, Cordio and
    NimBLE with the BLE-MIDI service; `tests/ble_stack.c` (22 checks) runs NimBLE over Cordio over the PAL on the air: a central
@@ -537,8 +537,8 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
    to show").
 5. **Test page, USB report, tool: done and host-tested; the run uses the stack.** docs/BLUETOOTH_PAGE.md;
    `tools/fm1_ble_report.py --run --out DIR` over SysEx 0x66 (report) and 0x67 (run); `tests/ble_report_tool.py`. Eight steps
-   (radio, block, hci, adv_set, adv_air, connect, midi_in, midi_out), one line each with raw bytes, 32 counters (20-29 the
-   PAL's); a failed step's note says what to do next. The firmware's run (`firmware/ble/fm1ble_test.c`) does the driver's
+   (radio, block, hci, adv_set, adv_air, connect, midi_in, midi_out), one line each with raw bytes, 40 counters (20-29 and
+   32-38 the PAL's); a failed step's note says what to do next. The firmware's run (`firmware/ble/fm1ble_test.c`) does the driver's
    own advertising first, in three air trials from their own addresses (`adv_set`, `adv_air`), and then brings up the stack
    on the radio of the trial that sent (`hci`, `connect`, `midi_in`, `midi_out`). `tests/ble_stack.c run` runs it on the air with the central: every step PASS.
    The host build's page and tool tests run a scripted fake (`tests/ble/fm1ble_test_host.c`).
@@ -573,6 +573,31 @@ counts its changes per trial; a central that hears the trials while `tx_flips` s
 record), which variant of the power-up puts a carrier out, why two in three of Cordio's one-channel operations never end
 (the counters `pal_done_37`, `_38`, `_39` say which channels end), and the whole receive side.
 
+### The second FM-1 run (122afe3) and what changed
+
+The control session flashed 122afe3 onto the FM-1 on xlap and ran `fm1_ble_report.py --run --wait 30 --central xlap`
+(report on xlap in ~/Downloads/oplbox-ble-run-122afe3/). radio, block, hci, adv_set PASS; adv_air PASS "sent, trials 0 1";
+connect FAIL; the MIDI steps SKIP. xlap heard :11 (variant 1, level 6) at -48 dBm and :12 (level 11) at -26, not :10
+(variant 0) and never :01 (the stack). So the driver's own advertising reaches the air once the shared radio's init has
+run, and this morning's TXDHDR, TXTOG and level fixes work; `tx_flips` changed once in the 29 events of a heard trial,
+so TXTOG is not changed for every advertising packet.
+
+The stack's advertising went through the PAL's one-channel events: Cordio asked for 2556 packets (`pal_adv_ops`), 852
+events of three; 852 ended (`pal_done_37` 852, `_38` and `_39` 0) and 1703 never did (`pal_stuck`). Cordio starts each
+event on a random channel (`LL_OP_MODE_FLAG_ENA_ADV_CHAN_RAND`, on by default) and arms the first one 300 us ahead, the
+others 2 ms after the last: so neither the channel order nor the slot count tells them apart; the channel does. A
+one-channel event (anchor index 6 with hop 0 and a map of that channel alone) ended on 37, having sent nothing a central
+heard, and never ended on 38 or 39. The PDU's length, the TX slot and the level were the driver's already (`op_buf`,
+`tx_slot`, `fm1ble_op_power`), and the stack ran on variant 1; what the heard trials had and the PAL's events did not was
+the event itself: hop 1 over the three channels, no bit offset, the local address and its match, FORMAT bit 2 last.
+
+What changed: the PAL arms one hardware advertising event per Cordio event, through the same `adv_arm` as the driver's
+advertising, and Cordio's other two packets of the event go in it (docs/BLUETOOTH_CORDIO.md); the scan response Cordio
+gives stays in TX buffer 1 for the next events; a CONNECT_IND ends the event; a data PDU goes in both TX slots. The
+register model now does what the chip did with one-channel events (on 37: ends, sends nothing; on 38, 39: never ends),
+so the PAL of 122afe3 fails the host tests the way it failed on the FM-1. Eight counters more (40, a fourteenth page):
+docs/BLUETOOTH_PAGE.md.
+
 ### The next FM-1 run
 
 From xryzen, the FM-1 on its USB, xlap as the central (a few metres away is enough):
@@ -591,8 +616,13 @@ on either machine. What a good run shows, in this order:
 3. `midi_in` PASS with 90 3C 64 as evidence (the central's Note On through the GATT write).
 4. `midi_out` PASS, and the central's "heard from the FM-1: Note on 0, note 60, velocity 100".
 
-If 1 passes and 2 does not, the counters `pal_done_37..39` and `pal_stuck` say which of Cordio's operations end; a
-connection that starts and drops needs the receive interrupt (`pal_resp_late` above 0: docs/BLUETOOTH_CORDIO.md).
+If 1 passes and 2 does not: `pal_adv_events` against `pal_adv_ended` and `pal_stuck` says whether the hardware ends the
+PAL's three-channel events (all well: `pal_adv_ended` = `pal_adv_events`, `pal_stuck` 0, `pal_adv_covered` twice
+`pal_adv_events`, `pal_done_37`, `_38`, `_39` equal); `evtcount` says whether the hardware counted them; ended events
+that no central hears point at what still differs from the trials (the PDU, which is Cordio's). A CONNECT_IND that came
+shows in `rx_conn_ind` and `pal_adv_conn_ind`; then `pal_conn_ops`, `pal_conn_ended` and `pal_conn_rx` say whether
+connection events run, end and hear the central, and a connection that starts and drops needs the receive interrupt
+(`pal_resp_late` above 0: docs/BLUETOOTH_CORDIO.md).
 
 ## Open questions
 

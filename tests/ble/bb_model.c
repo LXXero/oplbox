@@ -44,32 +44,25 @@ static uint8_t *air_ent(void) { uint8_t *b = air_blk(); return b + (b[0] | (b[1]
 static uint16_t air16(uint32_t off) { uint8_t *e = air_ent(); return (uint16_t)(e[off] | e[off + 1] << 8); }
 static void air16w(uint32_t off, uint32_t v) { uint8_t *e = air_ent(); e[off] = (uint8_t)v; e[off + 1] = (uint8_t)(v >> 8); }
 
-/* a TX slot as the hardware would send it: header byte, length, payload. An advertising PDU is sent from the slot
- * TXTOG & 1 names (k is ignored), its header from TXAHDR (type bits 3-0, TxAdd and RxAdd in bits 5-4) and TXDHDR bits
- * 1-0 (the header's bits 5-4: ChSel), its length from TXDHDR bits 15-8, and TXTOG changes after it (docs/BLUETOOTH_RADIO.md
- * "TX and RX toggles"; which of the length copies the chip reads is [unchecked]: the model takes the register's, so a
- * driver that leaves TXDHDR out sends nothing a central takes) */
+/* a TX slot as the hardware would send it: header byte, length, payload, from TX slot k (the caller names the slot: TXTOG
+ * & 1 for the PDU an event sends, the other one for the SCAN_RSP). An advertising PDU's header comes from TXAHDR (type bits
+ * 3-0, TxAdd and RxAdd in bits 5-4) and TXDHDR bits 1-0 (the header's bits 5-4: ChSel), a data PDU's from TXDHDR bits
+ * 4-0; the length from TXDHDR bits 15-8 (docs/BLUETOOTH_RADIO.md "TX and RX toggles"; which of the length copies the chip
+ * reads is [unchecked]: the model takes the register's, so a driver that leaves TXDHDR out sends nothing a central takes) */
 static int air_tx(int k, int adv, uint8_t *pdu)
 {
-    uint16_t ptr;
+    uint16_t ptr = air16(k ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0), dh = air16(k ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
     uint8_t *p;
-    if (adv)
-        k = air16(FM1BLE_E_TXTOG) & 1;
-    ptr = air16(k ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0);
     if (ptr == 1 || ptr < 4)
         return 0;
     p = air_blk() + ptr;
     if (adv) {
-        uint16_t ah = air16(k ? FM1BLE_E_TXAHDR1 : FM1BLE_E_TXAHDR0), dh = air16(k ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
+        uint16_t ah = air16(k ? FM1BLE_E_TXAHDR1 : FM1BLE_E_TXAHDR0);
         pdu[0] = (uint8_t)((ah & 0xFu) | (ah & 0x30u) << 2 | (dh & 3u) << 4);
-        pdu[1] = (uint8_t)(dh >> 8);
-        air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
-        bbm.tx_sent++;
     } else {
-        uint16_t dh = air16(k ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
         pdu[0] = (uint8_t)(dh & 0x1Fu);
-        pdu[1] = (uint8_t)(dh >> 8);
     }
+    pdu[1] = (uint8_t)(dh >> 8);
     memcpy(pdu + 2, p, pdu[1]);
     return 2 + pdu[1];
 }
@@ -101,23 +94,51 @@ static void air_event(void)
 
     bbm.air_events++;
     if (state == FM1BLE_STATE_ADV) {
-        n = air_tx(0, 1, pdu);
-        r = a->adv ? a->adv(a->ctx, t, (uint8_t)chan, pdu, n, req) : 0;
-        t += bb_model_air_us(n) + 150u;
-        if (r > 0) {
-            bbm.now_us = t + bb_model_air_us(r);
-            air_rx(req, r, 1);
-            air_irq(1u << 8);
-            if ((req[0] & 0xFu) == 3u) {         /* SCAN_REQ: the scan response T_IFS after it */
-                bbm.now_us += 150u;
-                n = air_tx(1, 1, pdu);
-                if (n && a->scan_rsp)
-                    a->scan_rsp(a->ctx, bbm.now_us, pdu, n);
-                bbm.now_us += bb_model_air_us(n);
-            }
-        } else {
-            bbm.now_us = t + 80u;               /* the receive window after T_IFS, closed */
+        /* index 6 (D.2): the hop increment, the map's two ends (bit 6: 37 not in it, bit 7: 39 in it), the first channel */
+        uint32_t ch = bbm.ax[FM1BLE_AX_CHANNEL], hop = (ch >> 8) & 0x1Fu, last = (ch & 0x80u) ? 39u : 38u, s, c;
+        if (!hop) {
+            /* A one-channel event (hop 0, the map that channel alone): what the FM-1 did with Cordio's operations at
+             * 122afe3 (tools/fm1_ble_report.py, 852 of 2556 ended, all of them on 37, nothing heard from any): on 37 the
+             * event ends having sent nothing a central heard; on 38 and 39 it never ends. */
+            bbm.one_chan++;
+            if (chan != 37u)
+                return;
+            bbm.now_us = t + 400u;
+            air_irq(1u);
+            return;
         }
+        /* the event: the PDU of the slot TXTOG & 1 names on each channel from the first, hop by hop, to the map's end; a
+         * request answered T_IFS after it; a CONNECT_IND ends the event. TXTOG changes once, after the event (its change
+         * is the only transmit evidence the IR names; the FM-1's heard trials changed it at most once in 29 events) */
+        s = air16(FM1BLE_E_TXTOG) & 1u;
+        for (c = chan; c >= 37u && c <= last; c += hop) {
+            n = air_tx((int)s, 1, pdu);
+            if (!n)
+                break;
+            bbm.tx_sent++;
+            r = a->adv ? a->adv(a->ctx, t, (uint8_t)c, pdu, n, req) : 0;
+            t += bb_model_air_us(n) + 150u;
+            if (r > 0) {
+                bbm.now_us = t + bb_model_air_us(r);
+                air_rx(req, r, 1);
+                air_irq(1u << 8);
+                if ((req[0] & 0xFu) == 5u)       /* CONNECT_IND: advertising ends */
+                    break;
+                if ((req[0] & 0xFu) == 3u) {     /* SCAN_REQ: the scan response T_IFS after it, from the other slot */
+                    bbm.now_us += 150u;
+                    n = air_tx((int)(s ^ 1u), 1, pdu);
+                    if (n && a->scan_rsp)
+                        a->scan_rsp(a->ctx, bbm.now_us, pdu, n);
+                    bbm.now_us += bb_model_air_us(n);
+                }
+                t = bbm.now_us;
+            } else {
+                t += 80u;                       /* the receive window after T_IFS, closed */
+            }
+            t += 200u;                          /* to the next channel's synthesiser [unchecked: the chip's gap] */
+            bbm.now_us = t;
+        }
+        air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
     } else if (state == 7u) {
         uint32_t win = (uint32_t)air16(FM1BLE_E_WINCNTL0) | (uint32_t)air16(FM1BLE_E_WINCNTL1) << 16;
         uint32_t aa = (uint32_t)air16(FM1BLE_E_BDADDR0) | (uint32_t)air16(FM1BLE_E_BDADDR1) << 16;
@@ -129,10 +150,12 @@ static void air_event(void)
             air_rx(req, r, 0);
             air_irq(1u << 8);
             bbm.now_us += 150u;
-            n = air_tx(0, 0, pdu);
+            n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, pdu);   /* the slot TXTOG names, as for advertising */
             if (n && a->conn_rsp)
                 a->conn_rsp(a->ctx, bbm.now_us, pdu, n);
             bbm.now_us += bb_model_air_us(n);
+            if (n)                              /* a buffer sent: TXTOG changes [unchecked in a connection] */
+                air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
         } else {
             if (r > 0)
                 bbm.air_missed++;

@@ -38,10 +38,11 @@ typedef struct {
     uint32_t ms;                /* milliseconds the step took, from the run's start to its end */
 } fm1ble_step;
 
-#define FM1BLE_N_CTR    32      /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
+#define FM1BLE_N_CTR    40      /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
 
 /* The counters, in the report's order. tools/fm1_ble_report.py has the same list (tests/ble_report_tool.py holds it to
- * FM1BLE_CTR_NAMES); the firmware at 48ea034 and before sent 24 others (the tool reads those by their count). */
+ * FM1BLE_CTR_NAMES); the firmware at 48ea034 and before sent 24 others (the tool reads those by their count), up to
+ * 122afe3 the first 32 of these, with pal_done_37-39 counting the driver's one-channel events that ended. */
 enum {
     FM1BLE_C_RADIO_REGS_OK, FM1BLE_C_RADIO_REGS_BAD, FM1BLE_C_VARIANT, FM1BLE_C_RF_COMMON,
     FM1BLE_C_EVENTS, FM1BLE_C_TX_FLIPS, FM1BLE_C_RX_PACKETS, FM1BLE_C_RX_SCAN_REQ,
@@ -50,7 +51,9 @@ enum {
     FM1BLE_C_RX_HDR, FM1BLE_C_RX_STAT, FM1BLE_C_RX_TYPE, FM1BLE_C_RX_LEN,
     FM1BLE_C_PAL_ADV_OPS, FM1BLE_C_PAL_CONN_OPS, FM1BLE_C_PAL_RX_OK, FM1BLE_C_PAL_RX_TIMEOUT,
     FM1BLE_C_PAL_RESP_LATE, FM1BLE_C_PAL_STUCK, FM1BLE_C_PAL_TIMER_LATE_US, FM1BLE_C_PAL_DONE_37,
-    FM1BLE_C_PAL_DONE_38, FM1BLE_C_PAL_DONE_39, FM1BLE_C_TXPWR, FM1BLE_C_RAM_END
+    FM1BLE_C_PAL_DONE_38, FM1BLE_C_PAL_DONE_39, FM1BLE_C_TXPWR, FM1BLE_C_RAM_END,
+    FM1BLE_C_PAL_ADV_EVENTS, FM1BLE_C_PAL_ADV_COVERED, FM1BLE_C_PAL_ADV_ENDED, FM1BLE_C_PAL_ADV_CONN_IND,
+    FM1BLE_C_PAL_CONN_ENDED, FM1BLE_C_PAL_CONN_RX, FM1BLE_C_PAL_REFUSED, FM1BLE_C_EVTCOUNT
 };
 #define FM1BLE_CTR_NAMES \
     "radio_regs_ok", "radio_regs_bad", "variant", "rf_common", \
@@ -60,7 +63,9 @@ enum {
     "rx_hdr", "rx_stat", "rx_type", "rx_len", \
     "pal_adv_ops", "pal_conn_ops", "pal_rx_ok", "pal_rx_timeout", \
     "pal_resp_late", "pal_stuck", "pal_timer_late_us", "pal_done_37", \
-    "pal_done_38", "pal_done_39", "txpwr", "ram_end"
+    "pal_done_38", "pal_done_39", "txpwr", "ram_end", \
+    "pal_adv_events", "pal_adv_covered", "pal_adv_ended", "pal_adv_conn_ind", \
+    "pal_conn_ended", "pal_conn_rx", "pal_refused", "evtcount"
 
 /* The air trials (adv_air): the driver's own ADV_IND, each trial from its own static random address, so a central's
  * scan (tools/ble_central.py) says which one reached the air. Trial 0: without the shared radio's init (variant 0), at

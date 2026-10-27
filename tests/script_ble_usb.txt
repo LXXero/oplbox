@@ -12,7 +12,7 @@
 # a bad wait (121 s) and a bad body are refused (1) even then? no: running (3) comes first for a good request only
 # done (about 3.4 s): the report whole from offset 0 and its tail
 5000 usb 66 000000
-5001 usb 66 000A00
+5001 usb 66 000C00
 # run again with the page open on its results: it leaves as SAVE does and starts a fresh run 2 (no wait: the connect steps skip)
 5100 usb 67 00
 5101 usb 66 000000

@@ -44,23 +44,30 @@ completion. Why the stub run stalled was not looked into further.
 
 `firmware/ble/cordio_port/PAL_NEEDED.md` lists the 37 functions and what Cordio expects of each; `pal_fm1.c` has all of them.
 Cordio hands the baseband one packet at a time with an absolute time; the baseband runs whole events from a parameter
-block. The PAL makes each of Cordio's operations a one-channel hardware event through the driver's one-packet calls
-(`fm1ble.h` "for Cordio's PAL"):
+block. The PAL maps Cordio's operations onto hardware events through the driver's one-packet calls (`fm1ble.h` "for
+Cordio's PAL"):
 
-- an advertising packet (`PalBbBleTxData` on 37-39): advertising state with a channel map of that channel alone, the PDU in
-  TX buffer 0. A request (SCAN_REQ, CONNECT_IND) received in the event completes the transmit and goes to Cordio's receive
-  callback; the SCAN_RSP Cordio then gives (`PalBbBleTxTifsData`) goes into TX buffer 1 for the hardware to send T_IFS
-  after the request; the event's end completes it. No request: the event's end completes the transmit and closes the
-  receive window as a timeout.
+- an advertising event (`PalBbBleTxData` on 37, 38 and 39, one call per channel: `bb_ble_adv_slave.c`): the first of
+  Cordio's packets arms one hardware advertising event over all three channels, armed exactly as the driver's own
+  advertising (`fm1ble.c` `adv_arm`: hop increment 1, map 37-39, first event in the next slot with no bit offset, the
+  local address from AdvA, FORMAT bit 2 last), the PDU in TX buffer 0 at the slot TXTOG names. Cordio's packets on the
+  other two channels go in that event (`adv_covered`, counted as `pal_adv_covered`): they complete when it ends, at once
+  if it already has. A request (SCAN_REQ, CONNECT_IND) received in the event completes the transmit and goes to Cordio's
+  receive callback; the SCAN_RSP Cordio then gives (`PalBbBleTxTifsData`) goes into TX buffer 1, which later events keep in
+  the other TX slot so the hardware can answer a SCAN_REQ by itself; a CONNECT_IND stops the event. No request: the
+  event's end completes the transmit and closes the receive window as a timeout. Until 122afe3 the PAL armed one
+  one-channel event per packet (hop 0, a map of that channel alone): on the FM-1 none of those reached a central, and the
+  ones on 38 and 39 never ended (docs/BLUETOOTH.md "The second FM-1 run").
 - a connection event as the peripheral (`PalBbBleRxData` on 0-36): state 7 on a fixed channel (the one Cordio computed with
   CSA #1) and the window Cordio asks for. The master's packet goes to Cordio's receive callback, the response Cordio gives
-  goes into TX buffer 0 for T_IFS, the event's end completes it. One exchange per event; a second receive in the event
+  goes into TX buffer 0, in both TX slots (the hardware sends the one TXTOG names), for T_IFS; the event's end completes it. One exchange per event; a second receive in the event
   times out.
-- time: `PalBbGetCurrentTime` is the port's microsecond clock (TIMER4 on the FM-1). An operation is armed (due - now) from
-  now, in 625 us slots and a bit offset. A received packet's timestamp, which Cordio uses for a connection's anchor, is the
+- time: `PalBbGetCurrentTime` is the port's microsecond clock (TIMER4 on the FM-1). A connection event is armed (due -
+  now) from now, in 625 us slots and a bit offset; an advertising event in whole slots (Cordio loads it 300 us ahead: the
+  next slot). A received packet's timestamp, which Cordio uses for a connection's anchor, is the
   time the PAL saw it minus its time on the air. The scheduler's timer is a deadline checked by `pal_fm1_service`.
-- an operation the baseband never ends ends by its deadline (its start, the window, two packets, 5 ms), so Cordio is never
-  left waiting.
+- an operation the baseband never ends ends by its deadline (its start, the window, two packets, 5 ms; an advertising
+  event's window is 25 ms for its three channels and the hardware's random delay), so Cordio is never left waiting.
 
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ
@@ -68,10 +75,10 @@ timestamp is right only when the PAL runs at the packet's end: both need `pal_fm
 response are expected to come too late (the PAL counts them, `resp_late`, and tells Cordio the transmit failed; a scan
 response may still go out from TX buffer 1 if the hardware sends the last one written there). The host tests call the PAL
 at once, as an interrupt within T_IFS would. Also unchecked: where the hardware's slot boundaries lie against the arming
-write (the model takes one at the write), a one-channel advertising map, state 7 with a fixed channel, the data PDU header
+write (the model takes one at the write), state 7 with a fixed channel, how TXTOG changes in a connection, the data PDU header
 words, the receive window's unit, the RSSI (not read: Cordio is told 127, not available).
 
-**Tests.** `tests/ble_pal.c` (38 checks; `tests/ble_pal_mutants.py` catches 17 deliberate bugs in the PAL and the driver's
+**Tests.** `tests/ble_pal.c` (46 checks; `tests/ble_pal_mutants.py` catches 23 deliberate bugs in the PAL and the driver's
 operations) and `tests/ble_stack.c` (22 checks): NimBLE over Cordio over the PAL with a central doing L2CAP and ATT; with
 `run`, the firmware's test run on the same air, every step PASS (docs/BLUETOOTH.md "Cordio path as built" 4 and 5).
 

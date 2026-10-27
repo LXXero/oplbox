@@ -15,7 +15,13 @@ typedef struct {
 } pal_fm1_cfg;
 
 typedef struct {
-    uint32_t adv_ops, conn_ops;         /* operations armed: advertising packets, connection events */
+    uint32_t adv_ops, conn_ops;         /* Cordio's operations: advertising packets, connection events */
+    uint32_t adv_events;                /* hardware advertising events armed (37, 38 and 39 each) */
+    uint32_t adv_covered;               /* advertising packets that went in an event already armed (38 and 39 of each) */
+    uint32_t adv_ended;                 /* advertising events the baseband ended (its event flag) */
+    uint32_t adv_conn_ind;              /* advertising events a CONNECT_IND ended */
+    uint32_t adv_done[3];               /* advertising packets completed to Cordio (txCback), per channel 37, 38, 39 */
+    uint32_t conn_ended, conn_rx;       /* connection events the baseband ended; packets received in them */
     uint32_t tx_done, rx_ok, rx_bad, rx_timeout;   /* completions given to Cordio */
     uint32_t resp_set, resp_late;       /* responses put in for T_IFS; ones asked for after the event had ended */
     uint32_t timer_fired, timer_late_us;/* the scheduler's timer: fired, the most it was late */
