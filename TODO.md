@@ -381,7 +381,7 @@ two bars).
 - No sign of USB power: on USB the count is the charging battery's. Felucca shows a bolt when a USB host is
   configured (`usb.config && !usb.suspended`); OPLBOX could do the same.
 
-## 7. WiFi on our own driver — stages 2-3 run on the FM-1, stages 4-6 built, waiting for the FM-1
+## 7. WiFi on our own driver — stages 2-5 run on the FM-1, stage 6 built, waiting for an open network
 
 xero: "i would rather keep it gpl and just build our own wifi firmware". OPLBOX stays GPL-3.0-only and does not
 link JieLi's binary WiFi archives.
@@ -397,9 +397,10 @@ Linux header lineage in five of thirteen members (see 7c), and the archives are 
 OPLBOX (238 KB free) anyway.
 
 **Next.** Stages 2 and 3 ran on xero's FM-1 (7e, 7f: the bring-up, the trims, a survey that counts on every
-channel). Stages 4-6 are built in one go (7h): xero makes an open hotspot named OPLBOX, flashes, opens the WiFi test
-page (SAVE, then PLAY) and photographs all ten pages (README "WiFi test page", docs/WIFI_STAGE4.md "Reading pages
-5-10"). Page 5 says where the run stopped; pages 7-9 hold the raw evidence for the next fix. Stage 7's host part (IP on lwIP, 7g) and stage 8's handshakes (7d) are built ahead of the frames they need.
+channel), and stages 4 and 5 on 2026-10-27 (7h: receiving, the parser, transmitting and the active scan work). Stage 6
+is next: xero makes an open hotspot named OPLBOX on 2.4 GHz and the colony runs the page and reads it over USB
+(`tools/fm1_wifi_report.py --run --out DIR`, docs/WIFI_STAGE4.md "Reading the results over USB"), no photos needed.
+That run also brings back whole frames for the parser's fixtures. Stage 7's host part (IP on lwIP, 7g) and stage 8's handshakes (7d) are built ahead of the frames they need.
 
 ### 7a. Stage 1, register header — built, host-tested, not yet tried on hardware
 
@@ -804,7 +805,7 @@ hardware may replace.
 yet. Stack depth in `fm1wifi_net_input` is not measured [unchecked]. The FM-1 test (an address from the hotspot,
 ping answered) is stage 7's hardware part.
 
-### 7h. Stages 4-6, frames, scans and joining an open network — built, host-tested, waiting for the FM-1
+### 7h. Stages 4-6, frames, scans and joining an open network — stages 4-5 run on xero's FM-1, stage 6 waiting
 
 xero (2026-10-26): "can you get a few steps going here? i'm tired of doing this one by one". Stages 4, 5 and 6 are
 built together so one FM-1 run tests all of them (docs/WIFI_STAGE4.md).
@@ -818,14 +819,31 @@ built together so one FM-1 run tests all of them (docs/WIFI_STAGE4.md).
   leaves and rejoins; pages 5-10 show each step, the scan list, the first four frames' bytes, the core's counters and
   the join. The address comes from the flash part's unique ID (no settings sector needed). The crash record names
   the new steps (`WIFI AT RX READ`, `TX SEND`, ...).
-- **Tests.** `tests/wifi_frame.c` (65 checks: parser, scan list, TX image, frames byte for byte, station) and
+- **Tests.** `tests/wifi_frame.c` (86 checks: parser, scan list, TX image, frames byte for byte, station, and the
+  first four frames from the FM-1, 36 bytes each) and
   `tests/wifi_link.c` (92 checks: the DMA register by register, passive and active scans against scripted access
   points in the register model, a join and what ends it, every wait bounded, the crash record during a DMA). The
   page runs on the host against the made-up core, an RX DMA that never finishes and a refused association.
-- **Untested on hardware**: all of it. In particular whether frames reach the FIFO with the receive path as set up
-  (no IRQ, no 0x0328), whether the RXWI and the trailer are rt2800's, what RSSI0 means, whether `PBF_DBG` lets the TX
-  gate open, whether a frame goes out at CCK 1 Mbit/s, and whether an AP answers. Page 5's first FAIL and pages 7-9
-  are for that.
+- **On the FM-1** (xero, 2026-10-27, main 82f7fa6 flashed 02:20 UTC, no open OPLBOX network up; read off photos of
+  the ten pages, so a digit may be misread): page 5 `RADIO OK`, `SURVEY OK 13 OF 13 CH`, `LINK OK`,
+  `PASSIVE OK 12 NETWORKS`, `ACTIVE OK 12 ANSWERS`, `JOIN FAIL NO OPLBOX`, `STAY 2S` and `REJOIN NOT REACHED`;
+  page 6 15 networks (the seven on the screen all WPA2, channels 1 and 6, RSSI -57 to -88, four probed); page 9
+  `WL30 04 00000037>00010037`, `TXRXQ 00000000>00000000`, `FRAMES 34 BAD 0 TO ME 12`, `CRC ERR 44 PHY ERR 21`,
+  `DUP 0 OVERFLOW 0`, `SENT 26 ERR 0`, `TX OK 26 FAIL 0 RETRY 0`, `MAC CE:62:BC:AE:4D:05 UID`. So frames reach the
+  FIFO with no IRQ and no 0x0328, the RXWI's fields the parser reads are rt2800's, the TX gate opens, probe requests
+  go out at CCK 1 Mbit/s and APs answer them. The four raw frames (pages 7-8) and what they show are in
+  docs/WIFI_STAGE4.md "The first run on the FM-1": N is the RXWI plus the MPDU rounded up to 4 bytes, and group-addressed
+  data frames of other networks pass `RX_FILTER_CFG` (the library drops them).
+- **Untested on hardware**: the join (stage 6: authentication, association, beacon loss, leaving, rejoining) and any
+  unicast frame we send that wants an acknowledgement. Open: 0x30F04 bit 16 (set after the run), the RXWI's other
+  bytes, what RSSI0 is against another receiver, whether word 1 bits 15-4 are the sequence number.
+- **Results over USB** (xero, 2026-10-27, after photographing ten pages: "you should be able to build something to dump
+  this back"): SysEx 0x62 reads the page's report (every line of the ten pages, every network, the counters and up
+  to twelve whole frames of 512 bytes at most), 0x63 starts a run as SAVE then PLAY would (refused in EDIT). `tools/fm1_wifi_report.py --run --out DIR` does both
+  from the computer the FM-1 is plugged into and writes each frame as a file. Host-tested (the page's report text
+  against the pages the simulator draws, the commands through `slot_reply`'s framing, the tool against
+  `wifi_sysex.c` on a pipe, a run driven over USB in the simulator); not yet run on an FM-1. The pages stay as the
+  fallback.
 - **Not on the page yet**: stage 7 (IP over lwIP) and stage 8 (the WPA2 handshakes), both host-built; they join once
   an open join works on the FM-1.
 

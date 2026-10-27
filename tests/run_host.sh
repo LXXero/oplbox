@@ -99,7 +99,7 @@ fi
 # the WiFi page in the simulator (tests/script_wifi.txt): its text against the made-up core (stage 2's reads, the
 # radio's bring-up, page 2's trim and false CCA counts, page 4's channel survey), then against a core whose baseband never answers and one that
 # answers nothing: an error on the page, the radio not reached, no hang
-build/host/oplbox build/host/wifi tests/script_wifi.txt > build/host/wifi_page.txt
+HOST_WIFI_REPORT=build/host/wifi_report.bin build/host/oplbox build/host/wifi tests/script_wifi.txt > build/host/wifi_page.txt
 HOST_WIFI_MODEL=tests/wifi/core_bbp_stuck.txt build/host/oplbox build/host/wifi_stuck tests/script_wifi.txt > build/host/wifi_page_stuck.txt
 HOST_WIFI_MODEL=tests/wifi/core_silent.txt build/host/oplbox build/host/wifi_silent tests/script_wifi.txt > build/host/wifi_page_silent.txt
 HOST_WIFI_MODEL=tests/wifi/core_trim_hang.txt build/host/oplbox build/host/wifi_trim tests/script_wifi.txt > build/host/wifi_page_trim.txt
@@ -170,6 +170,22 @@ for want in "wifi page 4: PASSIVE OK 1 NETWORK" "wifi page 6: JOIN    FAIL ASSOC
   grep -qF "$want" build/host/wifi_page_refuse.txt || { echo "FAIL: WiFi page, association refused: no line '$want'" >&2; exit 1; }
 done
 echo "WiFi page: text, a stuck baseband (TIMEOUT) and a silent core (NO ANSWER) as expected; stages 4-6 failures say where"
+# the page over USB SysEx (firmware/src/wifi_sysex.c, docs/WIFI_STAGE4.md "Reading the results over USB"): with no
+# button pressed for it, the report says no run yet, the run command starts one as SAVE then PLAY would (both commands
+# say running meanwhile), the report comes whole; a second run from the open page leaves it and runs again; SAVE
+# leaves and the report stays; EDIT refuses; bad requests are refused
+HOST_WIFI_REPORT=build/host/wifi_usb_report.bin build/host/oplbox build/host/wifi_usb tests/script_wifi_usb.txt > build/host/wifi_usb.txt
+for want in "   200 ms  USB reply 62: 02 00 00 00 00 00 00 00 00 | 0 bytes" "   250 ms  USB reply 63: 00 01 00 | 0 bytes" \
+            "   250 ms  wifi page 0: WIFI TEST (STAGE 6)" "   251 ms  USB reply 62: 03 00 00 00" "   252 ms  USB reply 63: 03 01 00 |" \
+            "  2000 ms  USB reply 62: 00 2F 0D 00 00 00 00 01 00 | 512 bytes" "  2001 ms  USB reply 62: 00 2F 0D 00 00 0C 00 01 00 | 303 bytes" \
+            "  2100 ms  USB reply 63: 00 02 00 |" "  2101 ms  USB reply 62: 03 " "  4000 ms  USB reply 62: 00 33 0D 00 00 00 00 02 00 | 512 bytes" \
+            "  4300 ms  USB reply 62: 00 33 0D 00 00 00 00 02 00 | 512 bytes" "  4500 ms  USB reply 63: 04 00 00 |" \
+            "  4800 ms  USB reply 62: 01 " "  4900 ms  USB reply 62: 01 "; do
+  grep -qF -- "$want" build/host/wifi_usb.txt || { echo "FAIL: WiFi page over USB: no line '$want'" >&2; exit 1; }
+done
+[ "$(grep -c 'wifi page 0: WIFI TEST (STAGE 6)   1/10' build/host/wifi_usb.txt)" = 2 ] || { echo "FAIL: WiFi page over USB: not two runs" >&2; exit 1; }
+# ... and tools/fm1_wifi_report.py reads the button run's report through wifi_sysex.c: its text is the ten pages' text
+python3 tests/wifi_report_tool.py build/host/slot_sysex_test build/host/wifi_report.bin build/host/wifi_page.txt build/host
 # the WPA2 key primitives (firmware/wifi/wpa_crypto.c on BearSSL): PSK and PRF against IEEE 802.11 J.4.2 / J.3,
 # AES key unwrap against RFC 3394 4.1-4.6, the PMK in main-loop steps, and the refusals
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -o build/host/wifi_crypto tests/wifi_crypto.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c

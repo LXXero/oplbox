@@ -3,8 +3,10 @@
 What `firmware/wifi/fm1wifi.c` (the hardware side) and `firmware/wifi/fm1wifi_frame.c` (the frames, the scan list,
 the station) do for docs/WIFI.md stages 4, 5 and 6, where each fact comes from, and how to read pages 5-10 of the
 WiFi test page. All of it is host-tested (tests/wifi_frame.c, tests/wifi_link.c, the page against the register
-model); **none of it has run on an FM-1 yet**. The page is built so that one run tests all three stages and a step
-that fails still shows what the next fix needs.
+model). **Stages 4 and 5 ran on xero's FM-1 on 2026-10-27** ("The first run on the FM-1" below): frames arrive and
+parse, probe requests go out and are answered. The join (stage 6) has not run: no open OPLBOX network was up. The page
+is built so that one run tests all three stages and a step that fails still shows what the next fix needs; its results
+can also be read over USB ("Reading the results over USB").
 
 ## Where the facts come from
 
@@ -34,7 +36,8 @@ One frame (`fm1wifi_rx_read`), as `sdio_recv_int_hdl` and `wl30_mmc_io_rw_extend
 3. The 4 bytes are the length word N, big-endian. JieLi refuses N = 0 or N >= 4089 (it resets the chip); the
    library returns `BAD FRAME` and does not read on (the FIFO's state is then unknown).
 4. The same DMA with 0x30F18 = buffer + 4 and 0x30F1C = N + 4: N bytes of frame, then a 4-byte trailer, also
-   big-endian (JieLi swaps it in place).
+   big-endian (JieLi swaps it in place). On the FM-1, N is the RXWI (16) plus the MPDU byte count rounded up to a
+   multiple of 4: 0 to 3 pad bytes end the N (all four frames of the first run).
 
 JieLi's waits have no bound; the library's read bit 21 at most 1000 times, 1 us apart (`TIMEOUT`). The buffer must be
 word-aligned (JieLi asserts that). After the read the buffer holds, as `fm1wifi_rx_parse` takes it:
@@ -76,8 +79,11 @@ so a retry is recognised even if the MAC does not number frames.
 
 `fm1wifi_link_up(mac, ch)`, after the radio is up: the 22 `MACRegTable` values in JieLi's order, `MAC_ADDR_DW0/1` =
 the address (with `UNICAST_TO_ME_MASK` 0xFF, as rt2x00), the BSSID 0, then channel ch as the survey tunes
-(`WF_CON7`, `TX_BAND_CFG`, `TX_PIN_CFG` 0x00050302). `RX_FILTER_CFG` 0x17F97 keeps beacons, probe responses and
-unicast frames to our address, and drops CRC and PHY errors, duplicates and control frames. `TX_RTY_CFG` is
+(`WF_CON7`, `TX_BAND_CFG`, `TX_PIN_CFG` 0x00050302). `RX_FILTER_CFG` 0x17F97 drops CRC and PHY errors, duplicates,
+control frames and unicast frames to other addresses; it leaves `DROP_NOT_MY_BSSD`, `DROP_MULTICAST` and
+`DROP_BROADCAST` clear, so every group-addressed frame of any network comes through, not only beacons (the first run's
+fourth frame was another network's protected multicast data frame). The library counts what is not a beacon or a probe
+response and drops it. `TX_RTY_CFG` is
 JieLi's (and Ralink's) 0x47D01F0F, retry limits 31 and 15, not rt2x00's 2 and 2: it is what JieLi's driver ran on
 this core, and a station joining at 1 Mbit/s wants the retries.
 
@@ -138,7 +144,8 @@ when a probe response came. Up to 7 or 8 lines; `+n MORE` below when there are m
 was full.
 
 Pages 7 and 8, the first four frames the FIFO gave, whatever they parsed to: the channel, the bytes it had (N + 8),
-then 36 bytes in memory order, four to a group:
+then 36 bytes in memory order, four to a group (the library keeps the first 512 bytes of the first four frames of each
+step; the USB report has them all):
 
 ```
 1 CH  1  BYTES 104
@@ -168,6 +175,84 @@ MAC 16:C6:87:70:CF:3D UID         the FM-1's address, and where it came from
 Page 10, the join: OPLBOX's BSSID, channel, RSSI and security, the authentication's and association's answers (OK,
 no answer after 3 tries, or refused with the AP's status code), 2 s later (UP and the beacons, or why it went down
 and the reason code), the rejoin, the frames sent and received.
+
+## Reading the results over USB
+
+The ten pages are also a report the FM-1 keeps in RAM until the next run, which `tools/fm1_wifi_report.py` reads over
+USB-MIDI from the computer the FM-1 is plugged into (docs/API.md "WiFi test page over SysEx"):
+
+```
+python3 tools/fm1_wifi_report.py --run --out wifi-run      # start a run (as SAVE, PLAY), wait, read it
+python3 tools/fm1_wifi_report.py                           # the last run's report again
+```
+
+It prints every line of pages 1-10, every network the scan kept (the whole SSID and the BSSID; page 6 has room for 7),
+and the counters behind page 9. `--out DIR` also writes each frame the FIFO gave as it gave it (up to four per step,
+the first 512 bytes of each: length word, RXWI, frame, trailer) as `frame-NN-<step>-chNN.bin`, for parser fixtures.
+A run started this way stops the sound and leaves the page open on page 1, as PLAY does; SAVE leaves it. The FM-1
+refuses a run while EDIT is open. The pages stay as they are, for when no computer is at hand. Before a frame from a
+report becomes a fixture in this public repository, replace its transmitter and BSSID bytes (see below).
+
+## The first run on the FM-1
+
+xero ran main 82f7fa6 on his FM-1 on 2026-10-27 (flashed 02:20 UTC), with no open OPLBOX network up; the values were
+read off photos of the ten pages, so a digit may be misread.
+
+- Pages 1-4 (stages 2-3) as in the earlier runs: `RESULT: OK`, `MAC_CSR0` 00300100, `MAC_SYS_CTRL` 0000000C, BBP 0
+  60, PLL bank 51 mid 63, filter 253 127 55, `RAM CHECK: 0 CHANGED`; trim TX LO 48 60, DC 6 0, TX gain +20 phase -15,
+  RX gain +6 phase -6; false CCA counts 106-494 per 200 ms on every channel, busy time 0 everywhere.
+- Page 5: `RADIO OK`, `SURVEY OK 13 OF 13 CH`, `LINK OK`, `PASSIVE OK 12 NETWORKS`, `ACTIVE OK 12 ANSWERS`,
+  `JOIN FAIL NO OPLBOX`, `STAY 2S` and `REJOIN NOT REACHED`.
+- Page 6: 15 networks (7 on the screen, `+8 MORE`, none lost to a full list); the seven shown are all WPA2, on
+  channels 1 and 6, RSSI -57 to -88, four with `P` (a probe response came), two hidden.
+- Page 9: `WL30 04 00000037>00010037`, `TXRXQ 00000000>00000000`, `FRAMES 34 BAD 0 TO ME 12`,
+  `CRC ERR 44 PHY ERR 21`, `DUP 0 OVERFLOW 0`, `SENT 26 ERR 0`, `TX OK 26 FAIL 0 RETRY 0`,
+  `MAC CE:62:BC:AE:4D:05 UID`.
+- Page 10: `NO OPLBOX IN THE SCAN`.
+
+Pages 7-8, the first four frames, all on channel 1. Each transmitter address (address 2, the six bytes after address
+1) is shown here with its last three bytes replaced by 00 00 01, 02 or 03, one per address: real BSSIDs locate a place
+in public WiFi databases, and this repository is public.
+
+```
+1 BYTES 360  60010000 FFE04E01 F0440040 A8A2E000 A800A0FE 80000000 FFFFFFFF FFFFC64F D5000001
+2 BYTES 328  40010000 FFE02D01 10340040 BBA5EC00 BB0F94FF 80000000 FFFFFFFF FFFF82DA C2000002
+3 BYTES 324  3C010000 FFE02B01 20340040 BBA3EE00 BB0F94FF 80000000 FFFFFFFF FFFF82DA C2000003
+4 BYTES 336  48010000 FFE13701 50340000 B8B9EE00 B80EFEFF 08620000 33330000 00FB82DA C2000002
+```
+
+Against the layout above (rt2800's RXWI), field by field:
+
+| Field | Where the doc has it | The FM-1's frames |
+| --- | --- | --- |
+| N | offset 0, CPU order after the swap | 0x160, 0x140, 0x13C, 0x148: BYTES - 8, as expected; and N = 16 + the MPDU count rounded up to 4 (new: the end padding) |
+| WCID | word 0 bits 7-0 | FF on all four (no table entry), as expected |
+| MPDU byte count | word 0 bits 27-16 | 334, 301, 299, 311: each fits N as above, so the field is where rt2800 has it |
+| MCS, BW, PHY mode | word 1 bits 22-16, 23, 31-30 | MCS 0, BW 0; PHY mode 1 (OFDM, 6 Mbit/s) for the three beacons, 0 (CCK, 1 Mbit/s) for the data frame |
+| RSSI0 | word 2 bits 7-0, signed dBm | A8 (-88), BB (-69), BB (-69), B8 (-72). Frame 1 is the network page 6 lists at -88 and frames 2-3 match the two at -69 on channel 1: the byte is the value the scan list shows; as dBm it is plausible, not checked against another receiver |
+| 802.11 header | offset 20 | frame control 80 00 (beacon) on frames 1-3, broadcast address 1; frame 4: 08 62 (data, From DS, More Data, Protected) to 33:33:00:00:00:FB (IPv6 mDNS multicast) |
+
+Every field the parser reads is where rt2800 has it; nothing on the page needs to move. Also seen, not read by the
+library: word 0 bits 15-8 are E0 (E1 on the protected frame; rt2800 has the key index in bits 9-8 and the UDF in
+15-13); word 1 bits 15-4 count up across frames 2, 3 and 4 (0x341, 0x342, 0x345), which fits rt2800's sequence number
+there for one radio sending as two BSSIDs (unconfirmed until a whole frame shows the header's sequence control); the
+other bytes of word 2 (A2 E0, A5 EC, A3 EE, B9 EE) and word 3 (its first byte equals RSSI0; then 00, 0F, 0F, 0E and
+A0FE, 94FF, 94FF, FEFF) do not match rt2800's RSSI1/2 and SNR fields, and their meaning is open. tests/wifi_frame.c
+(`fm1_frames`) parses these 36 bytes of each frame as fixtures and checks the fields in the table.
+
+What it shows:
+
+- **Stage 4 works on the FM-1**: frames reach the FIFO with the receive path as set up (no IRQ 52, no 0x0328), the
+  length word, the RXWI and the header are where the library reads them (`BAD 0` of 34), and the scan list fills.
+  `CRC ERR` 44 and `PHY ERR` 21 are what the MAC's filter dropped.
+- **Stage 5 works on the FM-1**: the TX gate opened for every frame (`SENT 26 ERR 0`: two probe requests on each of
+  13 channels), the MAC counts all 26 as sent (`TX OK 26`, no failures, no retries: broadcast frames are not
+  acknowledged), and 12 networks answered, to our address (`TO ME 12`): the address filter with `MAC_ADDR_DW0/1` from
+  the unique ID works, and APs hear the probe requests at CCK 1 Mbit/s.
+- **Stage 6 is untested**: no open OPLBOX network was up, so the run stopped at `JOIN FAIL NO OPLBOX`, as it should.
+- Open: 0x30F04 bit 16 was 0 before the scans and 1 after the run (bits 10, 11, 17, 20 and 21 are the ones the library
+  uses; bit 16's meaning is unknown). `TXRXQ_PCNT` read 0 both times. The RAM check found nothing the DMA wrote outside
+  its buffers (`RAM CHECK: 0 CHANGED` after the FIFOs ran).
 
 ## What a failure would mean (for the next fix)
 

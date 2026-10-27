@@ -125,7 +125,10 @@ with what it found, FAIL with the reason, or NOT REACHED), page 6 the networks h
 `P` when it answered a probe), pages 7 and 8 the first four received frames' bytes in hex, page 9 the core's FIFO and
 counter registers and the FM-1's WiFi address, page 10 the join in detail.
 
-Read back everything on all ten pages (a photo of each is enough). What would look wrong: `RESULT` other than OK (the word after `AT` says which
+Read back everything on all ten pages: from a computer the FM-1 is plugged into, `python3 tools/fm1_wifi_report.py`
+prints the last run's report (all ten pages as text, every network, the counters) and `--run` starts a run first, with
+no button pressed (refused in EDIT; `--out DIR` also writes each received frame's bytes; docs/WIFI_STAGE4.md "Reading
+the results over USB"). Without a computer, a photo of each page is enough. What would look wrong: `RESULT` other than OK (the word after `AT` says which
 step stopped: PHY, PLL, TRIM, RF, TABLE), `BBP 0` still `00`, a PLL bank of 0 or 127, a middle bank of 15 (the scan
 found no edge), trim values sitting at the end of their range (TX LO 0 or 127, TX DC ±127, an RX DC near ±510) or a
 filter code of 0 or 255: each means a search ran to its limit (a VGA GAIN of 36 on page 3 too, though JieLi's

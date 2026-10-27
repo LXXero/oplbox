@@ -206,9 +206,10 @@ void fm1wifi_counters_clear(fm1wifi_counters *c);  /* reads the counters once to
 int fm1wifi_counters_add(fm1wifi_counters *c);
 
 /* What the frame functions below saw: counts, the first frames' first FM1WIFI_RAW_LEN bytes as the FIFO gave them
- * (length word, RXWI, the header's start), whatever they parse to. Clear it (all zero) before the first call. */
+ * (length word, RXWI, the frame, the trailer; a beacon fits whole), whatever they parse to. Clear it (all zero) before
+ * the first call. */
 #define FM1WIFI_RAW_N 4u
-#define FM1WIFI_RAW_LEN 36u
+#define FM1WIFI_RAW_LEN 512u
 typedef struct {
     uint32_t frames;          /* frames read from the FIFO */
     uint32_t bad;             /* of those, ones fm1wifi_rx_parse refused */

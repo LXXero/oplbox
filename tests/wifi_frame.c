@@ -318,9 +318,46 @@ static void station(void)
           s.why == FM1WIFI_WHY_LEFT, "leaving when UP: a deauthentication, reason 3");
 }
 
+/* The first frames from a real FM-1 (main 82f7fa6, xero's run of 2026-10-27, pages 7-8, docs/WIFI_STAGE4.md "The first
+ * run on the FM-1"): only the first 36 bytes each, read off photos of the screen (a digit may be misread), and the
+ * total the page said. The transmitters' addresses keep their first three bytes; the last three are replaced (00 00 01,
+ * 02, 03: one per address) because real BSSIDs locate a place in public WiFi databases. The rest of each buffer is
+ * zeros, so only the RXWI and the header's start are checked: where the real fields sit, and that N is the RXWI plus
+ * the MPDU rounded up to 4 bytes. */
+static const struct { uint32_t had; const char *hex; uint16_t len, fc; int8_t rssi; uint8_t phymode; uint8_t a2[6]; } FM1[] = {
+    { 360, "60010000FFE04E01F0440040A8A2E000A800A0FE80000000FFFFFFFFFFFFC64FD5000001", 334, 0x0080, -88, 1,
+      { 0xC6, 0x4F, 0xD5, 0x00, 0x00, 0x01 } },
+    { 328, "40010000FFE02D0110340040BBA5EC00BB0F94FF80000000FFFFFFFFFFFF82DAC2000002", 301, 0x0080, -69, 1,
+      { 0x82, 0xDA, 0xC2, 0x00, 0x00, 0x02 } },
+    { 324, "3C010000FFE02B0120340040BBA3EE00BB0F94FF80000000FFFFFFFFFFFF82DAC2000003", 299, 0x0080, -69, 1,
+      { 0x82, 0xDA, 0xC2, 0x00, 0x00, 0x03 } },
+    { 336, "48010000FFE1370150340000B8B9EE00B80EFEFF086200003333000000FB82DAC2000002", 311, 0x6208, -72, 0,
+      { 0x82, 0xDA, 0xC2, 0x00, 0x00, 0x02 } },
+};
+static void fm1_frames(void)
+{
+    static uint8_t b[FM1WIFI_RX_BUF];
+    fm1wifi_rx r;
+    uint32_t i, k, v;
+    char what[96];
+    for (i = 0; i < sizeof FM1 / sizeof FM1[0]; i++) {
+        memset(b, 0, sizeof b);
+        for (k = 0; k < 36u && sscanf(FM1[i].hex + 2u * k, "%2x", &v) == 1; k++) b[k] = (uint8_t)v;
+        snprintf(what, sizeof what, "FM-1 frame %u", i + 1u);
+        check(k == 36u && rd32(b) + 8u == FM1[i].had, what);                      /* the length word is N, N + 8 the page's BYTES */
+        check(rd32(b) == ((16u + FM1[i].len + 3u) & ~3u), "FM-1 frames: N is the RXWI and the MPDU rounded up to 4 bytes");
+        check(fm1wifi_rx_parse(b, FM1[i].had, &r) == FM1WIFI_OK && r.frame == b + 20, "FM-1 frames parse, the header at 20");
+        check(r.wcid == 0xFF && r.len == FM1[i].len && r.rssi == FM1[i].rssi && r.phymode == FM1[i].phymode && r.mcs == 0,
+              "FM-1 frames: WCID 255, the MPDU count, RSSI0, the PHY mode where rt2800 has them");
+        check(r.fc == FM1[i].fc && !memcmp(r.frame + 10, FM1[i].a2, 6) && r.hdr_len == 24u, "FM-1 frames: the header's fields");
+    }
+    check(!memcmp(b + 24, "\x33\x33\x00\x00\x00\xFB", 6), "FM-1 frame 4: to the mDNS multicast address (33:33:00:00:00:FB)");
+}
+
 int main(void)
 {
     parser();
+    fm1_frames();
     scan_list();
     tx();
     station();

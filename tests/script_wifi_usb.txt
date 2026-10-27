@@ -1,0 +1,35 @@
+# t(ms) what ...   : the WiFi test page driven over USB SysEx (firmware/src/wifi_sysex.c, docs/API.md "WiFi test
+# page over SysEx"), no button pressed for it. "usb CMD HEX" hands the app a frame as the platform does; tests/run_host.sh
+# checks the replies ("USB reply 62: status total24 off24 serial16 | n bytes", "USB reply 63: status run16") and
+# compares the report the page built (HOST_WIFI_REPORT) with the pages' text. Row 88 of host_cell: col 0 the core
+# powered up, 2 the chip sounding.
+# The jukebox plays song 0 from the start; nothing has run: the report says 2 (no run since start)
+200 usb 62 000000
+# run: accepted at once as run 1; the main loop opens the page and starts it as PLAY does
+250 usb 63
+# while it runs, both answer 3 (running), the run command with the run's number
+251 usb 62 000000
+252 usb 63
+# done: the core up, the sound stopped, the report whole from offset 0 and its last chunk
+2000 is 0 88 0 1
+2000 is 0 88 2 0
+2000 usb 62 000000
+2001 usb 62 000C00
+# run again with the page open on its results: it leaves as SAVE does and starts a fresh run 2
+2100 usb 63
+2101 usb 62 000000
+4000 usb 62 000000
+# SAVE leaves: the core down, the sound back; the report stays
+4100 btn 9
+4300 is 0 88 0 0
+4300 is 0 88 2 1
+4300 usb 62 000000
+# in EDIT the page is not reachable: refused (4), nothing opens
+4400 btn 6
+4500 usb 63
+4600 is 0 88 0 0
+4700 btn 6
+# bad requests: a short body, an offset past the end
+4800 usb 62 0000
+4900 usb 62 FFFF00
+5000 end

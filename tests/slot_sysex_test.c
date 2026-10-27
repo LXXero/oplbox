@@ -1,11 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* firmware/src/slot_sysex.c on a computer (TODO 2a): the device's side of pulling and pushing slot files, with
- * ota.c's framing and read requests, against a fake computer that speaks SysEx bytes.
+ * ota.c's framing and read requests, against a fake computer that speaks SysEx bytes. Also firmware/src/wifi_sysex.c
+ * (the WiFi test page's report and run), composed as oplbox.c does: slot_sysex first, its replies through slot_reply.
  *
  *   slot_sysex_test            the checks below; exit 1 when one fails
  *   slot_sysex_test --serve [N] a fake FM-1 for tests/slot_sysex_tool.py: one SysEx message a line as hex on stdin,
  *                              the FM-1's on stdout; slot N (1..9) is the song in the player, 0 none; --old: a
  *                              firmware without slot transfer (the handshake only)
+ *   slot_sysex_test --serve-wifi FILE [edit|running]   a fake FM-1 for tests/wifi_report_tool.py: FILE is the report a
+ *                              run makes; no run yet until the run command, which takes 3 report polls (edit: EDIT is
+ *                              open; running: a run is already going on)
  *   slot_sysex_test --dump N FILE   built-in song N (0..) as a .CMF file
  */
 #include <stdint.h>
@@ -60,6 +64,39 @@ static int slot_store(uint32_t i, uint32_t n)
 }
 static void say(const char *m) { said = m; }
 #include "slot_sysex.c"
+
+/* ---- the WiFi page's side, as oplbox.c has it: a run asked for completes after wpolls report polls (the main loop
+ * running the page meanwhile), then the report is wrep with the run's number in its header */
+static uint32_t wifi_report_state(void);
+static const uint8_t *wifi_report(uint32_t *n, uint32_t *serial);
+static int wifi_run_ask(uint32_t *run);
+static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint8_t *data, uint32_t nd)
+{
+    return slot_reply(cmd, head, nh, data, nd);
+}
+#include "wifi_sysex.c"
+static uint8_t wrep[20000];
+static uint32_t wrep_n, wrep_serial, wstate, wruns, wreq, wedit, wpolls, wrun_polls = 3;
+static void wifi_run_ends(void)
+{
+    wreq = 0; wruns++; wstate = WR_DONE; wrep_serial++;
+    if (wrep_n >= WR_HEAD) { wrep[6] = (uint8_t)wruns; wrep[7] = (uint8_t)(wruns >> 8); }
+}
+static uint32_t wifi_report_state(void)
+{
+    if (wreq && ++wpolls >= wrun_polls) wifi_run_ends();
+    return wreq ? (uint32_t)WR_RUNNING : wstate;
+}
+static const uint8_t *wifi_report(uint32_t *n, uint32_t *serial) { *n = wrep_n; *serial = wrep_serial & 0xFFFFu; return wrep; }
+static int wifi_run_ask(uint32_t *run)
+{
+    if (wreq || wstate == WR_RUNNING) { *run = (wruns + wreq) & 0xFFFFu; return WIFI_E_RUNNING; }
+    *run = 0;
+    if (wedit) return WIFI_E_EDIT;
+    wreq = 1; wpolls = 0;
+    *run = (wruns + 1u) & 0xFFFFu;
+    return WIFI_OK;
+}
 
 /* ---- the computer: frames to the FM-1 go through a SysEx assembler like usb.c's; what the FM-1 sends is
  * checked as SysEx, answered when it is a read request, kept when it is a reply */
@@ -162,7 +199,7 @@ static void poll_fm1(void)                      /* platform_poll's part: the han
 {
     uint32_t d = ota_take();
     if (d == 7u && ota_dec[2] == 0x11) ota_reply_identity();
-    else if (d && !old) slot_sysex(ota_dec, d);
+    else if (d && !old && !slot_sysex(ota_dec, d)) wifi_sysex(ota_dec, d);
 }
 static void send(uint32_t cmd, const uint8_t *body, uint32_t n)
 {
@@ -301,8 +338,94 @@ static void test_transfer(void)
     CHECK(max_wire <= 605u, "a message of %u bytes (usb.c takes 640)", max_wire);
 }
 
+/* the report's layout byte for byte, a buffer too small for it, and the two commands through the framing */
+static void test_wifi(void)
+{
+    static uint8_t b[64], whole[20000];
+    static const uint8_t WANT[] = { 'O', 'P', 'L', 'W', 1, 0, 7, 0, 5, 0, 'A', '\n', 'B', 'C', '\n',
+                                    2, 1, 0, 0, 0, 0x78, 0x56, 0x34, 0x12,
+                                    2, 1, 6, 10, 0, 4, 0, 0xDE, 0xAD, 0xBE, 0xEF, 3, 11, 0x58, 0x02, 2, 0, 0xDE, 0xAD };
+    static const uint8_t FR[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+    const uint32_t ctr[2] = { 1, 0x12345678u };
+    wr_buf w;
+    uint32_t i, off, total, n, serial;
+
+    wr_begin(&w, b, sizeof b, 32, 7);
+    wr_line(&w, "A"); wr_line(&w, "BC");
+    wr_counters(&w, ctr, 2);
+    wr_line(&w, "LATE");                        /* after the counters: refused, and said so */
+    CHECK(b[5] == WR_CUT_TEXT, "a line after the counters: flags %02X", b[5]);
+    b[5] = 0;
+    wr_frame(&w, 1, 6, 10, FR, 4);
+    wr_frame(&w, 3, 11, 600, FR, 2);
+    CHECK(w.n == sizeof WANT && !memcmp(b, WANT, sizeof WANT), "the report's bytes are not the layout (%u bytes)", w.n);
+    wr_frame(&w, 1, 1, 100, whole, 40);          /* does not fit: refused whole, flagged, the count unchanged */
+    CHECK(w.n == sizeof WANT && b[5] == WR_CUT_FRAMES && b[24] == 2u, "a frame past the buffer: %u bytes, flags %02X", w.n, b[5]);
+    wr_begin(&w, b, sizeof b, 4, 0);
+    wr_line(&w, "ABC"); wr_line(&w, "D");
+    CHECK(b[8] == 4u && b[5] == WR_CUT_TEXT, "text past text_max: %u bytes, flags %02X", b[8], b[5]);
+    wr_frame(&w, 1, 1, 1, FR, 1);
+    CHECK(b[5] & WR_CUT_FRAMES, "a frame before the counters is not refused");
+
+    /* a report as oplbox.c builds one: 3000 bytes of text, 19 counters, 12 frames of 360 bytes */
+    wr_begin(&w, wrep, sizeof wrep, 6144, 0);
+    for (i = 0; i < 100u; i++) wr_line(&w, "RAW FRAMES 1-2       7/10 ......");
+    { uint32_t c[19]; for (i = 0; i < 19u; i++) c[i] = i * 1000u; wr_counters(&w, c, 19); }
+    for (i = 0; i < sizeof whole; i++) whole[i] = (uint8_t)(i * 7u + 3u);
+    for (i = 0; i < 12u; i++) wr_frame(&w, 1u + i / 4u, 1u + i, 360, whole + 360u * i, 360);
+    CHECK(!wrep[5], "the example report was cut short");
+    wrep_n = w.n;
+
+    send(WIFI_CMD_REPORT, (const uint8_t *)"\0\0\0", 3);
+    CHECK(reply_n == 16u && reply[2] == WIFI_CMD_REPORT && reply[6] == WIFI_E_NONE, "before any run: not \"no run yet\"");
+    wedit = 1;
+    send(WIFI_CMD_RUN, 0, 0);
+    CHECK(reply_n == 10u && reply[2] == WIFI_CMD_RUN && reply[6] == WIFI_E_EDIT && !wreq, "in EDIT: a run is not refused");
+    wedit = 0;
+    send(WIFI_CMD_RUN, 0, 0);
+    CHECK(reply_n == 10u && reply[6] == WIFI_OK && reply[7] == 1u && wreq, "the run command is not taken as run 1");
+    send(WIFI_CMD_RUN, 0, 0);
+    CHECK(reply_n == 10u && reply[6] == WIFI_E_RUNNING && reply[7] == 1u, "a second run command: not \"run 1 is running\"");
+    send(WIFI_CMD_REPORT, (const uint8_t *)"\0\0\0", 3);
+    CHECK(reply_n == 16u && reply[6] == WIFI_E_RUNNING, "while it runs: the report is not \"running\"");
+    wifi_run_ends();
+    for (off = 0, total = 1; off < total; off += n) {
+        uint8_t o[3] = { (uint8_t)off, (uint8_t)(off >> 8), (uint8_t)(off >> 16) };
+        send(WIFI_CMD_REPORT, o, 3);
+        if (!(reply_n >= 16u && reply[6] == WIFI_OK)) { CHECK(0, "report at %u: status %u", off, reply_n ? reply[6] : 99u); break; }
+        total = ota_rd24(reply + 7);
+        serial = reply[13] | (uint32_t)reply[14] << 8;
+        n = reply_n - 16u;
+        CHECK(ota_rd24(reply + 10) == off && n <= WIFI_CHUNK && (n || off == total), "report at %u: %u bytes for offset %u", off, n, ota_rd24(reply + 10));
+        CHECK(serial == wrep_serial, "report at %u: serial %u", off, serial);
+        if (!n) break;
+        memcpy(whole + off, reply + 15, n);
+    }
+    CHECK(total == wrep_n && !memcmp(whole, wrep, wrep_n) && wrep[6] == 1u, "the report read back is not the one built");
+    { uint8_t o[3] = { (uint8_t)(wrep_n + 1u), (uint8_t)((wrep_n + 1u) >> 8), 0 };
+      send(WIFI_CMD_REPORT, o, 3);
+      CHECK(reply_n == 16u && reply[6] == WIFI_E_REQ, "an offset past the end is not refused"); }
+    send(WIFI_CMD_REPORT, (const uint8_t *)"\0\0", 2);
+    CHECK(reply_n == 16u && reply[6] == WIFI_E_REQ, "a short report request is not refused");
+    send(WIFI_CMD_RUN, (const uint8_t *)"\0", 1);
+    CHECK(reply_n == 10u && reply[6] == WIFI_E_REQ && !wreq, "a run command with a body is not refused");
+    send(0x64, 0, 0);
+    CHECK(reply_n == 0u, "an unknown command is answered");
+    CHECK(max_wire <= 640u, "a message of %u bytes", max_wire);
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 2 && !strcmp(argv[1], "--serve-wifi")) {
+        FILE *f = fopen(argv[2], "rb");
+        if (!f) return 2;
+        wrep_n = (uint32_t)fread(wrep, 1, sizeof wrep, f);
+        fclose(f);
+        serve = 1;
+        if (argc > 3 && !strcmp(argv[3], "edit")) wedit = 1;
+        if (argc > 3 && !strcmp(argv[3], "running")) { wreq = 1; wrun_polls = 6; }
+        for (;;) poll_fm1();
+    }
     if (argc > 1 && !strcmp(argv[1], "--serve")) {
         serve = 1;
         memset(flash, 0xFF, sizeof flash);
@@ -319,7 +442,9 @@ int main(int argc, char **argv)
     }
     test_check();
     test_transfer();
+    test_wifi();
     if (failed) { printf("slot_sysex: %d checks failed\n", failed); return 1; }
-    printf("slot_sysex: checks passed (pull, push, refusals, macsop_check == macsop_parse, messages <= %u bytes)\n", max_wire);
+    printf("slot_sysex: checks passed (pull, push, refusals, macsop_check == macsop_parse, the WiFi report and run, "
+           "messages <= %u bytes)\n", max_wire);
     return 0;
 }
