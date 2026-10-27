@@ -288,13 +288,26 @@ def build_ble():
     own = [FW / "ble" / n for n in ("hci.c", "ble_midi.c")]
     own_objs = [out / f"{s.stem}.o" for s in own]
     tc_all(*[("cc", *CFLAGS, "-Ifirmware/ble", "-c", s, "-o", o) for s, o in zip(own, own_objs)])
-    nim = [FW / "ble" / "fm1ble_test.c", *nimble_sources()]
+    nim = [FW / "ble" / "fm1ble_test.c", FW / "ble" / "fm1ble.c", *nimble_sources()]
     nim_objs = [out / f"nimble_{s.stem}.o" for s in nim]
     tc_all(*[("cc", *CFLAGS, *NIMBLE_INC, *libc_inc(), "-c", s, "-o", o) for s, o in zip(nim, nim_objs)])
+    # Cordio's LE controller (vendored, Apache-2.0), peripheral-only, with the port's WSF and HCI glue; the chip's PAL
+    # (what firmware/ble/cordio_port/PAL_NEEDED.md lists) is not linked: a host stub exists only for the tests
+    cr = FW / "ble" / "cordio"
+    crp = FW / "ble" / "cordio_port"
+    cr_src = [cr / ln.strip() for ln in (crp / "SOURCES.txt").read_text().splitlines() if ln.strip()]
+    cr_inc = sorted({f"-I{h.parent.relative_to(SRC)}" for h in cr.rglob("*.h")})
+    cr_def = [f"-D{ln.strip()}" for ln in (crp / "DEFINES.txt").read_text().splitlines() if ln.strip()]
+    cr_all = [*cr_src, crp / "cordio_ctrl.c", crp / "cordio_wsf.c"]
+    cr_objs = [out / f"cordio_{s.stem}.o" for s in cr_all]
+    tc_all(*[("cc", *CFLAGS, "-fshort-enums", "-Wno-parentheses", *cr_inc, "-Ifirmware/ble", "-Ifirmware/ble/cordio_port", *cr_def, *libc_inc(), "-c", s, "-o", o)
+             for s, o in zip(cr_all, cr_objs)])
+    kc, kd = section_sizes(cr_objs)
     oc, od = section_sizes(own_objs)
     nc, nd = section_sizes(nim_objs)
     return (f"firmware/ble/ alone: {len(own_objs)} objects {oc} B code+rodata, {od} B data+bss; "
-            f"NimBLE host and port: {len(nim_objs)} objects {nc} B code+rodata, {nd} B data+bss (not linked yet)")
+            f"NimBLE host and port: {len(nim_objs)} objects {nc} B code+rodata, {nd} B data+bss; "
+            f"Cordio controller: {len(cr_objs)} objects {kc} B code+rodata, {kd} B data+bss (not linked yet)")
 
 
 # ---- the WiFi trim's RAM code (docs/WIFI_STAGE3.md "What runs from RAM"): the radio's trim must not touch the flash,
@@ -433,7 +446,7 @@ def mmio_check():
                              (MMIO_ASM, "inline asm")):
                 if rx is MMIO_LIT and (f.parent == FW / "wifi" / "bearssl" or FW / "wifi" / "lwip" / "src" in f.parents or
                                        FW / "ble" / "nimble" in f.parents or FW / "ble" / "cordio" in f.parents or
-                                       f.name in ("fm1wifi_regs.h", "fm1wifi_tables.h")):
+                                       f.name in ("fm1wifi_regs.h", "fm1wifi_tables.h", "fm1ble_regs.h")):
                     continue
                 m = rx.search(ln)
                 if m:

@@ -119,7 +119,7 @@ static void analog_init(fm1ble *b)               /* C.1 bt_rf_analog_init */
 
 /* the readbacks the report shows, and what each should read as when the register holds what was written */
 static const struct { uint32_t addr, mask, want; } RB[8] = {
-    { FM1BLE_WL_CON0, 0x0F1F0181u, 0x020C0181u },   /* B.2 field 27-24 = 2, bit 8; B.1 bit 7, field 20-16 = 0x0C, bit 0 */
+    { FM1BLE_WL_CON0, 0x0F1F0181u, (2u << 24) | (0x0Cu << 16) | 0x181u },   /* B.2 field 27-24 = 2, bit 8; B.1 bit 7, field 20-16 = 0x0C, bit 0 */
     { FM1BLE_BT_CLKCON, 0xFFFFu, 0xFCFDu },         /* B.1 step 14 then 15 */
     { FM1BLE_BT_ENA, 0x3FFu, 0x3FFu },              /* B.1 steps 16-17 */
     { FM1BLE_ANA(0x00), 0xFFFFFFFFu, 0x00FFD144u },
@@ -146,7 +146,7 @@ int fm1ble_radio_up(fm1ble *b, int variant, const fm1ble_cal *cal)
     /* B.2 bt_process_before_init: run first, as its name says [unchecked when JieLi runs it]; wlc_wreg(5, 0x98) writes
      * 5 << 4 | 0x98 << 16 | 1 to the coexistence command register (B.4) */
     wr(FM1BLE_WL_CON1, 5u << 4 | 0x98u << 16 | 1u);
-    fld(FM1BLE_WL_CON0, 0x0F000000u, 0x02000000u);
+    fld(FM1BLE_WL_CON0, 0x0F000000u, 2u << 24);
     set(FM1BLE_WL_CON0, BIT(8));
     fld(FM1BLE_BT_PWRCON, 0x3Cu, 0x08u);
     wr(FM1BLE_BSFR_50, 0x87u);
