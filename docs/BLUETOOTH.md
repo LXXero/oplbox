@@ -487,6 +487,23 @@ the specification's copy). It includes no C library header, like `hci.c`.
   (L2CAP, stage 3), MTU exchange, timestamps smoothing on receive, and a bridge from the app's `midi_send()` to the
   encoder (one call with `fm1_ms` as the time, wired in stage 5).
 
+## Cordio path as built
+
+Decision (xero, 2026-10-27): no JieLi binary in the image. The controller is Arm/Packetcraft Cordio's link layer
+(Apache-2.0, https://github.com/packetcraft-inc/stacks), which the names inside `btctrler.a` (`lctrComputeAccessAddr`,
+`lctrComputeCrcInit`, `lctrCalcTotalAccuracy`, `lctrBisCalcGroupSessionKey`) point to as the source of about 20 of its
+functions. Apache-2.0 is compatible with GPL-3.0-only when LICENSE and NOTICE are kept. The chip's radio driver is
+ours, clean-room, from facts only.
+
+Plan, in the order built (this section is updated as each step lands; "not done" says so):
+
+1. NimBLE host, peripheral-only, no pairing, `firmware/ble/nimble/`: not done.
+2. Cordio link layer from source, advertiser/peripheral only, `firmware/ble/cordio/`: not done.
+3. Clean-room radio driver and register map, `docs/BLUETOOTH_RADIO.md`: not done.
+4. First FM-1 proof (advertisement "OPLBOX" with the BLE-MIDI service UUID): not done.
+5. Bluetooth test page and USB SysEx report, `tools/fm1_ble_report.py`: not done.
+6. Flash and RAM of NimBLE + Cordio + driver: not done.
+
 ## Open questions
 
 - Whether OPLBOX may ship the controller binary (the gate above); and who to ask. Who would answer for JieLi is
