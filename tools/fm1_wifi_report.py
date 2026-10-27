@@ -7,9 +7,10 @@
   fm1_wifi_report.py --ssid NAME [--psk-file F | --psk-from-nm CONNECTION] [--run ...]
                                     first tell the FM-1 the WPA2 network its runs join (stage 8)
   fm1_wifi_report.py --forget [--run ...]   the runs join the open network OPLBOX again
+  fm1_wifi_report.py --run --ping [...]   (stage 9) ping the FM-1 from this computer while it listens
 
 SysEx in the updater's framing (firmware/src/wifi_sysex.c, docs/API.md "WiFi test page
-over SysEx"). The report is what the page's ten pages show, as text, then every network
+over SysEx"). The report is what the page's 14 pages show, as text, then every network
 the scan kept, the counters behind page 9 and every frame the FIFO gave (up to 512 bytes
 each), as bytes. It prints the text and the counters. With --out DIR it writes
 report.txt, report.bin (the report as sent), counters.txt and one file per frame,
@@ -30,6 +31,13 @@ an argument of this tool or of any program it starts, and never printed. The rep
 EAPOL frames (msg 1 and 2) are enough to test passphrase guesses offline: keep --out
 directories of a WPA2 run private.
 
+--ping (with --run, stage 9, docs/WIFI_STAGE9.md): while the run goes on the tool asks
+the FM-1 what it is doing (the live command); once it has an address from DHCP and
+listens for echo requests, the tool runs `ping -c 5 -i 0.2 -W 1 ADDRESS` here, prints
+its output and, with --out, writes it to ping.txt. The FM-1 counts the requests it
+answered (page 12, PING IN). This computer must be on the same network (the FM-1's
+address is on the router's LAN; a phone hotspot or another subnet may not route).
+
 Exit codes: 0 done, 1 the FM-1 refused or has no report (no run since it started),
 2 bad arguments, 3 FM-1 not found, 4 no reply (connection lost, or a firmware without
 the WiFi report), 5 the run did not finish within --timeout.
@@ -44,11 +52,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fm1_install as fi  # noqa: E402
 from fm1_slot import SlotError, message, wait_reply  # noqa: E402
 
-REPORT, RUN, NET = 0x62, 0x63, 0x64
+REPORT, RUN, NET, LIVE = 0x62, 0x63, 0x64, 0x65
 OK, E_REQ, E_NONE, E_RUNNING, E_EDIT = range(5)
 STATUS = {E_REQ: "bad request", E_NONE: "no WiFi test run since the FM-1 started (--run starts one)",
           E_RUNNING: "a run is going on", E_EDIT: "EDIT is open on the FM-1: leave it (EDIT) and try again"}
-STEPS = {1: "passive", 2: "active", 3: "join", 4: "eapol_from_ap", 5: "eapol_to_ap", 6: "rejoin_from_ap", 7: "rejoin_to_ap"}
+STEPS = {1: "passive", 2: "active", 3: "join", 4: "eapol_from_ap", 5: "eapol_to_ap", 6: "rejoin_from_ap", 7: "rejoin_to_ap",
+         8: "ip_from_ap", 9: "ip_to_ap"}
+IP_KINDS = {0: "other", 1: "arp", 2: "icmp", 3: "ip", 8: "dhcp", 9: "dhcp_discover", 10: "dhcp_offer", 11: "dhcp_request",
+            12: "dhcp_decline", 13: "dhcp_ack", 14: "dhcp_nak", 15: "dhcp_release", 16: "dhcp_inform"}   # an IP frame's "ch"
+LIVE_STEPS = {0: "no run", 1: "running", 2: "DHCP", 3: "ARP", 4: "ping", 5: "listening"}
 MSGS = {1: "msg1", 2: "msg2", 3: "msg3", 4: "msg4", 5: "group1", 6: "group2", 0: "other"}   # an EAPOL frame's "ch"
 COUNTERS = ["wl30_04_before", "wl30_04_after", "txrxq_before", "txrxq_after", "frames", "bad", "to_me", "sent",
             "send_errors", "crc_err", "phy_err", "rx_dup", "rx_overflow", "tx_ok", "tx_fail", "tx_retry",
@@ -59,11 +71,26 @@ COUNTERS = ["wl30_04_before", "wl30_04_after", "txrxq_before", "txrxq_after", "f
             "group_ok", "group_handshakes", "key_err", "ptk_wcid_lo", "ptk_wcid_hi", "ptk_attr", "ptk_iv", "ptk_eiv",
             "ptk_key_same", "gtk_mode", "gtk_attr", "gtk_iv", "gtk_eiv", "gtk_key_same", "rand_0", "rand_1",
             "tx_ok_before_join", "tx_fail_before_join", "tx_retry_before_join", "crc_err_before_join",
-            "tx_sec_before_join", "tx_sec_after", "rx_sec_before_join", "rx_sec_after"]
+            "tx_sec_before_join", "tx_sec_after", "rx_sec_before_join", "rx_sec_after",
+            # stage 9: IP on the WPA2 join (firmware/wifi/fm1wifi_ip.h); errors as FM1WIFI_* (0 OK, -4 timeout, -5 off)
+            "steps_reached", "ip_start_err", "dhcp_err", "arp_err", "ping_err", "listen_err", "net_err", "ip_err",
+            "t_dhcp_ms", "dhcp_discover_tx", "dhcp_request_tx", "dhcp_release_tx", "dhcp_offer_rx", "dhcp_ack_rx",
+            "dhcp_nak_rx", "ip_addr", "ip_mask", "ip_gateway", "dhcp_server", "dns_1", "dns_2", "lease_s",
+            "t_arp_ms", "arp_tx", "arp_rx", "gateway_mac_hi", "gateway_mac_lo",
+            "pings_sent", "pings_answered", "ping_min_ms", "ping_avg_ms", "ping_max_ms", "pings_late",
+            "echo_in", "echo_out", "listen_ms", "listen_in", "listen_out",
+            "data_rx", "data_to_lwip", "data_rx_group", "data_rx_clear", "data_rx_not_decrypted", "data_rx_icv_err",
+            "data_rx_mic_err", "data_rx_key_err", "data_rx_ccmp_header_left", "data_tx", "data_tx_err",
+            "protected_rx_before_ip", "protected_ok_before_ip", "protected_err_before_ip",
+            "protected_rx_after_ip", "protected_ok_after_ip", "protected_err_after_ip",
+            "tx_sec_before_ip", "tx_sec_after_ip", "rx_sec_before_ip", "rx_sec_after_ip"]
 HEX_COUNTERS = {"wl30_04_before", "wl30_04_after", "txrxq_before", "txrxq_after", "msgs_seen", "ptk_wcid_lo",
                 "ptk_wcid_hi", "ptk_attr", "ptk_iv", "ptk_eiv", "ptk_key_same", "gtk_mode", "gtk_attr", "gtk_iv",
                 "gtk_eiv", "gtk_key_same", "rand_0", "rand_1", "tx_sec_before_join", "tx_sec_after",
-                "rx_sec_before_join", "rx_sec_after"}
+                "rx_sec_before_join", "rx_sec_after", "steps_reached", "ip_addr", "ip_mask", "ip_gateway", "dhcp_server",
+                "dns_1", "dns_2", "gateway_mac_hi", "gateway_mac_lo", "tx_sec_before_ip", "tx_sec_after_ip",
+                "rx_sec_before_ip", "rx_sec_after_ip"}
+SIGNED_COUNTERS = {"ip_start_err", "dhcp_err", "arp_err", "ping_err", "listen_err", "net_err", "ip_err"}
 PSK_FILE = "~/.config/oplbox/wifi.psk"
 DELAY = {"reply": 3.0, "poll": 0.5}   # seconds; the tests shorten them
 
@@ -192,8 +219,30 @@ def set_network(link, ssid, pw):
         raise ReportError("refused", "the FM-1 refused the network: " + STATUS.get(b[0], f"status {b[0]}"))
 
 
-def start(link, timeout):
-    """start a run and wait for its report; -> the run's number"""
+def live(link):
+    """the live command -> (step, address "a.b.c.d" or None, ms left listening, echo requests answered)"""
+    b = ask(link, LIVE, b"")
+    if len(b) < 10 or b[0] != OK:
+        raise ReportError("noreply", f"a {len(b)}-byte reply to the live command (a firmware before stage 9?)")
+    addr = ".".join(str(x) for x in b[2:6]) if any(b[2:6]) else None
+    return b[1], addr, int.from_bytes(b[6:8], "little"), int.from_bytes(b[8:10], "little")
+
+
+def ping_host(addr, out):
+    """ping addr from this computer (5 echo requests); -> ping's output"""
+    try:
+        r = subprocess.run(["ping", "-c", "5", "-i", "0.2", "-W", "1", addr], capture_output=True, text=True, timeout=20)
+        text = r.stdout + r.stderr
+    except (OSError, subprocess.TimeoutExpired) as e:
+        text = f"ping did not run ({type(e).__name__})\n"
+    print(f"pinged the FM-1 at {addr} from here:", file=out)
+    print(text, end="" if text.endswith("\n") else "\n", file=out)
+    return text
+
+
+def start(link, timeout, pinger=None):
+    """start a run and wait for its report; -> the run's number. pinger(addr) is called once, when the FM-1 says it
+    listens for echo requests with an address"""
     b = ask(link, RUN, b"")
     if len(b) < 3:
         raise ReportError("noreply", f"a {len(b)}-byte reply to the run command")
@@ -209,15 +258,26 @@ def start(link, timeout):
             return run
         if st != E_RUNNING:
             raise ReportError("refused", f"the run did not start: {STATUS.get(st, f'status {st}')}")
+        if pinger:
+            step, addr, left, _ = live(link)
+            if step == 5 and addr and left:
+                pinger(addr)
+                pinger = None
         time.sleep(DELAY["poll"])
     raise ReportError("timeout", f"run {run} not finished after {timeout:g} s")
 
 
 def counters_text(c):
-    return "".join(f"{k} {v:08X}\n" if k in HEX_COUNTERS else f"{k} {v}\n" for k, v in c.items())
+    def one(k, v):
+        if k in HEX_COUNTERS:
+            return f"{k} {v:08X}"
+        return f"{k} {v - (1 << 32) if k in SIGNED_COUNTERS and v >= 1 << 31 else v}"
+    return "".join(one(k, v) + "\n" for k, v in c.items())
 
 
 def frame_name(i, fr):
+    if fr["step"].startswith("ip_"):
+        return f"frame-{i:02d}-{fr['step']}-{IP_KINDS.get(fr['ch'], 'kind%d' % fr['ch'])}.bin"
     if fr["step"].startswith(("eapol", "rejoin")):
         return f"frame-{i:02d}-{fr['step']}-{MSGS.get(fr['ch'], 'msg%d' % fr['ch'])}.bin"
     return f"frame-{i:02d}-{fr['step']}-ch{fr['ch']:02d}.bin"
@@ -244,7 +304,8 @@ def show(rep, out):
     print(f"\nFRAMES {len(rep['frames'])}", file=out)
     for i, fr in enumerate(rep["frames"], 1):
         cut = "" if len(fr["data"]) >= fr["had"] else f", first {len(fr['data'])} kept"
-        where = MSGS.get(fr["ch"], "?") if fr["step"].startswith(("eapol", "rejoin")) else f"ch {fr['ch']:2d}"
+        where = (MSGS.get(fr["ch"], "?") if fr["step"].startswith(("eapol", "rejoin")) else
+                 IP_KINDS.get(fr["ch"], "?") if fr["step"].startswith("ip_") else f"ch {fr['ch']:2d}")
         print(f"{i:2d} {fr['step']:7s} {where}  {fr['had']} bytes{cut}  {fr['data'][:36].hex()}", file=out)
     if rep["cut_text"] or rep["cut_frames"]:
         print("(the FM-1 cut the report short: it did not fit its buffer)", file=out)
@@ -263,7 +324,8 @@ def run(a, backend, out):
             ssid = a.ssid.encode("utf-8") if a.ssid is not None else b""
             set_network(dev.link, ssid, passphrase(a) if ssid else "")
             print(f"network {a.ssid} set" if ssid else "network forgotten: runs join the open OPLBOX", file=out)
-        want = start(dev.link, a.timeout) if a.run else None
+        pinged = []
+        want = start(dev.link, a.timeout, (lambda addr: pinged.append(ping_host(addr, out))) if a.ping else None) if a.run else None
         raw = read(dev.link)
     finally:
         dev.link.close()
@@ -272,8 +334,13 @@ def run(a, backend, out):
         raise ReportError("refused", f"run {want} did not start (EDIT pressed on the FM-1?): the FM-1 holds run "
                                      f"{rep['run']}'s report")
     show(rep, out)
+    if a.ping and not pinged:
+        print("the FM-1 never listened with an address (no DHCP?): not pinged", file=out)
     if a.out:
         write_out(a.out, rep, raw)
+        if pinged:
+            with open(os.path.join(a.out, "ping.txt"), "w") as f:
+                f.write(pinged[0])
         print(f"-> {a.out} (report.txt, report.bin, counters.txt, {len(rep['frames'])} frames)", file=out)
         if any(fr["step"].startswith(("eapol", "rejoin")) for fr in rep["frames"]):
             print("   (it holds EAPOL frames: enough to test passphrase guesses offline, so keep it private)", file=out)
@@ -285,7 +352,8 @@ def main(argv=None, backend=None, out=sys.stdout):
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--read", action="store_true", help="read the last run's report (the default)")
     g.add_argument("--run", action="store_true", help="start a run, wait for it, then read its report")
-    ap.add_argument("--timeout", type=float, default=60.0, metavar="S", help="--run: seconds to wait (default 60)")
+    ap.add_argument("--timeout", type=float, default=90.0, metavar="S", help="--run: seconds to wait (default 90)")
+    ap.add_argument("--ping", action="store_true", help="--run: ping the FM-1 from here while it listens (stage 9)")
     ap.add_argument("--out", metavar="DIR", help="write the text, the counters and each frame's bytes into DIR")
     ap.add_argument("--port", metavar="NAME", help="MIDI port to use (part of its name)")
     n = ap.add_mutually_exclusive_group()
@@ -297,6 +365,8 @@ def main(argv=None, backend=None, out=sys.stdout):
     a = ap.parse_args(argv)
     if (a.psk_file or a.psk_from_nm) and a.ssid is None:
         ap.error("--psk-file and --psk-from-nm go with --ssid")
+    if a.ping and not a.run:
+        ap.error("--ping goes with --run")
     try:
         if backend is None:
             try:

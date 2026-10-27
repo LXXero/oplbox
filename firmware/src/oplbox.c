@@ -63,6 +63,11 @@ static inline void irq_restore(uint32_t f) { (void)f; }
 #include "fm1wifi.h"                         /* the WiFi driver (firmware/wifi/), for the WiFi test page */
 #define BR_LIBC_DECLARED                     /* memcpy and memset are libc.c's (platform.c), not BearSSL's declarations */
 #include "fm1wifi_wpa.h"                     /* its WPA2-PSK station (stage 8) */
+#include "fm1wifi_ip.h"                      /* IP on it: lwIP, DHCP, ping (stage 9) */
+#include "fm1wifi_port.h"                    /* sys_now, lwIP's clock */
+#ifndef DINGHY_HOST
+uint32_t sys_now(void) { return fm1_ms; }   /* lwIP's clock (fm1wifi_port.h): platform.c's millisecond count */
+#endif
 #ifdef DINGHY_HOST
 static uint32_t host_supply;                  /* platform_supply_full: 1 called with the WiFi core down, 2 with it up */
 static void platform_supply_full(void) { host_supply = fm1wifi_is_up() ? 2u : 1u; }
@@ -1484,11 +1489,12 @@ static const uint8_t *wifi_report(uint32_t *n, uint32_t *serial);
 static int wifi_run_ask(uint32_t *run);
 static int wifi_reply(uint32_t cmd, const uint8_t *head, uint32_t nh, const uint8_t *data, uint32_t nd);
 static int wifi_net_set(const uint8_t *ssid, uint32_t ns, const char *pass, uint32_t np);
+static uint32_t wifi_live(uint8_t addr[4], uint32_t *left, uint32_t *answered);
 #include "wifi_sysex.c"
-#define WIFI_TEXT_MAX 6144u
-#define WIFI_N_CTR 58u                        /* the report's counters (wifi_report_build) */
+#define WIFI_TEXT_MAX 9216u
+#define WIFI_N_CTR 117u                       /* the report's counters (wifi_report_build; 58 stage 8, 59 more stage 9) */
 #define WIFI_REPORT_MAX (WR_HEAD + WIFI_TEXT_MAX + 2u + 4u * WIFI_N_CTR + 3u * FM1WIFI_RAW_N * (6u + FM1WIFI_RAW_LEN) + \
-                         2u * FM1WIFI_WPA_REC_N * (6u + FM1WIFI_WPA_REC_LEN))
+                         2u * FM1WIFI_WPA_REC_N * (6u + FM1WIFI_WPA_REC_LEN) + FM1WIFI_IP_REC_N * (6u + FM1WIFI_IP_REC_LEN))
 static uint8_t wifi_rep[WIFI_REPORT_MAX] __attribute__((section(".pool")));
 static uint32_t wifi_rep_n, wifi_rep_serial, wifi_runs, wifi_req, wifi_state;   /* wifi_req: a run asked for over USB */
 static wr_buf *wifi_cap;                      /* set: wifi_line adds the line to the report instead of drawing it */
@@ -1611,7 +1617,23 @@ static struct {
     fm1wifi_wpa w, w2;            /* the join and the 2 s after it; the rejoin */
     fm1wifi_counters cj;          /* the counters before the join */
     uint32_t rand[2];             /* two reads of the chip's random number register (the nonces' source) */
+    /* stage 9 (docs/WIFI_STAGE9.md): IP on the WPA2 join, after the 2 s and before leaving */
+    fm1wifi_ip ip;
+    fm1wifi_frames fi;            /* what the IP steps' frames were (counted apart from the join's) */
+    int e_ip, e_dhcp, e_arp, e_ping, e_listen;   /* fm1wifi_ip_start's and each step's result */
+    uint32_t live;                /* WIFI_LIVE_*: the step running now, for the live command (0x65) */
+    uint32_t listen_took;         /* ms the listening window lasted (it ends early after WIFI_LISTEN_ENOUGH answers) */
+    fm1wifi_counters ci0, ci1;    /* the core's counters before and after the IP steps */
+    uint32_t pw0[5], pw1[5];      /* the station's protected frames before / after: in, decrypted, not, group in, decrypted */
 } wl;
+enum { WL_DHCP = 64, WL_ARP = 128, WL_PING = 256, WL_LISTEN = 512 };
+#define WIFI_DHCP_MS 10000u           /* DHCP: lwIP asks again 2 and 4 s after the first DISCOVER */
+#define WIFI_ARP_MS 2000u
+#define WIFI_PINGS 10u                /* to the gateway, 56 bytes of data (ping's default), 200 ms apart, 1 s for each reply */
+#define WIFI_PING_GAP_MS 200u
+#define WIFI_PING_WAIT_MS 1000u
+#define WIFI_LISTEN_MS 10000u         /* echo requests from the network answered; it ends early after WIFI_LISTEN_ENOUGH */
+#define WIFI_LISTEN_ENOUGH 5u
 
 /* The FM-1's WiFi address, the same on every start: the flash part's factory unique ID hashed (FNV-1a) into a
  * locally administered unicast address. No flash write is needed to keep it. Without an ID, 02:4F:50:4C:42:58. */
@@ -1674,6 +1696,61 @@ static int wifi_pmk_get(uint8_t pmk[WPA_PMK_LEN])
     return 0;
 }
 
+/* ---- stage 9 (docs/WIFI_STAGE9.md): IP on the WPA2 join. DHCP, ARP for the gateway, 10 pings to it, then a window in
+ * which echo requests from the network are answered and counted (the live command, 0x65, says the address and how long
+ * is left, so tools/fm1_wifi_report.py --ping can ping it from the computer meanwhile); the lease released at the end.
+ * USB is served all along (platform_poll every 20 ms). */
+enum { WIFI_LIVE_NONE, WIFI_LIVE_RUN, WIFI_LIVE_DHCP, WIFI_LIVE_ARP, WIFI_LIVE_PING, WIFI_LIVE_LISTEN };
+static void wifi_idle(void *arg) { (void)arg; platform_poll(); }
+
+static void wifi_prot(uint32_t *v)
+{
+    v[0] = wl.w.prot_rx; v[1] = wl.w.prot_ok; v[2] = wl.w.prot_err; v[3] = wl.w.group_rx; v[4] = wl.w.group_ok;
+}
+
+static void wifi_ip_run(void)
+{
+    fm1wifi_counters_add(&wl.c);
+    wl.ci0 = wl.c;
+    wifi_prot(wl.pw0);
+    wl.reached |= WL_DHCP;
+    wl.e_ip = fm1wifi_ip_start(&wl.ip, &wl.w, &wl.fi, wifi_idle, 0);
+    if (wl.e_ip == FM1WIFI_OK) {
+        wl.live = WIFI_LIVE_DHCP;
+        wl.e_dhcp = fm1wifi_ip_dhcp(&wl.ip, WIFI_DHCP_MS);
+        if (wl.e_dhcp == FM1WIFI_OK) {
+            wl.reached |= WL_ARP; wl.live = WIFI_LIVE_ARP;
+            wl.e_arp = fm1wifi_ip_arp(&wl.ip, WIFI_ARP_MS);
+            if (wl.w.state == FM1WIFI_WPA_UP) {           /* without the ARP reply too: lwIP then asks again itself */
+                wl.reached |= WL_PING; wl.live = WIFI_LIVE_PING;
+                wl.e_ping = fm1wifi_ip_ping(&wl.ip, WIFI_PINGS, 56, WIFI_PING_GAP_MS, WIFI_PING_WAIT_MS);
+            }
+            if (wl.w.state == FM1WIFI_WPA_UP) {
+                wl.reached |= WL_LISTEN; wl.live = WIFI_LIVE_LISTEN;
+                wl.e_listen = fm1wifi_ip_listen(&wl.ip, WIFI_LISTEN_MS, WIFI_LISTEN_ENOUGH);
+                wl.listen_took = sys_now() - wl.ip.listen_at;
+            }
+        }
+    }
+    wl.live = WIFI_LIVE_RUN;
+    fm1wifi_ip_stop(&wl.ip);
+    fm1wifi_counters_add(&wl.c);
+    wl.ci1 = wl.c;
+    wifi_prot(wl.pw1);
+    platform_poll();
+}
+
+/* the live command (wifi_sysex.c 0x65): the step running, the address (0 before DHCP), the listening window's ms left,
+ * the echo requests answered so far */
+static uint32_t wifi_live(uint8_t addr[4], uint32_t *left, uint32_t *answered)
+{
+    uint32_t i, live = wifi_state == WR_RUNNING ? (wl.live ? wl.live : (uint32_t)WIFI_LIVE_RUN) : (uint32_t)WIFI_LIVE_NONE;
+    for (i = 0; i < 4u; i++) addr[i] = live >= WIFI_LIVE_DHCP ? wl.ip.addr[i] : 0;
+    *left = live == WIFI_LIVE_LISTEN ? fm1wifi_ip_listen_left(&wl.ip) : 0;
+    *answered = live >= WIFI_LIVE_DHCP ? wl.ip.echo_out : 0;
+    return live;
+}
+
 static void wifi_frames_run(void)
 {
     const fm1wifi_bss *b;
@@ -1722,8 +1799,9 @@ static void wifi_frames_run(void)
             wl.s_state = wl.w.state == FM1WIFI_WPA_UP ? FM1WIFI_STA_UP : FM1WIFI_STA_DOWN;
             wl.s_why = wl.w.sta.why; wl.s_reason = wl.w.sta.reason; wl.s_beacons = wl.w.sta.beacons;
             if (wl.s_state == FM1WIFI_STA_UP) {
+                wifi_ip_run();                        /* stage 9: DHCP, ARP, ping, pinged (pages 12-14) */
                 wl.reached |= WL_REJOIN;
-                fm1wifi_wpa_leave_now(&wl.w, &wl.fj);
+                if (wl.w.state == FM1WIFI_WPA_UP) fm1wifi_wpa_leave_now(&wl.w, &wl.fj);
                 wl.w2.sta.seq = wl.w.sta.seq;
                 fm1wifi_wpa_join(&wl.w2, &wl.target, pmk, wifi_nonce, 0, FM1WIFI_WPA_4WAY_MS + 2000u, &wl.fj);
                 wl.r_state = wl.w2.state == FM1WIFI_WPA_UP ? FM1WIFI_STA_UP : FM1WIFI_STA_DOWN;
@@ -1820,7 +1898,7 @@ static void wifi_wpa_page(void)
     const fm1wifi_wpa *w = &wl.w;
     char s[48], *p;
     uint32_t m, idx = w->gtk_idx;
-    wifi_line(0, "WPA2                 11/11", C_ACC);
+    wifi_line(0, "WPA2                 11/14", C_ACC);
     if (!wl.net) {
         wifi_line(1, "NO NETWORK SET OVER USB:", C_TXT);
         wifi_line(2, wl.reached ? "THE RUN TRIED OPEN OPLBOX" : "NOT REACHED: SEE PAGE 5", C_TXT);
@@ -1862,16 +1940,143 @@ static void wifi_wpa_page(void)
     wifi_line(8, s, (w->got & 1u << FM1WIFI_WPA_MSG_2) && !(w->got & 1u << FM1WIFI_WPA_MSG_3) ? C_TXT : C_ACC);
 }
 
+static char *cat_ip(char *d, const uint8_t *a)   /* a.b.c.d */
+{
+    for (uint32_t i = 0; i < 4u; i++) { if (i) *d++ = '.'; d = catu(d, a[i]); }
+    return d;
+}
+
+static uint32_t wifi_prefix(const uint8_t *m)     /* a netmask's prefix length */
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < 32u && (m[i / 8u] >> (7u - i % 8u) & 1u); i++) n++;
+    return n;
+}
+
+/* why an IP step stopped: the station left (with the AP's reason), or the error */
+static char *cat_ip_err(char *d, int e)
+{
+    if (wl.w.state != FM1WIFI_WPA_UP && (e == FM1WIFI_ESTATE || e == FM1WIFI_OK)) return cat_down(d, &wl.w);
+    return cat(d, fm1wifi_strerror(e));
+}
+
+/* pages 12-14 (stage 9, docs/WIFI_STAGE9.md): the IP steps and what they found, the DHCP messages and the data frames'
+ * counters, the first IP frames */
+static void wifi_ip_page(uint32_t page)
+{
+    const fm1wifi_ip *ip = &wl.ip;
+    char s[48], *p;
+    uint32_t i, k;
+    if (page == 11u) {
+        wifi_line(0, "IP STEPS             12/14", C_ACC);
+        if (!(wl.reached & WL_DHCP)) cat(s, wl.wpa ? "NOT REACHED" : "NOT RUN (WPA2 ONLY)");
+        else if (wl.e_ip != FM1WIFI_OK) cat_ip_err(cat(s, "FAIL "), wl.e_ip);
+        else if (wl.e_dhcp == FM1WIFI_OK) cat(catu(cat(s, "OK "), ip->t_dhcp), " MS");
+        else if (wl.e_dhcp != FM1WIFI_ETIMEOUT) cat_ip_err(cat(s, "FAIL "), wl.e_dhcp);
+        else if (!ip->have_offer) cat(catu(cat(s, "FAIL NO OFFER, "), ip->dhcp_tx[FM1WIFI_DHCP_DISCOVER]), " DISCOVER");
+        else if (ip->have_ack && ip->ack.type == FM1WIFI_DHCP_NAK) cat(s, "FAIL NAK");
+        else cat(s, "FAIL NO ACK");
+        wifi_step(1, "DHCP", s);
+        if (!(wl.reached & WL_ARP)) cat(s, "NOT REACHED");
+        else if (wl.e_arp == FM1WIFI_OK) cat(catu(cat(s, "OK "), ip->t_arp), " MS");
+        else if (wl.e_arp == FM1WIFI_ERANGE) cat(s, "FAIL NO GATEWAY");
+        else if (wl.e_arp == FM1WIFI_ETIMEOUT) cat(s, "FAIL NO REPLY");
+        else cat_ip_err(cat(s, "FAIL "), wl.e_arp);
+        wifi_step(2, "ARP GW", s);
+        if (!(wl.reached & WL_PING)) cat(s, "NOT REACHED");
+        else if (wl.e_ping == FM1WIFI_ERANGE) cat(s, "FAIL NO GATEWAY");
+        else if (wl.e_ping != FM1WIFI_OK) cat_ip_err(cat(s, "FAIL "), wl.e_ping);
+        else {
+            p = cat(s, ip->ping_got == ip->ping_n ? "OK " : ip->ping_got ? "LOSS " : "FAIL ");
+            p = catu(cat(catu(p, ip->ping_got), "/"), ip->ping_n);
+            if (ip->ping_got) {
+                p = catu(cat(catu(cat(catu(cat(p, " "), ip->ping_min), "/"), ip->ping_sum / ip->ping_got), "/"), ip->ping_max);
+                if (p - s < 19) cat(p, " MS");
+            } else if (ip->ping_late) cat(catu(cat(p, " "), ip->ping_late), " LATE");
+        }
+        wifi_step(3, "PING GW", s);
+        if (!(wl.reached & WL_LISTEN)) cat(s, "NOT REACHED");
+        else if (wl.e_listen != FM1WIFI_OK) cat_ip_err(cat(s, "FAIL "), wl.e_listen);
+        else if (!ip->listen_in) cat(catu(cat(s, "NONE IN "), (wl.listen_took + 500u) / 1000u), " S");
+        else if (ip->listen_out < ip->listen_in) cat(catu(cat(catu(cat(s, "FAIL "), ip->listen_out), " OF "), ip->listen_in), " ANSWERED");
+        else cat(catu(cat(catu(cat(s, "OK "), ip->listen_out), " IN "), (wl.listen_took + 500u) / 1000u), " S");
+        wifi_step(4, "PING IN", s);
+        if (wl.e_dhcp == FM1WIFI_OK && (wl.reached & WL_DHCP)) {
+            catu(cat(cat_ip(cat(s, "ADDR "), ip->addr), "/"), wifi_prefix(ip->mask));
+            wifi_line(5, s, C_ACC);
+            cat_ip(cat(s, "GW "), ip->gw);
+            wifi_line(6, s, C_ACC);
+            if (ip->arp_ok) cat_mac(cat(s, "GW MAC "), ip->gw_mac); else cat(s, "GW MAC --");
+            wifi_line(7, s, C_ACC);
+            if (!ip->ack.n_dns) cat(s, "DNS NONE");
+            else { p = cat_ip(cat(s, "DNS "), ip->ack.dns[0]); if (ip->ack.n_dns > 1u) catu(cat(p, " +"), ip->ack.n_dns - 1u); }
+            wifi_line(8, s, C_ACC);
+        }
+        return;
+    }
+    if (page == 12u) {
+        const uint32_t *b = wl.pw0, *a = wl.pw1;
+        wifi_line(0, "DHCP, DATA           13/14", C_ACC);
+        if (!(wl.reached & WL_DHCP) || wl.e_ip != FM1WIFI_OK) { wifi_line(1, "NOT REACHED: SEE PAGE 12", C_TXT); return; }
+        p = cat(catu(cat(s, "SENT DISC "), ip->dhcp_tx[FM1WIFI_DHCP_DISCOVER]), " REQ ");
+        catu(cat(catu(p, ip->dhcp_tx[FM1WIFI_DHCP_REQUEST]), " REL "), ip->dhcp_tx[FM1WIFI_DHCP_RELEASE]);
+        wifi_line(1, s, C_ACC);
+        p = cat(catu(cat(s, "GOT OFFER "), ip->dhcp_rx[FM1WIFI_DHCP_OFFER]), " ACK ");
+        catu(cat(catu(p, ip->dhcp_rx[FM1WIFI_DHCP_ACK]), " NAK "), ip->dhcp_rx[FM1WIFI_DHCP_NAK]);
+        wifi_line(2, s, C_ACC);
+        if (ip->have_offer) cat_ip(cat(s, "SERVER "), ip->offer.server); else cat(s, "SERVER --");
+        wifi_line(3, s, C_ACC);
+        if (ip->have_ack && ip->ack.type == FM1WIFI_DHCP_ACK) cat(catu(cat(s, "LEASE "), ip->ack.lease), " S"); else cat(s, "LEASE --");
+        wifi_line(4, s, C_ACC);
+        p = cat(s, "OFFER ");
+        p = cat(p, !ip->have_offer ? "--" : ip->offer.dst[0] == 255u ? "BCAST" : "UNICAST");
+        p = cat(p, ip->have_ack && ip->ack.type == FM1WIFI_DHCP_NAK ? "  NAK " : "  ACK ");
+        cat(p, !ip->have_ack ? "--" : ip->ack.dst[0] == 255u ? "BCAST" : "UNICAST");
+        wifi_line(5, s, C_ACC);
+        p = cat(catu(cat(catu(cat(s, "TX "), ip->tx_data), " ERR "), ip->tx_err), "  RX ");
+        catu(cat(catu(p, ip->rx_data), " LWIP "), ip->rx_net);
+        wifi_line(6, s, C_ACC);
+        p = cat(catu(cat(catu(cat(s, "DECR "), b[1]), ">"), a[1]), " ERR ");
+        catu(cat(catu(cat(catu(cat(catu(p, b[2]), ">"), a[2]), " GRP "), b[4]), ">"), a[4]);
+        wifi_line(7, s, C_ACC);
+        p = cat(catu(cat(catu(cat(catu(cat(s, "ICV "), ip->rx_icv), " MIC "), ip->rx_mic), " KEY "), ip->rx_key), " CLR ");
+        catu(cat(catu(p, ip->rx_clear), " IV "), ip->rx_iv_left);
+        wifi_line(8, s, (ip->rx_icv | ip->rx_mic | ip->rx_key | ip->rx_clear) ? C_TXT : C_ACC);
+        return;
+    }
+    wifi_line(0, "IP FRAMES 1-2        14/14", C_ACC);
+    if (!(wl.reached & WL_DHCP) || !ip->n_rec) { wifi_line(1, (wl.reached & WL_DHCP) ? "NO IP FRAME" : "NOT REACHED: SEE PAGE 12", C_TXT); return; }
+    for (k = 0; k < 2u && k < ip->n_rec; k++) {
+        const fm1wifi_ip_rec *r = &ip->rec[k];
+        p = cat(catu(s, k + 1u), r->dir ? " OUT " : " IN ");
+        p = cat(catu(p, r->len), " B ");
+        cat(p, fm1wifi_ip_kind_name(r->kind));
+        wifi_line(1u + 4u * k, s, C_TXT);
+        for (i = 0; i < 3u; i++) {                    /* 3 lines of 3 groups of 4 bytes, from the frame's start */
+            uint32_t n;
+            p = s;
+            for (n = 0; n < 3u; n++) {
+                uint32_t at = 12u * i + 4u * n, b;
+                if (n) *p++ = ' ';
+                for (b = 0; b < 4u; b++) p = at + b < r->len ? hexn(p, r->b[at + b], 2) : cat(p, "  ");
+            }
+            *p = 0;
+            wifi_line(2u + 4u * k + i, s, C_ACC);
+        }
+    }
+}
+
 static void wifi_more(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio *r, uint32_t sv_got)
 {
-    static const char *const FOOT[7] = { "", "PLAY: PAGE 7   SAVE: LEAVE", "PLAY: PAGE 8   SAVE: LEAVE",
-                                         "PLAY: PAGE 9   SAVE: LEAVE", "PLAY: PAGE 10  SAVE: LEAVE", "PLAY: PAGE 11  SAVE: LEAVE",
-                                         "PLAY: PAGE 1   SAVE: LEAVE" };
+    static const char *const FOOT[10] = { "", "PLAY: PAGE 7   SAVE: LEAVE", "PLAY: PAGE 8   SAVE: LEAVE",
+                                          "PLAY: PAGE 9   SAVE: LEAVE", "PLAY: PAGE 10  SAVE: LEAVE", "PLAY: PAGE 11  SAVE: LEAVE",
+                                          "PLAY: PAGE 12  SAVE: LEAVE", "PLAY: PAGE 13  SAVE: LEAVE", "PLAY: PAGE 14  SAVE: LEAVE",
+                                          "PLAY: PAGE 1   SAVE: LEAVE" };
     char s[48], *p;
     uint32_t i, k, n;
     if (page != 4u) wifi_line(9, FOOT[page - 4u], C_MUTE);
     if (page == 4u) {                                 /* each step's result: where the run stopped; 10 lines, no footer */
-        wifi_line(0, "STEPS                 5/11", C_ACC);
+        wifi_line(0, "STEPS                 5/14", C_ACC);
         if (d->err != FM1WIFI_OK) cat_err(s, "POWER UP", d->err);
         else if (r->err != FM1WIFI_OK) { p = cat_err(s, 0, r->err); cat(cat(p, " AT "), r->stage); }
         else cat(s, "OK");
@@ -1934,7 +2139,7 @@ static void wifi_more(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         return;
     }
     if (page == 5u) {                                 /* the networks: SSID, channel, RSSI, security, P: probed */
-        p = cat(s, "SCAN LIST "); p = cati(p, wl.list.n, 3, 0); cat(p, " NETS   6/11");
+        p = cat(s, "SCAN LIST "); p = cati(p, wl.list.n, 3, 0); cat(p, " NETS   6/14");
         wifi_line(0, s, C_ACC);
         if (!(wl.reached & WL_PASSIVE)) { wifi_line(1, "NOT REACHED: SEE PAGE 5", C_TXT); return; }
         if (!wl.list.n) { wifi_line(1, "NO NETWORK HEARD", C_TXT); return; }
@@ -1958,7 +2163,7 @@ static void wifi_more(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
     }
     if (page == 6u || page == 7u) {                   /* the first four frames as the FIFO gave them, 36 bytes each */
         uint32_t base = page == 6u ? 0u : 2u, idx;
-        cat(cat(cat(cat(s, "RAW FRAMES "), page == 6u ? "1-2" : "3-4"), "       "), page == 6u ? "7/11" : "8/11");
+        cat(cat(cat(cat(s, "RAW FRAMES "), page == 6u ? "1-2" : "3-4"), "       "), page == 6u ? "7/14" : "8/14");
         wifi_line(0, s, C_ACC);
         for (k = 0; k < 2u; k++) {
             const fm1wifi_frames *f = wl_raw(base + k, &idx);
@@ -1986,7 +2191,7 @@ static void wifi_more(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
             fr += f[i]->frames; bad += f[i]->bad; me += f[i]->to_us; tx += f[i]->tx; txe += f[i]->tx_err;
             if (e == FM1WIFI_OK) e = f[i]->tx_errno;
         }
-        wifi_line(0, "RX/TX COUNTS          9/11", C_ACC);
+        wifi_line(0, "RX/TX COUNTS          9/14", C_ACC);
         if (!(wl.reached & WL_PASSIVE)) { wifi_line(1, "NOT REACHED: SEE PAGE 5", C_TXT); return; }
         p = cat(s, "WL30 04 "); p = hexn(p, wl.w0, 8); *p++ = '>'; hexn(p, wl.c.host04, 8);
         wifi_line(1, s, C_ACC);
@@ -2008,9 +2213,10 @@ static void wifi_more(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         return;
     }
     if (page == 10u) { wifi_wpa_page(); return; }
+    if (page >= 11u) { wifi_ip_page(page); return; }
     p = cat_ssid(cat(s, "JOIN "), wl.reached ? wl.ssid : "-", 14);   /* page 10: the join in detail */
     while (p < s + 21) *p++ = ' ';
-    cat(p, "10/11");
+    cat(p, "10/14");
     wifi_line(0, s, C_ACC);
     if (!(wl.reached & WL_ACTIVE) || wl.ep != FM1WIFI_OK || wl.ea != FM1WIFI_OK) { wifi_line(1, "NOT REACHED: SEE PAGE 5", C_TXT); return; }
     if (wl.no_join == WL_NO_TARGET) {
@@ -2067,7 +2273,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
     if (page >= 4u) { wifi_more(page, d, r, sv_got); return; }
     if (page == 0u) {
         int ok = d->err == FM1WIFI_OK && r->err == FM1WIFI_OK;
-        wifi_line(0, "WIFI TEST (STAGE 8)   1/11", C_ACC);
+        wifi_line(0, "WIFI TEST (STAGE 9)   1/14", C_ACC);
         p = cat(s, "RESULT: ");
         if (d->err != FM1WIFI_OK) cat(p, fm1wifi_strerror(d->err));
         else if (r->err != FM1WIFI_OK) { p = cat(p, fm1wifi_strerror(r->err)); p = cat(p, " AT "); cat(p, r->stage); }
@@ -2094,8 +2300,8 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         return;
     }
     if (wifi_reached(r) < 3u) {                       /* stopped before the trim began: nothing to show */
-        static const char *const HEAD[3] = { "TRIM                  2/11", "RX CHECK              3/11",
-                                             "SURVEY                4/11" };
+        static const char *const HEAD[3] = { "TRIM                  2/14", "RX CHECK              3/14",
+                                             "SURVEY                4/14" };
         static const char *const FOOT[3] = { "PLAY: PAGE 3   SAVE: LEAVE", "PLAY: PAGE 4   SAVE: LEAVE",
                                              "PLAY: PAGE 5   SAVE: LEAVE" };
         wifi_line(0, HEAD[page - 1u], C_ACC);
@@ -2104,7 +2310,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         return;
     }
     if (page == 3u) {                                 /* the survey: channels 1-7 on the left, 8-13 on the right */
-        wifi_line(0, "SURVEY  200 MS EACH   4/11", C_ACC);
+        wifi_line(0, "SURVEY  200 MS EACH   4/14", C_ACC);
         wifi_line(1, "    CCA   BUSY     CCA   BUSY", C_MUTE);
         for (k = 0; k < 7u; k++) {                    /* 30 places: "1 65535 200000 13 65535 200000" at most */
             p = s;
@@ -2121,7 +2327,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
     if (page == 2u) {                                 /* the VGA searches, and the receive state on channel 6 */
         static const char *const RXL[3] = { "RXFE 0  ", "  19 ", "  20 " };
         const uint8_t rxv[3] = { rx->rxfe0, rx->rxfe19, rx->rxfe20 };
-        wifi_line(0, "RX CHECK  CH  6       3/11", C_ACC);
+        wifi_line(0, "RX CHECK  CH  6       3/14", C_ACC);
         p = cat(s, "VGA GAIN ");
         for (i = 0; i < 3u; i++) p = wifi_val(p, r->got, FM1WIFI_GOT_VGA(i), r->vga[i], 4, 0);
         wifi_line(1, s, C_ACC);
@@ -2144,7 +2350,7 @@ static void wifi_show(uint32_t page, const fm1wifi_diag *d, const fm1wifi_radio 
         return;
     }
     p = cat(s, wifi_reached(r) == 3u ? "TRIM FAILED  CH " : "TRIM  CH "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->channel, 2, 0);
-    p = cat(p, "  PWR "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->power, 1, 0); cat(p, "   2/11");
+    p = cat(p, "  PWR "); p = wifi_val(p, r->got, FM1WIFI_GOT_CHANNEL, r->power, 1, 0); cat(p, "   2/14");
     wifi_line(0, s, C_ACC);
     p = cat(s, "TX LO "); p = wifi_val(p, r->got, FM1WIFI_GOT_TXLO_I, r->txlo[0], 3, 0);
     p = wifi_val(p, r->got, FM1WIFI_GOT_TXLO_Q, r->txlo[1], 4, 0);
@@ -2193,6 +2399,82 @@ static void wifi_keyread_line(wr_buf *w, const char *what, const fm1wifi_keyread
     wr_line(w, s);
 }
 
+/* stage 9 in the report: the DHCP messages whole, the address, each ping, the listening window, the data frames' counts */
+static void wifi_dhcp_line(wr_buf *w, const char *what, const fm1wifi_dhcp_msg *m)
+{
+    char s[200], *p = cat(cat(cat(s, what), fm1wifi_dhcp_name(m->type)), " YIADDR ");
+    p = cat_ip(p, m->yiaddr); p = cat_ip(cat(p, " SERVER "), m->server); p = cat_ip(cat(p, " MASK "), m->mask);
+    p = cat_ip(cat(p, " ROUTER "), m->router); p = cat(catu(cat(p, " DNS ("), m->n_dns), ")");
+    for (uint32_t i = 0; i < m->n_dns && i < 2u; i++) p = cat_ip(cat(p, " "), m->dns[i]);
+    p = catu(cat(p, " LEASE "), m->lease); p = catu(cat(p, " T1 "), m->t1); p = catu(cat(p, " T2 "), m->t2);
+    p = cat_ip(cat(p, " FROM "), m->src); p = cat_ip(cat(p, " TO "), m->dst);
+    hexn(cat(p, " XID "), m->xid, 8);
+    wr_line(w, s);
+}
+
+static void wifi_ip_report(wr_buf *w)
+{
+    const fm1wifi_ip *ip = &wl.ip;
+    char s[200], *p;
+    uint32_t i;
+    wr_line(w, "");
+    wr_line(w, "IP (STAGE 9): DHCP, ARP, PING, PING IN, AS THE FRAMES SAID:");
+    if (ip->have_offer) wifi_dhcp_line(w, "DHCP ", &ip->offer);
+    if (ip->have_ack) wifi_dhcp_line(w, "DHCP ", &ip->ack);
+    p = cat_ip(cat(s, "ADDRESS "), ip->addr); p = cat_ip(cat(p, " MASK "), ip->mask); p = cat_ip(cat(p, " GATEWAY "), ip->gw);
+    p = ip->arp_ok ? cat_mac(cat(p, " GATEWAY MAC "), ip->gw_mac) : cat(p, " GATEWAY MAC --");
+    catu(cat(catu(cat(p, " DHCP MS "), ip->t_dhcp), " ARP MS "), ip->t_arp);
+    wr_line(w, s);
+    p = cat(s, "PINGS (MS, - NO REPLY):");
+    for (i = 0; i < ip->ping_n; i++) p = ip->ping_rtt[i] == FM1WIFI_IP_NO_REPLY ? cat(p, " -") : catu(cat(p, " "), ip->ping_rtt[i]);
+    catu(cat(p, "  LATE "), ip->ping_late);
+    wr_line(w, s);
+    p = cat(catu(cat(catu(cat(s, "LISTENED "), wl.listen_took), " MS OF "), ip->listen_ms), ": ECHO REQUESTS ");
+    p = cat(catu(cat(catu(p, ip->listen_in), " ANSWERED "), ip->listen_out), "; THE WHOLE RUN ");
+    catu(cat(catu(p, ip->echo_in), " ANSWERED "), ip->echo_out);
+    wr_line(w, s);
+    p = cat(catu(cat(catu(cat(s, "DATA FRAMES: TX "), ip->tx_data), " ERR "), ip->tx_err), "  RX ");
+    p = cat(catu(cat(catu(cat(catu(p, ip->rx_data), " TO LWIP "), ip->rx_net), " GROUP "), ip->rx_group), " CLEAR ");
+    p = cat(catu(cat(catu(cat(catu(p, ip->rx_clear), " NOT DECRYPTED "), ip->rx_undecrypted), " ICV "), ip->rx_icv), " MIC ");
+    catu(cat(catu(cat(catu(p, ip->rx_mic), " KEY "), ip->rx_key), " CCMP HEADER LEFT "), ip->rx_iv_left);
+    wr_line(w, s);
+    p = cat(s, "PROTECTED FROM THE AP BEFORE > AFTER: IN ");
+    p = catu(cat(catu(p, wl.pw0[0]), " > "), wl.pw1[0]); p = catu(cat(catu(cat(p, " DECRYPTED "), wl.pw0[1]), " > "), wl.pw1[1]);
+    p = catu(cat(catu(cat(p, " NOT "), wl.pw0[2]), " > "), wl.pw1[2]); p = catu(cat(catu(cat(p, " GROUP "), wl.pw0[3]), " > "), wl.pw1[3]);
+    catu(cat(catu(cat(p, " GROUP DECRYPTED "), wl.pw0[4]), " > "), wl.pw1[4]);
+    wr_line(w, s);
+    p = hexn(cat(s, "TX_SEC_CNT0 "), wl.ci0.tx_sec, 8); p = hexn(cat(p, " > "), wl.ci1.tx_sec, 8);
+    p = hexn(cat(p, "  RX_SEC_CNT0 "), wl.ci0.rx_sec, 8); p = hexn(cat(p, " > "), wl.ci1.rx_sec, 8);
+    p = catu(cat(catu(cat(p, "  TX OK "), wl.ci0.tx_ok), " > "), wl.ci1.tx_ok);
+    catu(cat(catu(cat(p, " RETRY "), wl.ci0.tx_retry), " > "), wl.ci1.tx_retry);
+    wr_line(w, s);
+}
+
+static uint32_t ip_u32(const uint8_t *a) { return (uint32_t)a[0] << 24 | (uint32_t)a[1] << 16 | (uint32_t)a[2] << 8 | a[3]; }
+
+/* the report's counters 58-116 (tools/fm1_wifi_report.py COUNTERS names them) */
+static void wifi_ip_counters(uint32_t *c)
+{
+    const fm1wifi_ip *ip = &wl.ip;
+    c[0] = wl.reached; c[1] = (uint32_t)wl.e_ip; c[2] = (uint32_t)wl.e_dhcp; c[3] = (uint32_t)wl.e_arp; c[4] = (uint32_t)wl.e_ping;
+    c[5] = (uint32_t)wl.e_listen; c[6] = (uint32_t)ip->net_err; c[7] = (uint32_t)ip->err;
+    c[8] = ip->t_dhcp; c[9] = ip->dhcp_tx[FM1WIFI_DHCP_DISCOVER]; c[10] = ip->dhcp_tx[FM1WIFI_DHCP_REQUEST];
+    c[11] = ip->dhcp_tx[FM1WIFI_DHCP_RELEASE]; c[12] = ip->dhcp_rx[FM1WIFI_DHCP_OFFER]; c[13] = ip->dhcp_rx[FM1WIFI_DHCP_ACK];
+    c[14] = ip->dhcp_rx[FM1WIFI_DHCP_NAK];
+    c[15] = ip_u32(ip->addr); c[16] = ip_u32(ip->mask); c[17] = ip_u32(ip->gw); c[18] = ip_u32(ip->ack.server);
+    c[19] = ip_u32(ip->ack.dns[0]); c[20] = ip_u32(ip->ack.dns[1]); c[21] = ip->ack.lease;
+    c[22] = ip->t_arp; c[23] = ip->arp_tx; c[24] = ip->arp_rx;
+    c[25] = (uint32_t)ip->gw_mac[0] << 24 | (uint32_t)ip->gw_mac[1] << 16 | (uint32_t)ip->gw_mac[2] << 8 | ip->gw_mac[3];
+    c[26] = (uint32_t)ip->gw_mac[4] << 8 | ip->gw_mac[5];
+    c[27] = ip->ping_n; c[28] = ip->ping_got; c[29] = ip->ping_min; c[30] = ip->ping_got ? ip->ping_sum / ip->ping_got : 0;
+    c[31] = ip->ping_max; c[32] = ip->ping_late;
+    c[33] = ip->echo_in; c[34] = ip->echo_out; c[35] = wl.listen_took; c[36] = ip->listen_in; c[37] = ip->listen_out;
+    c[38] = ip->rx_data; c[39] = ip->rx_net; c[40] = ip->rx_group; c[41] = ip->rx_clear; c[42] = ip->rx_undecrypted;
+    c[43] = ip->rx_icv; c[44] = ip->rx_mic; c[45] = ip->rx_key; c[46] = ip->rx_iv_left; c[47] = ip->tx_data; c[48] = ip->tx_err;
+    c[49] = wl.pw0[0]; c[50] = wl.pw0[1]; c[51] = wl.pw0[2]; c[52] = wl.pw1[0]; c[53] = wl.pw1[1]; c[54] = wl.pw1[2];
+    c[55] = wl.ci0.tx_sec; c[56] = wl.ci1.tx_sec; c[57] = wl.ci0.rx_sec; c[58] = wl.ci1.rx_sec;
+}
+
 static void wifi_report_build(const fm1wifi_diag *d, const fm1wifi_radio *r, const fm1wifi_survey *sv, uint32_t sv_got,
                               const fm1wifi_rxprobe *rx, int rx_ok, fm1wifi_ramcheck rc)
 {
@@ -2203,7 +2485,7 @@ static void wifi_report_build(const fm1wifi_diag *d, const fm1wifi_radio *r, con
     char s[128], *p;
     wr_begin(&w, wifi_rep, sizeof wifi_rep, WIFI_TEXT_MAX, wifi_runs);
     wifi_cap = &w;
-    for (i = 0; i < 11u; i++) { if (i) wr_line(&w, ""); wifi_show(i, d, r, sv, sv_got, rx, rx_ok, rc); }
+    for (i = 0; i < 14u; i++) { if (i) wr_line(&w, ""); wifi_show(i, d, r, sv, sv_got, rx, rx_ok, rc); }
     wifi_cap = 0;
     if (wl.list.n) {
         wr_line(&w, "");
@@ -2231,6 +2513,7 @@ static void wifi_report_build(const fm1wifi_diag *d, const fm1wifi_radio *r, con
         p = hexn(cat(s, "RANDOM NUMBER REGISTER, TWO READS: "), wl.rand[0], 8); hexn(cat(p, " "), wl.rand[1], 8);
         wr_line(&w, s);
     }
+    if (wl.reached & WL_DHCP) wifi_ip_report(&w);
     c[0] = wl.w0; c[1] = wl.c.host04; c[2] = wl.q0; c[3] = wl.c.txrxq;
     for (i = 0; i < 3u; i++) {
         c[4] += f[i]->frames; c[5] += f[i]->bad; c[6] += f[i]->to_us; c[7] += f[i]->tx; c[8] += f[i]->tx_err;
@@ -2250,6 +2533,7 @@ static void wifi_report_build(const fm1wifi_diag *d, const fm1wifi_radio *r, con
     c[47] = wl.w.kr_group.key_same; c[48] = wl.rand[0]; c[49] = wl.rand[1];
     c[50] = wl.cj.tx_ok; c[51] = wl.cj.tx_fail; c[52] = wl.cj.tx_retry; c[53] = wl.cj.crc_err;
     c[54] = wl.cj.tx_sec; c[55] = wl.c.tx_sec; c[56] = wl.cj.rx_sec; c[57] = wl.c.rx_sec;
+    wifi_ip_counters(c + 58);
     wr_counters(&w, c, WIFI_N_CTR);
     for (i = 0; i < 3u; i++)
         for (k = 0; k < f[i]->n_raw; k++)
@@ -2259,6 +2543,10 @@ static void wifi_report_build(const fm1wifi_diag *d, const fm1wifi_radio *r, con
             const fm1wifi_wpa_rec *e = &ww[i]->rec[k];
             wr_frame(&w, 4u + 2u * i + e->dir, e->msg, e->len, e->b, e->len < FM1WIFI_WPA_REC_LEN ? e->len : FM1WIFI_WPA_REC_LEN);
         }
+    for (k = 0; (wl.reached & WL_DHCP) && k < wl.ip.n_rec; k++) {   /* IP: step 8 from the AP, 9 to it; ch: the kind */
+        const fm1wifi_ip_rec *e = &wl.ip.rec[k];
+        wr_frame(&w, 8u + e->dir, e->kind, e->len, e->b, e->len < FM1WIFI_IP_REC_LEN ? e->len : FM1WIFI_IP_REC_LEN);
+    }
     wifi_rep_n = w.n;
     wifi_rep_serial++;
 #ifdef DINGHY_HOST
@@ -2311,7 +2599,7 @@ static void wifi_page(void)
     }
 #endif
     lcd_fill(0, 0, 240, 240, C_BLACK);
-    wifi_line(0, "WIFI TEST (STAGE 8)", C_ACC);
+    wifi_line(0, "WIFI TEST (STAGE 9)", C_ACC);
     wifi_line(1, "PLAY: POWER UP, TRIM, READ", C_TXT);
     wifi_line(2, "SAVE: LEAVE", C_TXT);
     wifi_line(3, "THE SOUND STOPS MEANWHILE", C_MUTE);
@@ -2322,14 +2610,14 @@ static void wifi_page(void)
         if (b & (1u << BTN_SAVE)) break;
         if (wifi_req && started) break;      /* a run asked for over USB: leave as SAVE does; the main loop opens the page again */
         if (wifi_req) b |= 1u << BTN_PLAY;    /* ... and there it starts as PLAY does */
-        if ((b & (1u << BTN_PLAY)) && started) { page = (page + 1u) % 11u; wifi_show(page, &d, &r, sv, sv_got, &rx, rx_ok, rc); }
+        if ((b & (1u << BTN_PLAY)) && started) { page = (page + 1u) % 14u; wifi_show(page, &d, &r, sv, sv_got, &rx, rx_ok, rc); }
         if ((b & (1u << BTN_PLAY)) && !started) {
             started = 1;
             wifi_req = 0; wifi_runs++; wifi_state = WR_RUNNING;   /* the report says RUNNING until it is rebuilt */
             chip_off();                       /* no sound while the core comes up: */
             fm1_delay_ms(15);                 /* both output halves rendered silent, so a masked trim stays quiet */
             platform_supply_full();           /* the rails at M-VAVE's levels before the radio's load (platform.c) */
-            wifi_line(1, "WORKING (ABOUT 15 S)", C_TXT);
+            wifi_line(1, "WORKING (ABOUT 30 S)", C_TXT);
             fm1wifi_pattern_fill(WIFI_FREE_LO, (uint32_t)(WIFI_FREE_HI - WIFI_FREE_LO));
             fm1wifi_diag_read(&d);
             for (i = 0; i < sizeof r; i++) ((uint8_t *)&r)[i] = 0;

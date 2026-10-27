@@ -98,7 +98,7 @@ for line in open(PAGES):
         n, text = line.split(" wifi page ", 1)[1].rstrip("\n").split(": ", 1)
         if not text.startswith("PLAY: PAGE") and text:
             drawn.append(text)
-start = drawn.index("WIFI TEST (STAGE 8)   1/11")                      # the run's page 1, then PLAY to page 11
+start = drawn.index("WIFI TEST (STAGE 9)   1/14")                      # the run's page 1, then PLAY to page 14
 pages = drawn[start:start + 200]
 text = [t for t in rep["text"].split("\n") if t]
 first = text[:text.index("ALL NETWORKS: SSID, BSSID, CH, RSSI, SECURITY, P: PROBED")]
@@ -132,6 +132,31 @@ check(open(os.path.join(d, files[0]), "rb").read() == rep["frames"][0]["data"], 
 rc, out, err = tool(dev, "--read")
 check(rc == 0 and "WiFi test run 1" in out, f"--read after the run: exit {rc} {err}")
 dev.stop()
+
+# --ping (stage 9): the live command during the run, then ping (a stand-in on PATH) at the address the FM-1 gives
+pb = os.path.join(OUT, "ping-bin")
+os.makedirs(pb, exist_ok=True)
+with open(os.path.join(pb, "ping"), "w") as f:
+    f.write(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{pb}/args'\n"
+            "echo '5 packets transmitted, 5 received, 0% packet loss'\n")
+os.chmod(os.path.join(pb, "ping"), 0o755)
+path0 = os.environ["PATH"]
+os.environ["PATH"] = pb + os.pathsep + path0
+dev = PipeBackend("--serve-wifi", REPORT)
+d2 = os.path.join(OUT, "wifi_report_ping")
+rc, out, err = tool(dev, "--run", "--ping", "--out", d2)
+check(rc == 0 and "pinged the FM-1 at 10.0.0.23" in out and "5 received" in out, f"--run --ping: exit {rc} {err} {out[-300:]}")
+check(os.path.exists(os.path.join(pb, "args")) and open(os.path.join(pb, "args")).read().split() ==
+      ["-c", "5", "-i", "0.2", "-W", "1", "10.0.0.23"], "--ping: ping's arguments")
+check(os.path.exists(os.path.join(d2, "ping.txt")) and "5 received" in open(os.path.join(d2, "ping.txt")).read(), "--ping --out: ping.txt")
+dev.stop()
+os.environ["PATH"] = path0
+try:
+    with redirect_stderr(io.StringIO()):
+        rc = wr.main(["--ping"], backend=None, out=io.StringIO())
+except SystemExit as e:
+    rc = e.code
+check(rc == 2, f"--ping without --run: exit {rc}")
 
 dev = PipeBackend("--serve-wifi", REPORT, "edit")
 rc, out, err = tool(dev, "--run")

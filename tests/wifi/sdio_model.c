@@ -354,6 +354,19 @@ typedef struct {
     uint32_t refused;           /* station frames the AP dropped: bad MIC, wrong counter, not encrypted as it must be */
     uint8_t bc_gtk[16], bc_idx; /* the GTK its group addressed frames go out under (the new one once group msg 2 came) */
     int group_done;             /* group key handshakes finished (group msg 2 taken) */
+    /* stage 9 (net=IP, sdio_model.h "ap ... net="): a router behind the AP, DHCP server and gateway at gw, and a host
+     * that pings the station */
+    int net, dhcp, noping, pingin_ms, ping_delay_ms;   /* dhcp: 0 normal, 1 silent, 2 NAK every REQUEST */
+    int clear_ms, ivleft;       /* an unprotected broadcast every clear_ms; decrypted frames keep the CCMP header */
+    int others, dup, arpdrop;   /* an OFFER for another client first; each echo reply twice; the first ARP request ignored */
+    uint64_t next_clear;
+    uint8_t gw[4], lease_ip[4];
+    uint32_t gw_mac_seq;
+    int host_arp, acked;
+    uint64_t next_pingin, acked_at;
+    uint16_t pingin_seq;
+    sdio_model_net ns;          /* what it saw (sdio_model_ap_net) */
+    struct { uint64_t at; uint8_t p[128]; unsigned n; } held[4];   /* echo replies delayed by ping_delay_ms */
 } model_ap;
 enum { POLL_TUNE, POLL_MEASURE, POLL_ANL, POLL_STUCK, N_POLL };
 
@@ -384,6 +397,8 @@ struct sdio_model {
 };
 
 static sdio_model *cur;
+static uint32_t sys_base, sys_last;   /* sys_now (below) */
+static uint64_t sys_from_us;
 static void rx_dma(sdio_model *m, uint32_t len);
 static void tx_dma(sdio_model *m, uint32_t len);
 static void air(sdio_model *m);
@@ -408,7 +423,7 @@ void sdio_model_free(sdio_model *m)
     free(m);
 }
 
-void sdio_model_use(sdio_model *m) { cur = m; }
+void sdio_model_use(sdio_model *m) { sys_now(); cur = m; sys_base = sys_last; sys_from_us = m ? m->now_us : 0; }
 void sdio_model_on_wr(sdio_model *m, void (*fn)(void *ctx, uint32_t addr, uint32_t v), void *ctx) { m->on_wr = fn; m->on_wr_ctx = ctx; }
 const wifi_fix *sdio_model_log(const sdio_model *m) { return &m->log; }
 const wifi_fix *sdio_model_wlog(const sdio_model *m) { return &m->wlog; }
@@ -425,6 +440,13 @@ void sdio_model_zero(sdio_model *m)
 uint32_t sdio_model_clk(const sdio_model *m) { return m->clk; }
 const wifi_fix *sdio_model_frames(const sdio_model *m) { return &m->frames; }
 uint64_t sdio_model_now_us(const sdio_model *m) { return m->now_us; }
+/* lwIP's clock (fm1wifi_port.h) on the host: the model's, in ms, carried on from the last model's when another one is
+ * put in use (a new model's clock starts at 0, lwIP's timers must never see time go back) */
+uint32_t sys_now(void)
+{
+    if (cur) sys_last = sys_base + (uint32_t)((cur->now_us - sys_from_us) / 1000u);
+    return sys_last;
+}
 static int ap_line(sdio_model *m, char *p);
 uint8_t sdio_model_bbp(const sdio_model *m, uint8_t reg) { return m->bbp[reg]; }
 uint8_t sdio_model_win(const sdio_model *m, unsigned w, uint8_t a) { return m->win[w & 3u][a]; }
@@ -517,7 +539,7 @@ int sdio_model_script(sdio_model *m, const char *text, const char *name, FILE *e
             continue;
         }
         if (!strcmp(t, "ap")) {
-            if (m->nap >= AP_MAX || ap_line(m, p)) { rc = perr(err, name, line, "ap: ch=1-13 bssid=xx:..:xx ssid=NAME [sec=open|wep|wpa|wpa2] [rssi=-N] [hidden] [auth=accept|refuse|silent] [assoc=...] [kick=MS] [gone=MS] [psk=PASS (wpa2) eapol=normal|silent|badmic rekey=MS bcast=MS rsn=HEX], 8 at most"); break; }
+            if (m->nap >= AP_MAX || ap_line(m, p)) { rc = perr(err, name, line, "ap: ch=1-13 bssid=xx:..:xx ssid=NAME [sec=open|wep|wpa|wpa2] [rssi=-N] [hidden] [auth=accept|refuse|silent] [assoc=...] [kick=MS] [gone=MS] [psk=PASS (wpa2) eapol=normal|silent|badmic rekey=MS bcast=MS rsn=HEX [net=A.B.C.D dhcp=normal|silent|nak ping=on|off pingin=MS delay=MS]], 8 at most"); break; }
             continue;
         }
         if (!strcmp(t, "rxbad")) { m->rx_bad = 1; continue; }   /* the first frame's length word reads 0 */
@@ -759,9 +781,25 @@ static int ap_line(sdio_model *m, char *p)
             a->rsn_len = (uint8_t)k;
         }
         else if (!strcmp(t, "gone")) a->gone_ms = atoi(v);
+        else if (!strcmp(t, "net")) {
+            unsigned q[4];
+            if (sscanf(v, "%u.%u.%u.%u", &q[0], &q[1], &q[2], &q[3]) != 4) return -1;
+            for (int k = 0; k < 4; k++) { if (q[k] > 255) return -1; a->gw[k] = (uint8_t)q[k]; }
+            memcpy(a->lease_ip, a->gw, 3); a->lease_ip[3] = 23;
+            a->net = 1;
+        }
+        else if (!strcmp(t, "dhcp")) { a->dhcp = !strcmp(v, "normal") ? 0 : !strcmp(v, "silent") ? 1 : !strcmp(v, "nak") ? 2 : -1; if (a->dhcp < 0) return -1; }
+        else if (!strcmp(t, "ping")) { a->noping = !strcmp(v, "off") ? 1 : !strcmp(v, "on") ? 0 : -1; if (a->noping < 0) return -1; }
+        else if (!strcmp(t, "pingin")) a->pingin_ms = atoi(v);
+        else if (!strcmp(t, "delay")) a->ping_delay_ms = atoi(v);
+        else if (!strcmp(t, "clear")) a->clear_ms = atoi(v);
+        else if (!strcmp(t, "ivleft")) { a->ivleft = !strcmp(v, "1"); }
+        else if (!strcmp(t, "others")) a->others = !strcmp(v, "1");
+        else if (!strcmp(t, "dup")) a->dup = !strcmp(v, "1");
+        else if (!strcmp(t, "arpdrop")) a->arpdrop = atoi(v);
         else return -1;
     }
-    if (have != 7 || (a->psk && a->sec != 3)) return -1;
+    if (have != 7 || (a->psk && a->sec != 3) || ((a->net || a->dhcp || a->noping || a->pingin_ms || a->clear_ms || a->ivleft || a->others || a->dup || a->arpdrop) && !(a->net && a->psk))) return -1;
     if (a->psk) {                                                /* the PMK from the passphrase and the SSID (J.4) */
         struct wpa_pmk_job j;
         if (wpa_pmk_begin(&j, pass, strlen(pass), (const uint8_t *)a->ssid, strlen(a->ssid))) return -1;
@@ -901,12 +939,12 @@ static int tx_key_ok(const sdio_model *m, const model_ap *a, unsigned wiv, unsig
 /* A data frame from a to da (From DS), RFC 1042 LLC/SNAP with ethertype type, then p. Protected, it arrives as the MAC
  * hands it over: decrypted (RXD DECRYPTED, IV and MIC taken off) when the key tables hold the key, else as it came
  * over the air (the CCMP header, the body encrypted, the MIC) with a key error */
-static void ap_data(sdio_model *m, model_ap *a, const uint8_t *da, uint32_t type, const uint8_t *p, unsigned n, int protect,
-                    unsigned idx, const uint8_t *gtk)
+static void ap_data_from(sdio_model *m, model_ap *a, const uint8_t *da, const uint8_t *src, uint32_t type, const uint8_t *p,
+                         unsigned n, int protect, unsigned idx, const uint8_t *gtk)
 {
     static const uint8_t snap[6] = { 0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00 };
     uint8_t f[640];
-    unsigned h = mgmt_hdr(f, 0x08, da, a->bssid, a->bssid, &a->seq);
+    unsigned h = mgmt_hdr(f, 0x08, da, a->bssid, src, &a->seq);
     int w = -1;
     f[1] = (uint8_t)(0x02u | (protect ? 0x40u : 0u));                      /* From DS, Protected */
     if (channel_now(m) != a->ch) return;
@@ -918,12 +956,205 @@ static void ap_data(sdio_model *m, model_ap *a, const uint8_t *da, uint32_t type
         deliver_x(m, f, h + 24 + n, a->rssi, 3u << 9, w < 0 ? 0xFFu : (uint32_t)w);   /* cipher error 3: key */
         return;
     }
+    if (protect && a->ivleft) {                                           /* the CCMP header not taken off */
+        uint8_t ccmp[8] = { 1, 0, 0, (uint8_t)(0x20u | idx << 6), 0, 0, 0, 0 };
+        memcpy(f + h, ccmp, 8);
+        h += 8;
+    }
     memcpy(f + h, snap, 6);
     f[h + 6] = (uint8_t)(type >> 8); f[h + 7] = (uint8_t)type;
     memcpy(f + h + 8, p, n);
     if (!protect) deliver(m, f, h + 8 + n, a->rssi);
     else deliver_x(m, f, h + 8 + n, a->rssi, 1u << 16, w < 0 ? 0xFFu : (uint32_t)w);
 }
+
+static void ap_data(sdio_model *m, model_ap *a, const uint8_t *da, uint32_t type, const uint8_t *p, unsigned n, int protect,
+                    unsigned idx, const uint8_t *gtk)
+{
+    ap_data_from(m, a, da, a->bssid, type, p, n, protect, idx, gtk);
+}
+
+/* ---- stage 9: the network behind a WPA2 AP (net=): a router at gw, the DHCP server (RFC 2131) and gateway (ARP, ICMP
+ * echo), and a host at .50 that pings the station once it has its address. Everything to the station goes protected:
+ * unicast under the PTK, broadcast under the GTK (the DHCP OFFER, the host's ARP request). */
+
+static const uint8_t GW_MAC[6] = { 0x02, 0x47, 0x57, 0x00, 0x00, 0x01 }, HOST_MAC[6] = { 0x02, 0x48, 0x4F, 0x53, 0x54, 0x50 };
+
+static unsigned be16(const uint8_t *p) { return (unsigned)p[0] << 8 | p[1]; }
+static void wbe16(uint8_t *p, unsigned v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+static unsigned csum(const uint8_t *p, unsigned n, uint32_t s)   /* RFC 1071, folded and inverted */
+{
+    for (unsigned i = 0; i + 1 < n; i += 2) s += be16(p + i);
+    if (n & 1) s += (uint32_t)p[n - 1] << 8;
+    while (s >> 16) s = (s & 0xFFFF) + (s >> 16);
+    return ~s & 0xFFFF;
+}
+static void ip_head(uint8_t *p, const uint8_t *src, const uint8_t *dst, unsigned proto, unsigned payload)
+{
+    static unsigned id = 0x5000;
+    memset(p, 0, 20);
+    p[0] = 0x45; wbe16(p + 2, 20 + payload); wbe16(p + 4, id++); p[8] = 64; p[9] = (uint8_t)proto;
+    memcpy(p + 12, src, 4); memcpy(p + 16, dst, 4);
+    wbe16(p + 10, csum(p, 20, 0));
+}
+
+static void net_send(sdio_model *m, model_ap *a, const uint8_t *da, const uint8_t *src, unsigned type, const uint8_t *p, unsigned n)
+{
+    int group = da[0] & 1u;
+    ap_data_from(m, a, da, src, type, p, n, 1, group ? a->bc_idx : 0, group ? a->bc_gtk : 0);
+    a->ns.to_sta++;
+}
+
+/* a DHCP reply of the given type to the client's request d (dn bytes) */
+static void dhcp_reply_to(sdio_model *m, model_ap *a, const uint8_t *d, unsigned type, const uint8_t *chaddr, const uint8_t *yi);
+static void dhcp_reply(sdio_model *m, model_ap *a, const uint8_t *d, unsigned type) { dhcp_reply_to(m, a, d, type, d + 28, a->lease_ip); }
+
+static void dhcp_reply_to(sdio_model *m, model_ap *a, const uint8_t *d, unsigned type, const uint8_t *chaddr, const uint8_t *yi)
+{
+    static const uint8_t bc_ip[4] = { 255, 255, 255, 255 }, bc_mac[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    uint8_t p[400] = { 0 }, *u = p + 20, *r = u + 8, *o;
+    int bcast = type == 2;                                             /* the OFFER broadcast, the ACK / NAK unicast */
+    r[0] = 2; r[1] = 1; r[2] = 6;
+    memcpy(r + 4, d + 4, 4);                                           /* xid */
+    if (type != 6) memcpy(r + 16, yi, 4);
+    memcpy(r + 28, chaddr, 6);                                         /* chaddr */
+    r[236] = 99; r[237] = 130; r[238] = 83; r[239] = 99;
+    o = r + 240;
+    *o++ = 53; *o++ = 1; *o++ = (uint8_t)type;
+    *o++ = 54; *o++ = 4; memcpy(o, a->gw, 4); o += 4;
+    if (type != 6) {
+        static const uint8_t mask[4] = { 255, 255, 255, 0 }, dns2[4] = { 1, 1, 1, 1 };
+        *o++ = 51; *o++ = 4; *o++ = 0; *o++ = 1; *o++ = 0x51; *o++ = 0x80;   /* 86400 s */
+        *o++ = 1; *o++ = 4; memcpy(o, mask, 4); o += 4;
+        *o++ = 3; *o++ = 4; memcpy(o, a->gw, 4); o += 4;
+        *o++ = 6; *o++ = 8; memcpy(o, a->gw, 4); memcpy(o + 4, dns2, 4); o += 8;
+    }
+    *o++ = 255;
+    unsigned dn = (unsigned)(o - r), ul = 8 + dn;
+    wbe16(u, 67); wbe16(u + 2, 68); wbe16(u + 4, ul); wbe16(u + 6, 0);
+    ip_head(p, a->gw, bcast || type == 6 ? bc_ip : yi, 17, ul);
+    {   uint8_t ph[12];
+        memcpy(ph, p + 12, 8); ph[8] = 0; ph[9] = 17; wbe16(ph + 10, ul);
+        uint32_t s = 0;
+        for (int i = 0; i < 12; i += 2) s += be16(ph + i);
+        unsigned c = csum(u, ul, s);
+        wbe16(u + 6, c ? c : 0xFFFF); }
+    net_send(m, a, bcast || type == 6 ? bc_mac : chaddr, GW_MAC, 0x0800, p, 20 + ul);
+}
+
+static void arp_send(sdio_model *m, model_ap *a, unsigned op, const uint8_t *smac, const uint8_t *sip, const uint8_t *tmac,
+                     const uint8_t *tip, const uint8_t *da)
+{
+    uint8_t p[28] = { 0, 1, 8, 0, 6, 4, 0, (uint8_t)op };
+    memcpy(p + 8, smac, 6); memcpy(p + 14, sip, 4); memcpy(p + 18, tmac, 6); memcpy(p + 24, tip, 4);
+    net_send(m, a, da, smac, 0x0806, p, 28);
+}
+
+static void echo_send(sdio_model *m, model_ap *a, unsigned type, const uint8_t *src, const uint8_t *dst, const uint8_t *smac,
+                      unsigned id, unsigned seq, const uint8_t *data, unsigned dl)
+{
+    uint8_t p[600];
+    if (dl > 500) return;
+    uint8_t *c = p + 20;
+    c[0] = (uint8_t)type; c[1] = 0; c[2] = c[3] = 0; wbe16(c + 4, id); wbe16(c + 6, seq);
+    memcpy(c + 8, data, dl);
+    wbe16(c + 2, csum(c, 8 + dl, 0));
+    ip_head(p, src, dst, 1, 8 + dl);
+    net_send(m, a, a->sta, smac, 0x0800, p, 28 + dl);
+}
+
+/* the station's IPv4 or ARP packet p (n bytes) to the network */
+static void ap_net(sdio_model *m, model_ap *a, unsigned type, const uint8_t *p, unsigned n)
+{
+    static const uint8_t host_ip_tail = 50;
+    uint8_t host_ip[4];
+    memcpy(host_ip, a->gw, 3); host_ip[3] = host_ip_tail;
+    if (type == 0x0806 && n >= 28 && be16(p) == 1 && be16(p + 2) == 0x0800) {
+        unsigned op = be16(p + 6);
+        if (op == 1) {
+            a->ns.arp_req++;
+            if (!memcmp(p + 24, a->gw, 4) && a->arpdrop-- <= 0) { a->ns.arp_gw++; arp_send(m, a, 2, GW_MAC, a->gw, p + 8, p + 14, a->sta); }
+        } else if (op == 2 && !memcmp(p + 24, host_ip, 4) && !memcmp(p + 18, HOST_MAC, 6)) {
+            a->ns.arp_reply++;
+            a->host_arp = 1;
+        }
+        return;
+    }
+    if (type != 0x0800 || n < 28 || p[0] != 0x45 || csum(p, 20, 0) != 0 || be16(p + 2) > n) return;
+    n = be16(p + 2);
+    if (p[9] == 17 && be16(p + 20) == 68 && be16(p + 22) == 67 && n >= 28 + 244) {   /* DHCP, client to server */
+        const uint8_t *d = p + 28, *o = d + 240, *end = p + n;
+        unsigned mt = 0;
+        while (o + 2 <= end && *o != 255) { if (*o == 0) { o++; continue; } if (*o == 53 && o[1] == 1) mt = o[2]; o += 2 + o[1]; }
+        if (mt == 1) a->ns.discover++; else if (mt == 3) a->ns.request++; else if (mt == 7) a->ns.release++;
+        if (a->dhcp == 1) return;
+        if (mt == 1 && a->others) {                                     /* another client's OFFER (same xid), broadcast */
+            static const uint8_t other[6] = { 0x02, 0x99, 0x99, 0x99, 0x99, 0x99 };
+            uint8_t yi[4];
+            memcpy(yi, a->gw, 3); yi[3] = 99;
+            dhcp_reply_to(m, a, d, 2, other, yi);
+        }
+        if (mt == 1) dhcp_reply(m, a, d, 2);
+        else if (mt == 3) {
+            dhcp_reply(m, a, d, a->dhcp == 2 ? 6 : 5);
+            if (a->dhcp != 2 && !a->acked) { a->acked = 1; a->acked_at = m->now_us; a->next_pingin = m->now_us + (uint64_t)a->pingin_ms * 1000u; }
+        }
+        return;
+    }
+    if (p[9] == 1 && n >= 28) {
+        const uint8_t *c = p + 20;
+        if (csum(c, n - 20, 0) != 0) { a->ns.bad_icmp++; return; }
+        if (c[0] == 8 && !memcmp(p + 16, a->gw, 4)) {                  /* to the gateway */
+            a->ns.ping_req++;
+            if (a->noping) return;
+            if (a->ping_delay_ms) {
+                for (int k = 0; k < 4; k++)
+                    if (!a->held[k].n && n <= sizeof a->held[k].p) {
+                        memcpy(a->held[k].p, p, n); a->held[k].n = n;
+                        a->held[k].at = m->now_us + (uint64_t)a->ping_delay_ms * 1000u;
+                        break;
+                    }
+                return;
+            }
+            echo_send(m, a, 0, a->gw, p + 12, GW_MAC, be16(c + 4), be16(c + 6), c + 8, n - 28);
+            if (a->dup) echo_send(m, a, 0, a->gw, p + 12, GW_MAC, be16(c + 4), be16(c + 6), c + 8, n - 28);
+            a->ns.ping_reply++;
+        } else if (c[0] == 0 && !memcmp(p + 16, host_ip, 4) && be16(c + 4) == 0x4854) a->ns.pingin_got++;
+    }
+}
+
+/* due by the clock: the host's ARP request and pings, delayed echo replies */
+static void net_air(sdio_model *m, model_ap *a)
+{
+    uint8_t host_ip[4], zero[6] = { 0 };
+    static const uint8_t bc_mac[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    memcpy(host_ip, a->gw, 3); host_ip[3] = 50;
+    for (int k = 0; k < 4; k++)
+        if (a->held[k].n && m->now_us >= a->held[k].at) {
+            const uint8_t *p = a->held[k].p, *c = p + 20;
+            echo_send(m, a, 0, a->gw, p + 12, GW_MAC, be16(c + 4), be16(c + 6), c + 8, a->held[k].n - 28);
+            a->ns.ping_reply++;
+            a->held[k].n = 0;
+        }
+    if (a->clear_ms && m->now_us >= a->next_clear) {                  /* a broadcast ARP request in the clear */
+        if (a->next_clear) {
+            uint8_t p[28] = { 0, 1, 8, 0, 6, 4, 0, 1 };
+            memcpy(p + 8, GW_MAC, 6); memcpy(p + 14, a->gw, 4); memcpy(p + 24, a->lease_ip, 4);
+            ap_data_from(m, a, bc_mac, GW_MAC, 0x0806, p, 28, 0, 0, 0);
+            a->ns.clear_sent++;
+        }
+        a->next_clear = m->now_us + (uint64_t)a->clear_ms * 1000u;
+    }
+    if (!a->pingin_ms || !a->acked || m->now_us < a->next_pingin) return;
+    a->next_pingin += (uint64_t)a->pingin_ms * 1000u;
+    if (!a->host_arp) { arp_send(m, a, 1, HOST_MAC, host_ip, zero, a->lease_ip, bc_mac); a->ns.host_arp_req++; return; }
+    {   uint8_t data[32];
+        for (int i = 0; i < 32; i++) data[i] = (uint8_t)('a' + i % 23);
+        echo_send(m, a, 8, host_ip, a->lease_ip, HOST_MAC, 0x4854, a->pingin_seq++, data, sizeof data);
+        a->ns.pingin_sent++; }
+}
+
+void sdio_model_ap_net(const sdio_model *m, int i, sdio_model_net *ns) { *ns = m->ap[i].ns; }
 
 static void ap_eapol(sdio_model *m, model_ap *a, const uint8_t *pdu, size_t n, int protect)
 {
@@ -962,7 +1193,11 @@ static void ap_hear_data(sdio_model *m, model_ap *a, const uint8_t *f, unsigned 
     int r;
     if (!a->psk || !a->joined || (f[1] & 3u) != 1u || memcmp(f + 10, a->sta, 6)) return;
     if (prot ? !tx_key_ok(m, a, wiv, wcid) : a->done) { a->refused++; return; }
-    if (n < h + 8u || f[h] != 0xAA || f[h + 6] != 0x88 || f[h + 7] != 0x8E) return;
+    if (n < h + 8u || f[h] != 0xAA || f[h + 1] != 0xAA || f[h + 2] != 0x03) return;
+    if (f[h + 6] != 0x88 || f[h + 7] != 0x8E) {
+        if (a->net && a->done && prot) { a->ns.from_sta++; ap_net(m, a, (unsigned)f[h + 6] << 8 | f[h + 7], f + h + 8, n - h - 8); }
+        return;
+    }
     r = wpa_auth_take(&a->wa, f + h + 8, n - h - 8);
     if (r == 2) { a->tries = 1; ap_send_msg(m, a, 3); }
     else if (r == 4) {
@@ -1009,6 +1244,7 @@ static void air(sdio_model *m)
             a->rekeyed = 1;
             ap_eapol(m, a, g, gn, 1);
         }
+        if (a->net && a->joined && a->done) net_air(m, a);
         if (a->psk && a->joined && a->done && a->bcast_ms && m->now_us >= a->next_bcast) {
             static const uint8_t arp[28] = { 0, 1, 8, 0, 6, 4, 0, 1, 2, 0, 0, 0, 0, 1, 192, 168, 1, 1, 0, 0, 0, 0, 0, 0, 192, 168, 1, 77 };
             ap_data(m, a, bcast, 0x0806u, arp, sizeof arp, 1, a->bc_idx, a->bc_gtk);
@@ -1059,6 +1295,7 @@ static void ap_hear(sdio_model *m, const uint8_t *f, unsigned n, unsigned wiv, u
             if (!a->assoc) { a->joined = 1; a->joined_at = m->now_us; if (a->psk) ap_wpa_start(m, a, f, n); }
         } else if (kind == 0xC0) {                                           /* the station leaves */
             a->joined = a->authed = 0;
+            a->acked = a->host_arp = 0;
         }
     }
 }

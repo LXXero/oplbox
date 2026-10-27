@@ -285,19 +285,27 @@ static void unload(fm1wifi_wpa *w)
 
 #define FRAMES_PER_MS 50u         /* as fm1wifi.c: frames taken without advancing the clock, at most */
 
+int fm1wifi_wpa_poll(fm1wifi_wpa *w, fm1wifi_rx *f, fm1wifi_frames *fr)
+{
+    uint32_t len;
+    unsigned flags;
+    int k = fm1wifi_poll(f, w->sta.bss.channel, fr);
+    if (k < 0) { unload(w); return k; }
+    len = fm1wifi_wpa_step(w, k && f->frame ? f : 0, fm1wifi_now_ms(), wpa_out, &flags);
+    if (len) fm1wifi_send(wpa_out, len, flags, fr);
+    if (w->install) load(w, fr);
+    if (w->state == FM1WIFI_WPA_DOWN) unload(w);
+    return k;
+}
+
 /* the station for ms milliseconds, or (until_settled) until it is UP or DOWN; else while it stays UP */
 static int run(fm1wifi_wpa *w, unsigned ms, int until_settled, fm1wifi_frames *fr)
 {
-    uint32_t t = 0, burst = 0, len;
-    unsigned flags;
+    uint32_t t = 0, burst = 0;
     fm1wifi_rx f;
     while (t < ms * 10u) {
-        int k = fm1wifi_poll(&f, w->sta.bss.channel, fr);
-        if (k < 0) { unload(w); return k; }
-        len = fm1wifi_wpa_step(w, k && f.frame ? &f : 0, fm1wifi_now_ms(), wpa_out, &flags);
-        if (len) fm1wifi_send(wpa_out, len, flags, fr);
-        if (w->install) load(w, fr);
-        if (w->state == FM1WIFI_WPA_DOWN) unload(w);
+        int k = fm1wifi_wpa_poll(w, &f, fr);
+        if (k < 0) return k;
         if (until_settled ? w->state == FM1WIFI_WPA_UP || w->state == FM1WIFI_WPA_DOWN : w->state != FM1WIFI_WPA_UP) break;
         if (k && burst++ < FRAMES_PER_MS) continue;
         burst = 0;
