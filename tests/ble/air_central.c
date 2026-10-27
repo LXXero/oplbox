@@ -12,6 +12,8 @@ static int c_adv(void *ctx, uint64_t t, uint8_t chan, const uint8_t *pdu, int n,
     (void)ctx;
     if ((pdu[0] & 0xF) == 0 && (n < 8 || pdu[1] != n - 2))
         C.adv_short++;
+    if ((pdu[0] & 0xF) == 4)
+        C.adv_scan_rsp++;
     if (chan >= 37 && chan <= 39 && n >= 8 && (pdu[0] & 0xF) == 0) {
         C.adv_seen[chan - 37]++;
         C.adv_from[pdu[2]]++;
