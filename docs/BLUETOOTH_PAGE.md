@@ -43,23 +43,33 @@ the report holds what the steps had by then (the others NOT RUN).
 
 ## The steps and their evidence
 
-In the order they run (`fm1ble_test.h`). A failed step says in its note what the next fix needs.
+In the order the firmware's run (`firmware/ble/fm1ble_test.c`) runs them, which is not the table's: radio, block, then the
+driver's own advertising (adv_set, adv_air: the first FM-1 proof), then the stack on the same radio (hci, connect,
+midi_in, midi_out). A failed step says in its note what the next fix needs.
 
 | Step | Passes when | Evidence (raw bytes in the report) |
 | --- | --- | --- |
-| `radio` | the Bluetooth side of the radio powered up and the registers read back (docs/BLUETOOTH_RADIO.md B-D) | register readbacks, each a 32-bit little-endian word |
-| `block` | the baseband's RAM block is set up and the baseband started without an interrupt storm | the registers read back after the start |
-| `hci` | the host reset the controller and read its version, public address and LE buffer size | the HCI events' bytes as received: Command Complete for Reset, Read Local Version, Read BD_ADDR, LE Read Buffer Size |
-| `adv_set` | the controller accepted the four advertising commands (parameters, data, scan response, enable) | the events' bytes if one was refused |
-| `adv_air` | the baseband's interrupt counter grew over a second of advertising | counters `bb_irq`, `bb_irq_tx`, `adv_events` |
-| `connect` | a central connected within the wait | the LE Connection Complete event's bytes; the counters `interval`, `latency`, `timeout`, `att_mtu` |
-| `midi_in` | a BLE-MIDI packet the central wrote reached the app's MIDI input | the packet's bytes |
-| `midi_out` | a notification went out and the controller handed its buffer back | the notification's bytes; counter `nocp` |
+| `radio` | the Bluetooth side of the radio powered up and the registers read back (docs/BLUETOOTH_RADIO.md B-D) | eight register readbacks, each a 32-bit little-endian word |
+| `block` | the baseband's RAM block is set up and the baseband is idle | eight registers read back after it |
+| `adv_set` | the driver armed its own ADV_IND (service UUID, the name in the scan response) | the advertising data |
+| `adv_air` | the baseband raised event flags while the driver advertised (by itself, or re-armed by the driver; else again after the shared radio's init) | events, re-arms, the last pending flags (u32 each) |
+| `hci` | NimBLE's start-up went through Cordio and the PAL and ended with advertising on (via Cordio) | Cordio's commands, events, heap used, NimBLE's fail code, refused sends (u32 each), the address |
+| `connect` | a central connected within the wait | interval, latency, timeout, ATT MTU (u32 each); on a failure, the last received PDU's first bytes |
+| `midi_in` | a BLE-MIDI write from the central reached the MIDI input (`ble_midi_get`) | the message (3 bytes), the writes counted |
+| `midi_out` | OPLBOX's notification of a Note On (90 3C 64) was acknowledged: Cordio sent Number Of Completed Packets | notified, NOCP events (u32 each) |
 
-`fm1ble_ctr_name` / `tools/fm1_ble_report.py` name the counters: `radio_regs_ok`, `radio_regs_bad`, `bb_irq`, `bb_irq_tx`,
-`bb_irq_rx`, `hci_cmds`, `hci_events`, `hci_bad`, `hci_status` (the last non-zero HCI status), `hci_op` (its opcode),
-`adv_events`, `connects`, `disconnects`, `acl_in`, `acl_out`, `att_mtu`, `interval`, `latency`, `timeout`, `midi_in`,
-`midi_out`, `notify_failed`, `nocp`, `reserved`. `hci_status` and `hci_op` print in hex.
+The counters (`fm1ble_ctr_name`): 0-19 are the driver's (`radio_regs_ok`, `radio_regs_bad`, `variant`, `rf_common`,
+`events`, `rearms`, `rx_packets`, `rx_scan_req`, `rx_conn_ind`, `rx_other`, `pending_last`, `bb_err`, `events_v0`,
+`events_v1`, `rearm_used`, `adv_err`, `rx_hdr`, `rx_stat`, `rx_type`, `rx_len`), 20-23 the PAL's
+(`firmware/ble/cordio_port/pal_fm1.c`), two 16-bit counts a word, low then high: `pal_ops_adv_conn` (operations armed:
+advertising packets, connection events), `pal_rx_ok_timeout` (receive completions given to Cordio: a packet, a timeout),
+`pal_late_resp_stuck` (responses asked for after their event had ended, too late for T_IFS; operations the baseband never
+ended), and `pal_timer_late_us` (the most the scheduler's timer fired late). The PAL runs from the main loop in this build:
+a connection that fails with `pal_late_resp_stuck` low half above 0 needs the receive interrupt (docs/BLUETOOTH_CORDIO.md).
+
+The host build's scripted run (`tests/ble/fm1ble_test_host.c`) keeps its own made-up counter names; only the page and the
+tool are tested with it. The firmware's run is tested on the register model (`tests/ble_radio.c`) and on its air with a
+central (`tests/ble_stack.c run`).
 
 ## The report and the tool
 

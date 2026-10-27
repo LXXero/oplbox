@@ -6,8 +6,12 @@
   driver `firmware/ble/fm1ble.c` is ours, written from facts read out of `btctrler.a`'s IR (`tools/ble_ir.py`). A
   Bluetooth test page (HOME on the WiFi page, or `tools/fm1_ble_report.py --run` over SysEx 0x66/0x67) runs the radio and
   baseband power-up and one connectable ADV_IND advertisement named OPLBOX straight from the driver, and reports one line per
-  step with raw evidence. Host-tested against a register model written from the same facts; NOT run on an FM-1. Not
-  built: the chip's Cordio PAL, so the HCI, connect and MIDI steps report SKIP.
+  step with raw evidence, then brings up the stack on the same radio through the chip's Cordio PAL
+  (`firmware/ble/cordio_port/pal_fm1.c`): NimBLE's start-up through Cordio (hci), a central connecting within the wait
+  (connect), a Note On from it reaching the MIDI input (midi_in) and one notified back and acknowledged (midi_out).
+  Host-tested against a register model written from the same facts, with a central on the model's air written from the
+  specification; NOT run on an FM-1. The PAL runs from the main loop: a connection on the chip will likely need the
+  receive interrupt (the report's PAL counters say).
 
 - WiFi stage 8 on the test page (docs/WIFI_STAGE8.md): the run joins a WPA2-PSK network instead of an open OPLBOX
   hotspot. `tools/fm1_wifi_report.py --ssid NAME --psk-from-nm CONNECTION --run` (or `--psk-file`, mode 600) sends the

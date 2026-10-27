@@ -1,5 +1,8 @@
 # What the Cordio controller needs from the chip (the work order for the baseband driver)
 
+Written: `pal_fm1.c` has all 37 (docs/BLUETOOTH_CORDIO.md "The chip's PAL"); this file stays as the contract it was
+written to.
+
 This is the exact list of functions the peripheral-only controller leaves undefined when it is linked with
 `--gc-sections` (`firmware/ble/cordio_port/SOURCES.txt`, `DEFINES.txt`): 36 functions in six of Cordio's PAL headers
 (`firmware/ble/cordio/platform/include/pal_*.h`), and a 37th, `PalSysAssertTrap`, that the port's `WsfAssert` calls (the linker

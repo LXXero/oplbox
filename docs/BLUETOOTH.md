@@ -508,37 +508,48 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
    stops the host's retries (NimBLE alone would retry forever, each try holding the loop for 2 s). 36 deliberate bugs in the
    port are caught (`tests/ble_nimble_mutants.py`). The fixture `tests/ble/nimble_expect.txt` was captured from a run and
    read against the specification, not written from it.
-2. **Cordio link layer from source: vendored, configured, compiled for the FM-1 CPU and host-tested on stubs.**
+2. **Cordio link layer from source: vendored, configured, on the chip's PAL, host-tested.**
    `firmware/ble/cordio/` (143 files, unchanged, commit 3656312), `firmware/ble/cordio_port/` (our configuration, WSF and HCI
-   glue, the stub PAL, the work order `PAL_NEEDED.md`). `tests/ble_cordio.c`: 40 checks, the HCI commands, the refusals and
-   the first advertising transmit with the host's PDU. Three open points in docs/BLUETOOTH_CORDIO.md. Not tested: NimBLE and
-   Cordio together.
+   glue, the stub PAL for `tests/ble_cordio.c`, the chip's PAL `pal_fm1.c`, the work order `PAL_NEEDED.md`).
+   `tests/ble_cordio.c` (40 checks on the stubs): the HCI commands, the refusals, the first advertising transmit.
+   `tests/ble_pal.c` (38 checks, 17 deliberate bugs caught by `tests/ble_pal_mutants.py`): Cordio on `pal_fm1.c` and the
+   driver against the register model's air and a central written from the specification (`tests/ble/air_central.c`):
+   ADV_IND on 37-39 every interval, a SCAN_REQ answered with the host's scan response, a CONNECT_IND, connection events on
+   the channels CSA #1 gives with the anchor taken from the first packet, data both ways with SN/NESN, LL_TERMINATE_IND,
+   advertising again, and a silent baseband that does not hang Cordio. docs/BLUETOOTH_CORDIO.md says how the PAL maps
+   Cordio's one-packet-at-a-time calls onto the baseband's events and what that assumes.
 3. **Radio driver and register map: written, host-tested against a model made from the same facts.**
    docs/BLUETOOTH_RADIO.md (the facts; `tools/ble_ir.py --check` reproduces 35 of them from `btctrler.a`) and
    `firmware/ble/fm1ble.c` (B, C, D, E, G of that file: power-up, analog block, baseband, RAM block, one advertising link,
-   polling, stop) on `firmware/hal/fm1ble_port_bsp.c`. `tests/ble_radio.c` (100 checks) shows the driver writes what the
-   document says in its order; it cannot show the chip does what the document says. Guesses are marked in the code: the order of
-   B.2 against B.1, the hop increment, the calibration (none), re-arming the next event, the receive buffer choice, and
-   `wf_rf_common_init`, which the second variant of the test run replaces with our own WiFi power-up. The chip's Cordio PAL
-   is **not written** (PAL_NEEDED.md), so the driver advertises on its own and Cordio is not in the radio's path yet.
-4. **First FM-1 proof: ready to run, not run.** The test run's `adv_air` step counts the baseband's event flags while the
-   driver advertises ADV_IND (service UUID in the data, "OPLBOX" in the scan response) and the radio's SCAN_REQ and
-   CONNECT_IND captures show whether a phone's scanner reached it. If the facts were not enough for a first transmit, the
-   report's raw readbacks say which register to look at. Connections and MIDI over the air need the PAL and the
-   receive path (H); not started.
-5. **Test page, USB report, tool: done and host-tested.** docs/BLUETOOTH_PAGE.md; `tools/fm1_ble_report.py --run --out DIR`
-   over SysEx 0x66 (report) and 0x67 (run); `tests/ble_report_tool.py`. Eight steps (radio, block, hci, adv_set, adv_air,
-   connect, midi_in, midi_out), one line each with raw bytes, 24 counters; a failed step's note says what to do next. The host
-   build runs a scripted fake (`tests/ble/fm1ble_test_host.c`) to test the page and the tool, the firmware runs
-   `firmware/ble/fm1ble_test.c` on the driver.
-6. **Size: measured.** NimBLE + Cordio + C library, linked with `--gc-sections` on a stub PAL: 69,606 B of code and read-only
-   data, 19,588 B of static RAM. The app today is 416,156 B of 581,564 B and 62,864 B of 98,304 B of RAM, so carrying all of it
-   is about 486 KB and 82.5 KB: **WiFi and Bluetooth fit together**, no separate Bluetooth image. The stack is not in the
-   app's link yet (no controller to run it on).
+   polling, stop; and the one-packet operations the PAL drives: an advertising packet on one channel, a peripheral's
+   connection event on a fixed channel, the response buffer for T_IFS) on `firmware/hal/fm1ble_port_bsp.c`.
+   `tests/ble_radio.c` (101 checks) shows the driver writes what the document says in its order; it cannot show the chip does
+   what the document says. Guesses are marked in the code: the order of B.2 against B.1, the hop increment, the calibration
+   (none), re-arming the next event, the receive buffer choice, `wf_rf_common_init` (the second variant of the test run
+   replaces it with our own WiFi power-up), and for the operations: a one-channel map, state 7 with a fixed channel, the
+   response read at T_IFS, the data header words, the window's unit, where the slot counter's boundaries lie.
+4. **Receive path and the stack together: host-tested, not run.** `firmware/ble/fm1ble_stack.c` joins the PAL, Cordio and
+   NimBLE with the BLE-MIDI service; `tests/ble_stack.c` (22 checks) runs NimBLE over Cordio over the PAL on the air: a central
+   scans, connects, finds the characteristic over ATT, subscribes, writes a Note On that comes out of `ble_midi_get`, gets
+   the app's notification, leaves, and the peripheral advertises again. The model calls the receive interrupt at once, so
+   the response is always in time: on the FM-1 everything is polled from the main loop in this build, and a connection
+   needs the response in its buffer within 150 us of the master's packet (docs/BLUETOOTH_CORDIO.md "What the first run has
+   to show").
+5. **Test page, USB report, tool: done and host-tested; the run uses the stack.** docs/BLUETOOTH_PAGE.md;
+   `tools/fm1_ble_report.py --run --out DIR` over SysEx 0x66 (report) and 0x67 (run); `tests/ble_report_tool.py`. Eight steps
+   (radio, block, hci, adv_set, adv_air, connect, midi_in, midi_out), one line each with raw bytes, 24 counters (20-23 the
+   PAL's); a failed step's note says what to do next. The firmware's run (`firmware/ble/fm1ble_test.c`) does the driver's
+   own advertising first (the step-4 proof: `adv_set`, `adv_air`, unchanged) and then brings up the stack on the same radio
+   (`hci`, `connect`, `midi_in`, `midi_out`). `tests/ble_stack.c run` runs it on the air with the central: every step PASS.
+   The host build's page and tool tests run a scripted fake (`tests/ble/fm1ble_test_host.c`).
+6. **Size: in the app.** The app links the test run, the driver, the PAL, Cordio, NimBLE and `ble_libc.c`: 525,904 B of
+   581,564 B and 93,764 B of 98,304 B of RAM (Cordio's 3 KB heap and the C library's 3 KB heap are in the pool, app.ld's
+   zeroed region outside the 96 KB), with WiFi's stages 4-9 in the same image.
 
-The first FM-1 run, by the control session over USB: `python3 tools/fm1_ble_report.py --run --out DIR`, then a phone's BLE
-scanner for "OPLBOX". What would settle the open points: the report's counters (events with and without re-arming, the
-variant that worked), the CONNECT_IND bytes, and the PAL's first run.
+The next FM-1 run, by the control session over USB: `python3 tools/fm1_ble_report.py --run --wait 30 --out DIR`, then a
+phone's BLE MIDI app connecting to "OPLBOX" and playing a note. What the report settles: `adv_air` (the driver advertises),
+`hci` (Cordio runs on the chip), and from the PAL's counters whether its operations end (`pal_late_resp_stuck` high half)
+and whether responses were in time (its low half): the first thing a connection needs is the receive interrupt.
 
 ## Open questions
 
