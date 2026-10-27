@@ -110,7 +110,9 @@ def run(a, log):
         if not m:
             return None
         addr, rest = m.group(2).upper(), m.group(3)
-        if addr not in watch or m.group(1) == "DEL":
+        if m.group(1) == "DEL":                                    # BlueZ dropping a cached device is not a sighting
+            return None
+        if addr not in watch:
             return addr
         d = res["seen"].setdefault(addr, {"first": at(t), "last": at(t), "rssi": None, "name": None})
         d["last"] = at(t)
