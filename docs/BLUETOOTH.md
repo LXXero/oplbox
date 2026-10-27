@@ -499,7 +499,7 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
 
 1. **NimBLE host, peripheral-only, no pairing: done and host-tested.** `firmware/ble/nimble/` (129 files, unchanged, commit
    e00b85cc, `README.md` and `SHA256SUMS`), our polled port (`ble_nimble_npl.c`, `nimble_port/`), the transport as a function
-   pair and the BLE-MIDI GATT service in `ble_nimble.c`. `tests/ble_nimble.c` (five scenarios in separate processes, 131 checks)
+   pair and the BLE-MIDI GATT service in `ble_nimble.c`. `tests/ble_nimble.c` (five scenarios in separate processes, 135 checks)
    against `tests/ble/hci_model.c`: NimBLE's start-up commands, advertising with the profile's data, a central that walks the
    GATT database (MTU, services, the characteristic's properties 0x16, the CCCD), subscribes, writes MIDI (with and without a
    response), reads the empty first value, is sent MIDI (one notification in six ACL fragments through two controller
