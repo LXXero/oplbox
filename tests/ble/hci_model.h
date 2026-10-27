@@ -36,6 +36,10 @@
  *   status 2006 12                    answer this command with this status instead
  *   silent 0c03                       never answer this command
  *   sync                              answer inside the host's send call
+ *   nimble                            also answer Read Local Version, Supported Commands and Features, LE Read
+ *                                     Local Supported Features, Set Event Mask Page 2, and accept LE Connection
+ *                                     Update and an L2CAP Connection Parameter Update Request (both with an LE Connection
+ *                                     Update Complete for the largest interval asked)
  *
  * Steps, run in order, each when the one before it has run:
  *
@@ -82,6 +86,7 @@ typedef struct {
     uint16_t status_op, silent_op;
     uint8_t status;
     uint8_t sync;
+    uint8_t nimble;                  /* also answer what a full host (NimBLE) asks at start-up and after a connection */
     /* steps */
     hci_model_step steps[HCI_MODEL_STEPS];
     int nsteps, cur;
