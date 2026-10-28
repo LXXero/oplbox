@@ -6,9 +6,11 @@
 # (the stack's address never heard, only a cached entry removed), nomidi (the services resolved, no sequencer port),
 # noconnect (the connection fails), noservices (connected, no GATT services ever resolved: the peripheral never answered),
 # dropped (connected, then Connected: no: what a central sees when the peripheral missed its CONNECT_IND), dropfirst
-# (the first two connects drop, the third comes up: the FM-1's third window setup receives).
+# (the first two connects drop, the third comes up: the FM-1's third window setup receives), lateservices (the MIDI port
+# comes first, ServicesResolved: yes 0.5 s later, as BlueZ's discovery ends after the MIDI plugin made the port).
 import os
 import sys
+import threading
 st, mode = os.environ["FAKE_BLUEZ_STATE"], os.environ.get("FAKE_BLUEZ_MODE", "ok")
 P = "\x1b[0;94m[bluetooth]\x1b[0m# "
 
@@ -51,6 +53,10 @@ for line in sys.stdin:
             out(f"[\x1b[0;93mCHG\x1b[0m] Device {a} Connected: no")
             continue
         if mode == "noservices":
+            continue
+        if mode == "lateservices":
+            open(os.path.join(st, "port"), "w").close()
+            threading.Timer(0.5, out, [f"[\x1b[0;93mCHG\x1b[0m] Device {a} ServicesResolved: yes"]).start()
             continue
         out(f"[\x1b[0;93mCHG\x1b[0m] Device {a} ServicesResolved: yes")
         if mode != "nomidi":

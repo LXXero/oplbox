@@ -41,7 +41,7 @@ static uint32_t g_blk[FM1BLE_BLOCK_SIZE / 4u];
 enum { P_RADIO, P_BLOCK, P_ADV, P_SETTLE, P_WINDOW, P_TRIAL_END, P_STACK, P_HCI, P_WAIT_CONN, P_MIDI_IN,
        P_MIDI_OUT, P_LEAVE, P_END };
 #define ALL_TRIALS (FM1BLE_TRIALS + FM1BLE_RX_TRIALS)
-static uint8_t g_phase, g_variant, g_sent, g_left, g_trial, g_trial_bits, g_adv_err, g_rearm_used, g_stack_rx;
+static uint8_t g_phase, g_variant, g_sent, g_left, g_hold, g_trial, g_trial_bits, g_adv_err, g_rearm_used, g_stack_rx;
 static uint32_t g_phase_t, g_wait_ms, g_nocp0;
 static struct { uint32_t events, flips, rx, scan_req; } g_tr[ALL_TRIALS], g_at;   /* each trial's counts; the counts at its start */
 static uint16_t g_hw[8];                         /* the entity's hardware-written words after the last air trial */
@@ -362,7 +362,7 @@ void fm1ble_test_begin(fm1ble_run *r, uint32_t now_ms, uint32_t wait_ms)
     g_adv_err = 0;
     g_rearm_used = 0;
     g_wait_ms = wait_ms;
-    g_sent = g_left = 0;
+    g_sent = g_left = g_hold = 0;
 }
 
 static void start_radio(fm1ble_run *r)
@@ -724,6 +724,7 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
             put32(s, n->notified);
             put32(s, k->nocp);
             finish(r, FM1BLE_STEP_MIDI_OUT, FM1BLE_PASS, "Note On notified, buffer handed back");
+            g_hold = 1;                              /* the central closes it once its discovery ends (FM1BLE_HOLD_MS) */
             g_phase = P_LEAVE;
             g_phase_t = now_ms;
         } else if (g_sent == 2u || n->state != BLE_NIMBLE_CONNECTED || now_ms - g_phase_t >= g_wait_ms) {
@@ -739,6 +740,14 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
     }
     case P_LEAVE:                                    /* the run ends: a connection is closed before the radio goes off */
         fm1ble_stack_poll();
+        if (g_hold) {                                /* after MIDI_OUT: the central's to close, up to FM1BLE_HOLD_MS */
+            int up = ble_nimble_state()->state == BLE_NIMBLE_CONNECTED;
+            if (up && now_ms - g_phase_t < FM1BLE_HOLD_MS)
+                break;
+            put32(&r->step[FM1BLE_STEP_MIDI_OUT], (now_ms - g_phase_t) | (up ? FM1BLE_HOLD_CLOSED : 0u));
+            g_hold = 0;
+            g_phase_t = now_ms;
+        }
         if (ble_nimble_state()->state == BLE_NIMBLE_CONNECTED && now_ms - g_phase_t < 500u) {
             if (!g_left) {
                 ble_nimble_disconnect();

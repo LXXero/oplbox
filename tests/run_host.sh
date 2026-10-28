@@ -443,8 +443,10 @@ cc -std=gnu11 -D_GNU_SOURCE -Wall -Wextra -Werror -fshort-enums -Ifirmware/ble -
    build/host/pal_fm1.o $(ls build/host/cordio/*.o | grep -v pal_stubs_host) build/host/nimble/*.o
 build/host/ble_stack
 # the test run (fm1ble_test.c) as the FM-1 runs it, on the model's air: the driver's own advertising, then the stack;
-# the central connects, plays a Note On (midi_in) and is sent one (midi_out); the run closes the connection
+# the central connects, plays a Note On (midi_in) and is sent one (midi_out); the run keeps the connection up until the
+# central closes it, and with a central that stays it closes the connection itself after FM1BLE_HOLD_MS
 build/host/ble_stack run
+build/host/ble_stack run-stay
 # the test run's driver steps against the register model (no air: the baseband that repeats events, the one that needs
 # re-arming, the one that needs the shared radio's init, a silent one, a CONNECT_IND of made-up bytes Cordio refuses), the
 # stack (hci) on the same model

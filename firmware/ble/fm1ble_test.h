@@ -217,6 +217,12 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
  * central connects again (tools/ble_central.py --tries) tries them in turn. */
 #define FM1BLE_CONN_TRIES   7u
 
+/* After MIDI_OUT passes the run keeps the connection up for the central to close (BlueZ goes on discovering after the
+ * MIDI port comes: its GATT services resolve only once that ends), at most FM1BLE_HOLD_MS; only then does the run close it
+ * itself. midi_out's raw then ends with a u32: the ms it stayed up after the step, bit 31 set when the run closed it. */
+#define FM1BLE_HOLD_MS      15000u
+#define FM1BLE_HOLD_CLOSED  0x80000000u
+
 /* The PDU capture (since round 7 of the FM-1 Bluetooth goal): the PAL's (pal_fm1.h PAL_FM1_CAP, PAL_FM1_CAP_BYTES, 32 of
  * 20 bytes) and ARQ's ways, after the steps' frames in the report as one more frame, index FM1BLE_STEPS
  * (tools/fm1_ble_report.py prints it as PDU CAPTURE). Its bytes: a head of FM1BLE_CAP_HEAD,
