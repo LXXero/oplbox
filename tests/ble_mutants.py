@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import limits
+import mutation
 
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "firmware/ble"
@@ -79,43 +80,57 @@ MUTANTS = (
 )
 
 
+HARNESS = ("tests/ble_mutants.py", "tests/ble_hci.c", "tests/ble/")
+
+
+def target(old):
+    return "hci.h" if old.startswith("#define") else "hci.c"
+
+
+def one(work, n):
+    name, old, new = MUTANTS[n]
+    d = work / str(n)
+    if d.exists():
+        shutil.rmtree(d)
+    shutil.copytree(LIB, d)
+    f = d / target(old)
+    f.write_text(f.read_text().replace(old, new))
+    exe = d / "ble_hci"
+    subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-O1", "-w", "-I" + str(d),
+                    "-I" + str(ROOT / "tests/ble"), "-o", str(exe), str(ROOT / "tests/ble_hci.c"),
+                    str(ROOT / "tests/ble/hci_model.c"), str(d / "hci.c")], check=True)
+    try:
+        r = limits.run([str(exe), str(ROOT / "tests/ble")], capture_output=True, text=True, timeout=60)
+        code, err = r.returncode, r.stderr
+        if code < 0:                                          # killed by a signal, e.g. the memory limit
+            code, err = None, "killed (signal %d)" % -code
+    except subprocess.TimeoutExpired:
+        code, err = None, "hung"
+    caught = code == 1 and "FAIL" in err
+    return caught, "  exit %s; %s" % (code, err.strip().splitlines()[-1] if err.strip() else "")
+
+
 def main():
     out = Path(sys.argv[1])
     work = out / "ble_mutants"
+    todo, stale = mutation.plan("ble mutants", [("firmware/ble/" + target(m[1]), m[1]) for m in MUTANTS], HARNESS)
+    res = mutation.run(todo, lambda n: one(work, n))
     survived = 0
-    for n, (name, old, new) in enumerate(MUTANTS):
-        d = work / str(n)
-        if d.exists():
-            shutil.rmtree(d)
-        shutil.copytree(LIB, d)
-        f = d / ("hci.h" if old.startswith("#define") else "hci.c")
-        text = f.read_text()
-        if text.count(old) != 1:
-            print("FAIL: mutant %r: its text is not in %s exactly once (the code moved: update the mutant)" % (name, f.name))
+    for n, (name, old, _) in enumerate(MUTANTS):
+        if n in stale:
+            print("FAIL: mutant %r: its text is not in %s exactly once (the code moved: update the mutant)" % (name, target(old)))
             survived += 1
-            continue
-        f.write_text(text.replace(old, new))
-        exe = d / "ble_hci"
-        subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-O1", "-w", "-I" + str(d),
-                        "-I" + str(ROOT / "tests/ble"), "-o", str(exe), str(ROOT / "tests/ble_hci.c"),
-                        str(ROOT / "tests/ble/hci_model.c"), str(d / "hci.c")], check=True)
-        try:
-            r = limits.run([str(exe), str(ROOT / "tests/ble")], capture_output=True, text=True, timeout=60)
-            code, err = r.returncode, r.stderr
-            if code < 0:                                          # killed by a signal, e.g. the memory limit
-                code, err = None, "killed (signal %d)" % -code
-        except subprocess.TimeoutExpired:
-            code, err = None, "hung"
-        caught = code == 1 and "FAIL" in err
-        print("%s: %s" % ("caught" if caught else "SURVIVED", name))
-        if not caught:
-            print("  exit %s; %s" % (code, err.strip().splitlines()[-1] if err.strip() else ""))
-            survived += 1
-    shutil.rmtree(work)
+        elif n in res:
+            caught, why = res[n]
+            print("%s: %s" % ("caught" if caught else "SURVIVED", name))
+            if not caught:
+                print(why)
+                survived += 1
+    if work.exists():
+        shutil.rmtree(work)
     if survived:
         sys.exit("FAIL: %d mutant(s) not caught" % survived)
-    print("ble mutants: all %d caught" % len(MUTANTS))
-
+    print(mutation.summary("ble mutants", len(MUTANTS), len(res)))
 
 if __name__ == "__main__":
     main()

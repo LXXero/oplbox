@@ -11,9 +11,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import limits
+import mutation
+
 ROOT = Path(__file__).resolve().parent.parent
 PAL = "firmware/ble/cordio_port/pal_fm1.c"
 DRV = "firmware/ble/fm1ble.c"
+MEM_MB = 512      # each mutant's run: its address space (the unmutated run is measured in the commit message)
 
 # (name, file, text, replacement)
 MUTANTS = (
@@ -179,49 +184,61 @@ def sh(cmd):
     return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, cwd=ROOT)
 
 
+HARNESS = ("tests/ble_pal_mutants.py", "tests/ble_pal.c", "tests/ble/")
+
+
+def one(work, cr_def, cr_inc, objs, n):
+    name, path, old, new = MUTANTS[n]
+    d = work / str(n)
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+    files = {PAL: d / "pal_fm1.c", DRV: d / "fm1ble.c"}
+    for src, dst in files.items():
+        shutil.copy(ROOT / src, dst)
+    f = files[path]
+    f.write_text(f.read_text().replace(old, new))
+    exe = d / "ble_pal"
+    inc = ["-I" + str(ROOT / "firmware/ble"), "-I" + str(ROOT / "firmware/ble/cordio_port"), "-I" + str(ROOT / "tests/ble")]
+    subprocess.run(["cc", "-std=gnu11", "-O1", "-w", "-fshort-enums", *cr_def, *["-I" + str(ROOT / i[2:]) for i in cr_inc], *inc, "-c", "-o", str(d / "pal_fm1.o"), str(files[PAL])], check=True)
+    subprocess.run(["cc", "-std=gnu11", "-O1", "-w", "-fshort-enums", *inc, "-Wl,--gc-sections", "-o", str(exe),
+                    str(ROOT / "tests/ble_pal.c"), str(ROOT / "tests/ble/bb_model.c"), str(ROOT / "tests/ble/air_central.c"), str(files[DRV]),
+                    str(ROOT / "firmware/ble/ble_midi.c"), str(d / "pal_fm1.o"), *objs], check=True)
+    try:
+        r = limits.run([str(exe)], mem_mb=MEM_MB, capture_output=True, text=True, timeout=120)
+        code, err = r.returncode, r.stderr
+        if code < 0:                                          # killed by a signal, e.g. the memory limit
+            code, err = None, "killed (signal %d)" % -code
+    except subprocess.TimeoutExpired:
+        code, err = None, "hung"
+    caught = code == 1 and "FAIL" in err
+    return caught, "  exit %s; %s" % (code, err.strip().splitlines()[-1] if err.strip() else "")
+
+
 def main():
     out = Path(sys.argv[1]).resolve()
     work = out / "ble_pal_mutants"
     cr_inc = sh("find firmware/ble/cordio -name '*.h' -printf '-I%h\\n' | sort -u | tr '\\n' ' '").stdout.split()
     cr_def = ["-D" + l.strip() for l in (ROOT / "firmware/ble/cordio_port/DEFINES.txt").read_text().splitlines() if l.strip()]
     objs = [str(p) for p in sorted((out / "cordio").glob("*.o")) if "pal_stubs_host" not in p.name]
+    todo, stale = mutation.plan("ble_pal mutants", [(m[1], m[2]) for m in MUTANTS], HARNESS)
+    res = mutation.run(todo, lambda n: one(work, cr_def, cr_inc, objs, n))
     survived = 0
-    for n, (name, path, old, new) in enumerate(MUTANTS):
-        d = work / str(n)
-        if d.exists():
-            shutil.rmtree(d)
-        d.mkdir(parents=True)
-        files = {PAL: d / "pal_fm1.c", DRV: d / "fm1ble.c"}
-        for src, dst in files.items():
-            shutil.copy(ROOT / src, dst)
-        f = files[path]
-        text = f.read_text()
-        if text.count(old) != 1:
+    for n, (name, path, *_) in enumerate(MUTANTS):
+        if n in stale:
             print("FAIL: mutant %r: its text is not in %s exactly once (the code moved: update the mutant)" % (name, path))
             survived += 1
-            continue
-        f.write_text(text.replace(old, new))
-        exe = d / "ble_pal"
-        inc = ["-I" + str(ROOT / "firmware/ble"), "-I" + str(ROOT / "firmware/ble/cordio_port"), "-I" + str(ROOT / "tests/ble")]
-        subprocess.run(["cc", "-std=gnu11", "-O1", "-w", "-fshort-enums", *cr_def, *["-I" + str(ROOT / i[2:]) for i in cr_inc], *inc, "-c", "-o", str(d / "pal_fm1.o"), str(files[PAL])], check=True)
-        subprocess.run(["cc", "-std=gnu11", "-O1", "-w", "-fshort-enums", *inc, "-Wl,--gc-sections", "-o", str(exe),
-                        str(ROOT / "tests/ble_pal.c"), str(ROOT / "tests/ble/bb_model.c"), str(ROOT / "tests/ble/air_central.c"), str(files[DRV]),
-                        str(ROOT / "firmware/ble/ble_midi.c"), str(d / "pal_fm1.o"), *objs], check=True)
-        try:
-            r = subprocess.run([str(exe)], capture_output=True, text=True, timeout=120)
-            code, err = r.returncode, r.stderr
-        except subprocess.TimeoutExpired:
-            code, err = None, "hung"
-        caught = code == 1 and "FAIL" in err
-        print("%s: %s" % ("caught" if caught else "SURVIVED", name))
-        if not caught:
-            print("  exit %s; %s" % (code, err.strip().splitlines()[-1] if err.strip() else ""))
-            survived += 1
-    shutil.rmtree(work)
+        elif n in res:
+            caught, why = res[n]
+            print("%s: %s" % ("caught" if caught else "SURVIVED", name))
+            if not caught:
+                print(why)
+                survived += 1
+    if work.exists():
+        shutil.rmtree(work)
     if survived:
         sys.exit("FAIL: %d mutant(s) not caught" % survived)
-    print("ble_pal mutants: all %d caught" % len(MUTANTS))
-
+    print(mutation.summary("ble_pal mutants", len(MUTANTS), len(res)))
 
 if __name__ == "__main__":
     main()

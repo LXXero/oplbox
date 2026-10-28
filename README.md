@@ -296,6 +296,18 @@ JIELI_TOOLCHAIN=~/.jieli/toolchain AC79_SDK=~/fw-AC79_AIoT_SDK ./build.sh --rele
 tests/run_host.sh                 # the same app on this computer: WAV + screen PNGs, no FM-1 needed
 ```
 
+`tests/run_host.sh` also runs the mutation checks (`tests/*_mutants.py`: deliberate bugs the tests must catch), up to
+4 at once. In a build round (a branch being worked on, before it is offered for merge), run it in quick mode every time,
+the last run before committing included:
+
+```sh
+OPLBOX_MUTANTS=changed tests/run_host.sh    # only the mutants of files that differ from main (OPLBOX_MUTANTS_BASE)
+```
+
+Quick mode runs a set's mutants only for its target files that changed, and the whole set when its test, its models
+or its mutant script changed; it still checks every mutant's text against its file, and says how many it skipped.
+The full set runs at merge: `tests/run_host.sh` with `OPLBOX_MUTANTS` unset, which is what the merge's test run does.
+
 The OPL cores on their own (`host/`, from the `oplbox` reference tree): `dbopl_gen.c` makes the tables,
 `dbcmp.c` is the lockstep check against DOSBox, `render.c` renders a song through Nuked, `skiptest.c` checks
 the Nuked fast path.

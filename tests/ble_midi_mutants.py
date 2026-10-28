@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import limits
+import mutation
 
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "firmware/ble"
@@ -87,42 +88,52 @@ MUTANTS = (
 )
 
 
+HARNESS = ("tests/ble_midi_mutants.py", "tests/ble_midi.c")
+
+
+def one(work, n):
+    name, old, new = MUTANTS[n]
+    d = work / str(n)
+    if d.exists():
+        shutil.rmtree(d)
+    shutil.copytree(LIB, d)
+    f = d / "ble_midi.c"
+    f.write_text(f.read_text().replace(old, new))
+    exe = d / "ble_midi"
+    subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-O1", "-w", "-I" + str(d), "-o", str(exe),
+                    str(ROOT / "tests/ble_midi.c"), str(f)], check=True)
+    try:
+        r = limits.run([str(exe)], capture_output=True, text=True, timeout=60)
+        code, err = r.returncode, r.stderr
+        if code < 0:                                          # killed by a signal, e.g. the memory limit
+            code, err = None, "killed (signal %d)" % -code
+    except subprocess.TimeoutExpired:
+        code, err = None, "hung"
+    caught = code == 1 and "FAIL" in err
+    return caught, "  exit %s; %s" % (code, err.strip().splitlines()[-1] if err.strip() else "")
+
+
 def main():
     out = Path(sys.argv[1])
     work = out / "ble_midi_mutants"
+    todo, stale = mutation.plan("ble midi mutants", [("firmware/ble/ble_midi.c", m[1]) for m in MUTANTS], HARNESS)
+    res = mutation.run(todo, lambda n: one(work, n))
     survived = 0
-    for n, (name, old, new) in enumerate(MUTANTS):
-        d = work / str(n)
-        if d.exists():
-            shutil.rmtree(d)
-        shutil.copytree(LIB, d)
-        f = d / "ble_midi.c"
-        text = f.read_text()
-        if text.count(old) != 1:
+    for n, (name, *_) in enumerate(MUTANTS):
+        if n in stale:
             print("FAIL: mutant %r: its text is not in ble_midi.c exactly once (the code moved: update the mutant)" % name)
             survived += 1
-            continue
-        f.write_text(text.replace(old, new))
-        exe = d / "ble_midi"
-        subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-O1", "-w", "-I" + str(d), "-o", str(exe),
-                        str(ROOT / "tests/ble_midi.c"), str(f)], check=True)
-        try:
-            r = limits.run([str(exe)], capture_output=True, text=True, timeout=60)
-            code, err = r.returncode, r.stderr
-            if code < 0:                                          # killed by a signal, e.g. the memory limit
-                code, err = None, "killed (signal %d)" % -code
-        except subprocess.TimeoutExpired:
-            code, err = None, "hung"
-        caught = code == 1 and "FAIL" in err
-        print("%s: %s" % ("caught" if caught else "SURVIVED", name))
-        if not caught:
-            print("  exit %s; %s" % (code, err.strip().splitlines()[-1] if err.strip() else ""))
-            survived += 1
-    shutil.rmtree(work)
+        elif n in res:
+            caught, why = res[n]
+            print("%s: %s" % ("caught" if caught else "SURVIVED", name))
+            if not caught:
+                print(why)
+                survived += 1
+    if work.exists():
+        shutil.rmtree(work)
     if survived:
         sys.exit("FAIL: %d mutant(s) not caught" % survived)
-    print("ble midi mutants: all %d caught" % len(MUTANTS))
-
+    print(mutation.summary("ble midi mutants", len(MUTANTS), len(res)))
 
 if __name__ == "__main__":
     main()
