@@ -28,12 +28,17 @@ static void pend(uint32_t bit) { *slot(FM1BLE_BB_IRQ_PEND, 1) |= bit; }
 
 static void arm(void)
 {
-    uint32_t slots = (uint32_t)bbm.ax[FM1BLE_AX_CNT_LO] + 1u;
+    uint32_t slots = (uint32_t)bbm.ax[FM1BLE_AX_CNT_LO] + 1u, bo = bbm.ax[FM1BLE_AX_BITOFF];
     bbm.armed = 1;
     bbm.armed_at_us = bbm.now_us;
     /* the event at the counter's slot: the register-level tests take the next slot boundary a whole slot after the
-     * write, the air takes one at the write and adds the bit offset (fm1ble.c op_arm); which is right is the chip's */
-    bbm.period_us = bbm.air ? (slots - 1u) * 625u + bbm.ax[FM1BLE_AX_BITOFF] : slots * 625u;
+     * write, the air takes one at the write and adds the bit offset (fm1ble.c op_arm), or with cnt_jieli a whole slot
+     * more (JieLi's __set_anchor_cnt writes the slots minus one); bit 15 of the offset is a flag (__hw_set_widen_drift
+     * sets it), and with bit15 the offset counts only when it is set. Which is right is the chip's */
+    if (bbm.bit15 && !(bo & 0x8000u))
+        bo = 0;
+    bo &= 0x7FFFu;
+    bbm.period_us = bbm.air ? (slots - (bbm.cnt_jieli ? 0u : 1u)) * 625u + bo : slots * 625u;
 }
 
 uint32_t bb_model_air_us(int pdu_len) { return (uint32_t)(1 + 4 + pdu_len + 3) * 8u; }
@@ -148,7 +153,7 @@ static void air_event(void)
         }
         air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
     } else if (state == 7u) {
-        uint32_t win = air16(FM1BLE_E_WINCNTL2);
+        uint32_t win = bbm.win0 ? air16(FM1BLE_E_WINCNTL0) | air16(FM1BLE_E_WINCNTL1) << 16 : air16(FM1BLE_E_WINCNTL2);
         uint32_t aa = (uint32_t)air16(FM1BLE_E_BDADDR0) | (uint32_t)air16(FM1BLE_E_BDADDR1) << 16;
         uint32_t crc = (uint32_t)air16(FM1BLE_E_CRCWORD0) | (uint32_t)(air16(FM1BLE_E_CRCWORD1) & 0xFFu) << 16;
         uint64_t at = 0;

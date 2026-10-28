@@ -50,6 +50,10 @@ typedef struct {
     int needs_common;                   /* flags only come after fm1ble_port_rf_common ran (the second variant) */
     int no_tx;                          /* events run, but TXTOG never changes: nothing sent (the first FM-1 run's look) */
     int common_ran;
+    /* how the chip places a connection event (the open questions of fm1ble.h FM1BLE_CONN_PADJ, PADB, PADW): cnt_jieli, a
+     * slot later than op_arm's guess (the counter as JieLi writes it); bit15, the bit offset only with its bit 15; win0,
+     * the window from WINCNTL0/1 instead of WINCNTL2 */
+    int cnt_jieli, bit15, win0;
     uint64_t now_us, armed_at_us;
     int armed;
     uint32_t period_us;

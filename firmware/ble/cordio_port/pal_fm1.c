@@ -45,11 +45,13 @@
  * wait: the packet is there.
  *
  * The window setups. Where the driver's window lands against the packet is not settled on the chip (fm1ble.h
- * FM1BLE_CONN_*): each connection event runs one of them, tried in PAL_FM1_SETUP_ORDER from the first at each new
- * connection; PAL_FM1_MISSES missed events in a row (no packet) move to the next, an event with its packet keeps it, so
- * the connection stays on one that receives and the counters say which do. The first PAL_FM1_LOG connection events are
- * logged one by one (pal_fm1.h): the channel, the setup, the arm delay, when the packet started and when the hardware's
- * end flag came against Cordio's dueUsec. For a missed event the end says where the hardware really put its window.
+ * FM1BLE_CONN_*): each connection runs one of them for all its events, the k-th connection since the attach the k-th
+ * enabled one of PAL_FM1_SETUP_ORDER, so a central that connects again after each drop tries them in turn, one whole
+ * connection each, and the counters say which received; once a connection received PAL_FM1_GOOD packets on a setup,
+ * every later connection runs that one. The first PAL_FM1_LOG_PER events of each connection are logged one by one
+ * (pal_fm1.h), PAL_FM1_LOG in all: the channel, the setup, the arm delay, when the packet started and when the hardware's
+ * end flag came against Cordio's dueUsec; and each of the first PAL_FM1_CONNS connections is summed up. For a missed event
+ * the end says where the hardware really put its window.
  *
  * What a baseband that never answers does: each operation has a deadline (its start, the window and two packets, plus
  * 5 ms); past it the operation counts as ended, so Cordio is never left waiting (the stub PAL's hang, docs/BLUETOOTH_CORDIO.md).
@@ -114,8 +116,9 @@ static uint32_t g_rng;
 /* the connection event in flight: armed with setup g_set, its packet seen (and when), the busy wait's start */
 static uint8_t g_set, g_conn_open, g_conn_rx, g_bw_on;
 static uint32_t g_rx_t, g_bw_t0, g_win_early;   /* g_win_early: how much earlier than g_due the window was armed to start */
-static uint8_t g_miss;                  /* missed events in a row on g_set */
 static uint32_t *g_log;                 /* the event's log entry (pal_fm1.h), NULL past PAL_FM1_LOG */
+static uint32_t *g_sum;                 /* the connection's summary (pal_fm1.h), NULL past PAL_FM1_CONNS */
+static uint32_t g_cev, g_cpk;           /* the connection's events and packets so far */
 static uint32_t g_flips0;               /* the driver's conn_flips when the event was armed */
 static uint32_t g_last_poll;            /* when pal_fm1_service last read the baseband */
 static const uint8_t g_order[FM1BLE_CONN_SETUPS] = PAL_FM1_SETUP_ORDER;
@@ -127,25 +130,22 @@ static uint32_t air_us(uint32_t pdu_len) { return (1u + 4u + pdu_len + 3u) * 8u;
 static uint32_t sat16(uint32_t v) { return v > 0xFFFFu ? 0xFFFFu : v; }
 static uint32_t s16(int32_t v) { return (uint32_t)(v < -32767 ? -32767 : v > 32767 ? 32767 : v) & 0xFFFFu; }
 
-/* the first enabled setup at or after position i of g_order */
-static uint8_t setup_from(uint8_t i)
+/* the n-th enabled setup of g_order, counting round */
+static uint8_t setup_nth(uint32_t n)
 {
-    uint8_t k;
+    uint8_t k, on = 0, s;
+    for (k = 0; k < FM1BLE_CONN_SETUPS; k++)
+        if (g_cfg.conn_setups & (1u << g_order[k]))
+            on++;
+    if (!on)
+        return FM1BLE_CONN_KEEP;
+    n %= on;
     for (k = 0; k < FM1BLE_CONN_SETUPS; k++) {
-        uint8_t s = g_order[(i + k) % FM1BLE_CONN_SETUPS];
-        if (g_cfg.conn_setups & (1u << s))
+        s = g_order[k];
+        if ((g_cfg.conn_setups & (1u << s)) && !n--)
             return s;
     }
     return FM1BLE_CONN_KEEP;
-}
-
-static uint8_t order_pos(uint8_t s)
-{
-    uint8_t i;
-    for (i = 0; i < FM1BLE_CONN_SETUPS; i++)
-        if (g_order[i] == s)
-            return i;
-    return 0;
 }
 
 /* A second attach (the driver powered down and up again under a running Cordio) keeps the scheduler's timer and the
@@ -168,10 +168,45 @@ void pal_fm1_attach(const pal_fm1_cfg *cfg)
     if (!g_cfg.conn_setups)
         g_cfg.conn_setups = (1u << FM1BLE_CONN_SETUPS) - 1u;
     memset(&g_st, 0, sizeof g_st);
-    g_log = NULL;
-    g_set = setup_from(0);
-    g_miss = 0;
+    g_log = g_sum = NULL;
+    g_cev = g_cpk = 0;
+    g_set = setup_nth(0);
     g_st.conn_setup = g_set;
+    g_st.good = PAL_FM1_NO_SETUP;
+}
+
+/* min (lo) and max (hi) of a summary word, two signed 16-bit times (PAL_FM1_LOG_NONE: none yet) */
+static void sum_minmax(uint32_t *w, int32_t v)
+{
+    uint32_t lo = *w & 0xFFFFu, hi = *w >> 16, x = s16(v);
+    if (lo == PAL_FM1_LOG_NONE || (int16_t)x < (int16_t)lo)
+        lo = x;
+    if (hi == PAL_FM1_LOG_NONE || (int16_t)x > (int16_t)hi)
+        hi = x;
+    *w = lo | hi << 16;
+}
+
+/* A new connection's first event: the setup it runs (the one that received PAL_FM1_GOOD packets, else the next in the
+ * order) and its summary */
+static void conn_start(void)
+{
+    uint8_t s;
+    if (g_st.conns && g_cpk >= PAL_FM1_GOOD)            /* the last connection received on its setup: keep it */
+        g_st.good = g_set;
+    else if (g_st.conns && g_set == g_st.good)          /* the kept one failed a connection: back to the order */
+        g_st.good = PAL_FM1_NO_SETUP;
+    s = g_st.good != PAL_FM1_NO_SETUP ? (uint8_t)g_st.good : setup_nth(g_st.conns);
+    if (g_st.conns && s != g_set)
+        g_st.setup_moves++;
+    g_set = s;
+    g_st.conn_setup = s;
+    g_sum = g_st.conns < PAL_FM1_CONNS ? g_st.conn_sum[g_st.conns] : NULL;
+    if (g_sum) {
+        g_sum[0] = s;
+        g_sum[1] = g_sum[2] = PAL_FM1_LOG_NONE | PAL_FM1_LOG_NONE << 16;
+    }
+    g_st.conns++;
+    g_cev = g_cpk = 0;
 }
 
 static void busy_end(uint32_t t)
@@ -183,11 +218,9 @@ static void busy_end(uint32_t t)
         g_st.busy_us_max = us;
 }
 
-/* A connection event ended (how: its flag, its deadline, or Cordio went on): logged; PAL_FM1_MISSES in a row without
- * their packet move to the next setup */
+/* A connection event ended (how: its flag, its deadline, or Cordio went on): logged and summed up */
 static void conn_end(int how)
 {
-    uint8_t s;
     uint32_t t = now();
     if (!g_conn_open)
         return;
@@ -203,18 +236,11 @@ static void conn_end(int how)
             g_log[0] |= how == END_DEADLINE ? 1u << 11 : 1u << 12;
         g_log = NULL;
     }
-    if (g_conn_rx) {
-        g_miss = 0;
-        return;
-    }
-    if (++g_miss < PAL_FM1_MISSES)
-        return;
-    g_miss = 0;
-    s = setup_from((uint8_t)(order_pos(g_set) + 1u));
-    if (s != g_set) {
-        g_set = s;
-        g_st.setup_moves++;
-        g_st.conn_setup = s;
+    g_cev++;
+    if (g_sum) {
+        g_sum[0] = (g_sum[0] & ~0xFFF0u) | (g_cev > 0xFFFu ? 0xFFFu : g_cev) << 4;
+        if (!g_conn_rx && how == END_FLAG)
+            sum_minmax(&g_sum[2], (int32_t)(t - g_due));
     }
 }
 
@@ -384,11 +410,8 @@ void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
     g_rxbuf = pBuf;
     g_rxlen = len;
     g_aev = 0;
-    if (first && g_chan <= 36) {        /* each connection starts on the first setup of the order */
-        g_set = setup_from(0);
-        g_miss = 0;
-        g_st.conn_setup = g_set;
-    }
+    if (first && g_chan <= 36)          /* a new connection: its setup (conn_start) */
+        conn_start();
     if (g_chan <= 36)
         fm1ble_op_conn_setup(g_cfg.b, g_set);
     delay = delay_to_due();
@@ -396,15 +419,16 @@ void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
         op_refused();
         return;
     }
-    /* PAD and WIDE arm the counter that much earlier, but fm1ble_op_conn clamps the delay at 0 */
-    pad = g_set == FM1BLE_CONN_PAD ? FM1BLE_CONN_PAD_US : g_set == FM1BLE_CONN_WIDE ? FM1BLE_CONN_WIDE_US : 0u;
+    /* PAD (and PADJ, PADB, PADW) and WIDE arm the counter that much earlier, but fm1ble_op_conn clamps the delay at 0 */
+    pad = g_set == FM1BLE_CONN_WIDE ? FM1BLE_CONN_WIDE_US :
+          g_set == FM1BLE_CONN_PAD || g_set >= FM1BLE_CONN_PADJ ? FM1BLE_CONN_PAD_US : 0u;
     g_win_early = delay > pad ? pad : delay;
     g_flips0 = g_cfg.b->d.conn_flips;
     g_log = NULL;
-    if (g_st.log_n < PAL_FM1_LOG) {
+    if (g_st.log_n < PAL_FM1_LOG && g_cev < PAL_FM1_LOG_PER) {
         g_log = g_st.log[g_st.log_n++];
-        g_log[0] = (uint32_t)(g_chan & 0x3Fu) | (uint32_t)(g_set & 3u) << 6 | (first ? 1u << 13 : 0u) |
-                   sat16(g_rx_timeout) << 16;
+        g_log[0] = (uint32_t)(g_chan & 0x3Fu) | (uint32_t)(g_set & 3u) << 6 | (uint32_t)(g_set >> 2 & 1u) << 14 |
+                   (first ? 1u << 13 : 0u) | sat16(g_rx_timeout) << 16;
         g_log[1] = PAL_FM1_LOG_NONE | PAL_FM1_LOG_NONE << 16;
         g_log[2] = sat16(delay);
     }
@@ -534,6 +558,14 @@ void pal_fm1_service(void)
                     if (!g_st.set_rx[g_set] || arr > g_st.set_arr_max[g_set])
                         g_st.set_arr_max[g_set] = arr;
                     g_st.set_rx[g_set]++;
+                    g_cpk++;
+                    if (g_sum) {
+                        uint32_t at = s16((int32_t)(g_held_ts - g_due));
+                        if ((g_sum[1] & 0xFFFFu) == PAL_FM1_LOG_NONE)
+                            g_sum[1] = (g_sum[1] & 0xFFFF0000u) | at;
+                        g_sum[1] = (g_sum[1] & 0xFFFFu) | at << 16;
+                        g_sum[0] = (g_sum[0] & 0xFFFFu) | (g_cpk > 0xFFFFu ? 0xFFFFu : g_cpk) << 16;
+                    }
                     if (g_log) {
                         g_log[0] |= 1u << 8 | (p.ok ? 1u << 9 : 0u);
                         g_log[1] = (g_log[1] & 0xFFFF0000u) | s16((int32_t)(g_held_ts - g_due));
