@@ -31,13 +31,13 @@ unchanged; SAVE on the Bluetooth page returns to the WiFi page's first screen, S
 
 ## The page
 
-Seventeen pages, PLAY turns them, the last one back to the first:
+Nineteen pages, PLAY turns them, the last one back to the first:
 
 | Page | Shows |
 | --- | --- |
 | 1 | the eight steps, one line each: name, PASS / FAIL / SKIP (`--` before it ran), the first 20 characters of the note |
 | 2-9 | one step each: the result and its time in ms, the note (two lines of 32 characters), how many bytes of evidence it kept and the first 40 of them, 10 to a line |
-| 10-17 | the 64 counters, 8 to a page, as 32-bit hex |
+| 10-19 | the 80 counters, 8 to a page, as 32-bit hex |
 
 A step that cannot run because an earlier one failed is SKIP, with the note `skipped: an earlier step failed`; with a
 wait of 0 the connect and MIDI steps are SKIP with `skipped: no wait for a central`. SAVE during a run leaves at once and
@@ -104,10 +104,17 @@ stack runs on, 0xFF before it starts), `rx_agc_table` (1 when its radio was powe
 (its WINCNTL2 for advertising), `agc_ctl` and `agc_rssi` (0x2FD80 and 0x2FD8C, the AGC block's control word and receive
 strength, read after the last RX trial), `conn_win` (WINCNTL0 in 15-0 and WINCNTL2 in 31-16 as the last operation left
 them), `pal_conn_timeout_us` (Cordio's receive timeout for the last connection event) and `rx_stat1` (RXSTAT1 after the
-last RX trial). `rf_common` is what the shared radio's init returned the first time (trial 1): a later power-up finds WiFi
+last RX trial). The last 16 are the connection events' (docs/BLUETOOTH_CORDIO.md, `pal_fm1.h`): `pal_busy_waits` and
+`pal_busy_us_max` (events waited through, the longest wait), `pal_resp_us_max` (the most us from a packet seen to Cordio's
+response put in; T_IFS is 150), `pal_conn_rx_bad` (packets with a bad CRC), `pal_conn_setup` and `pal_setup_moves` (the
+window setup in use at the end, how often a missed event moved to the next), `pal_late_ops` (operations armed after their
+due time), `conn_flips` (connection events after which TXTOG had changed), `pal_setN_counts` (setup N's events in 15-0,
+packets received in 31-16), `conn_acks` (connection packets with RXSTAT bit 8), `pal_setN_arr` (the earliest and latest
+packet start after the window's start, us, signed 16-bit in 15-0 and 31-16) and `conn_rx_words` (the last connection
+packet's RXSTAT in 15-0, RXDHDR in 31-16); `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS). `rf_common` is what the shared radio's init returned the first time (trial 1): a later power-up finds WiFi
 up and it returns 0 there. `fm1_ble_report.py` prints the RX trials decoded (RX TRIALS). Up to 122afe3 the firmware sent
-the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40. The PAL runs from the main loop in this build: a
-connection that fails with `pal_resp_late` above 0 needs the receive interrupt (docs/BLUETOOTH_CORDIO.md). The firmware at
+the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40, up to 58cadc5 the first 64. The PAL runs from the main loop in this build and waits
+through each connection event (docs/BLUETOOTH_CORDIO.md). The firmware at
 48ea034 and before sent 24 counters, the PAL's two to a word; the tool reads such a report by its count, with those names.
 
 The host build's scripted run (`tests/ble/fm1ble_test_host.c`) has the firmware's counter names and made-up values; only

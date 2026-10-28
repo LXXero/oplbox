@@ -57,9 +57,13 @@ COUNTERS = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common",
             "pal_conn_ended", "pal_conn_rx", "pal_refused", "evtcount",
             *[f"rxt{k}_{w}" for k in range(4) for w in ("counts", "stat", "pkt", "bytes")],
             "rx_stack_trial", "rx_agc_table", "rx_win", "agc_ctl",
-            "agc_rssi", "conn_win", "pal_conn_timeout_us", "rx_stat1"]
+            "agc_rssi", "conn_win", "pal_conn_timeout_us", "rx_stat1",
+            "pal_busy_waits", "pal_busy_us_max", "pal_resp_us_max", "pal_conn_rx_bad",
+            "pal_conn_setup", "pal_setup_moves", "pal_late_ops", "conn_flips",
+            "pal_set0_counts", "pal_set1_counts", "pal_set2_counts", "conn_acks",
+            "pal_set0_arr", "pal_set1_arr", "pal_set2_arr", "conn_rx_words"]
 # up to 122afe3 the firmware sent the first 32 of these (pal_done_37-39 then counted the driver's one-channel events
-# that ended), up to 3b39ab4 the first 40; a shorter report reads with the first names
+# that ended), up to 3b39ab4 the first 40, up to 58cadc5 the first 64; a shorter report reads with the first names
 # the 24 counters of the firmware at 48ea034 and before (the first FM-1 run); a pair is two 16-bit counts in one word, low
 # then high, which the tool splits
 COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "events", "rearms", "rx_packets", "rx_scan_req",
@@ -67,13 +71,17 @@ COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "event
                "rx_hdr", "rx_stat", "rx_type", "rx_len", ("pal_adv_ops", "pal_conn_ops"), ("pal_rx_ok", "pal_rx_timeout"),
                ("pal_resp_late", "pal_stuck"), "pal_timer_late_us"]
 HEX_COUNTERS = {"pending_last", "rx_hdr", "rx_stat", "air_trials", "txtog", "ram_end", "rx_win", "agc_ctl", "agc_rssi",
-                "conn_win", "rx_stat1", *[f"rxt{k}_{w}" for k in range(4) for w in ("counts", "stat", "pkt", "bytes")]}
+                "conn_win", "rx_stat1", *[f"rxt{k}_{w}" for k in range(4) for w in ("counts", "stat", "pkt", "bytes")],
+                *[f"pal_set{k}_{w}" for k in range(3) for w in ("counts", "arr")], "conn_rx_words"}
 # the air trials (fm1ble_test.h): the driver's own ADV_IND from these addresses, then the stack's
 STACK_ADDR = "C2:46:4D:31:00:01"
 TRIALS = [("C2:46:4D:31:00:10", "variant 0 (no shared radio init), level 6"),
           ("C2:46:4D:31:00:11", "variant 1 (shared radio init first), level 6"),
           ("C2:46:4D:31:00:12", "variant 1, level 11")]
 # the RX trials (fm1ble_test.h): the same ADV_IND on variant 1 at level 6, each with its own receive setup
+# the connection events' window setups (firmware/ble/fm1ble.h FM1BLE_CONN_*): the PAL moves to the next after a missed event
+CONN_SETUPS = ["keep: as up to 58cadc5 (WIDEN at the open's 487 us)", "pad: no widening, 625 us earlier, 1250 us longer",
+               "widen: JieLi's (at the anchor, WIDEN half the window)"]
 RX_TRIALS = [("C2:46:4D:31:00:13", "RX 0: no gain table, WINCNTL2 0x32"),
              ("C2:46:4D:31:00:14", "RX 1: the gain table, WINCNTL2 0"),
              ("C2:46:4D:31:00:15", "RX 2: the gain table, WINCNTL2 0x32 (JieLi's)"),
@@ -267,6 +275,31 @@ def show_rx(rep, out):
           f"Cordio's last connection timeout {c['pal_conn_timeout_us']} us", file=out)
 
 
+def s16(v):
+    return v - 0x10000 if v & 0x8000 else v
+
+
+def show_conn(rep, out):
+    """the connection events' counters (pal_fm1.h: the busy wait, the window setups), for a report that has them"""
+    c = rep["counters"]
+    if "conn_rx_words" not in c:
+        return
+    print("\nCONNECTION EVENTS (each runs one window setup; a missed one moves to the next)", file=out)
+    for k, what in enumerate(CONN_SETUPS):
+        n, a = c[f"pal_set{k}_counts"], c[f"pal_set{k}_arr"]
+        line = f"  setup {k} {what}: {n & 0xFFFF} events, {n >> 16} received"
+        if n >> 16:
+            line += f"; packets {s16(a & 0xFFFF)}..{s16(a >> 16)} us after the window's start"
+        print(line, file=out)
+    w = c["conn_rx_words"]
+    print(f"  in use at the end: setup {c['pal_conn_setup']}, {c['pal_setup_moves']} moves; busy waits {c['pal_busy_waits']} "
+          f"(longest {c['pal_busy_us_max']} us); Cordio's response {c['pal_resp_us_max']} us after a packet at most "
+          f"(T_IFS 150); late operations {c['pal_late_ops']}; bad CRC {c['pal_conn_rx_bad']}", file=out)
+    print(f"  the hardware: TXTOG changed after {c['conn_flips']} connection events; {c['conn_acks']} packets with RXSTAT "
+          f"bit 8; the last packet RXSTAT {w & 0xFFFF:04X}, RXDHDR {w >> 16:04X} (length {w >> 24}, NESN {w >> 18 & 1}, "
+          f"SN {w >> 19 & 1}, MD {w >> 20 & 1})", file=out)
+
+
 def show(rep, out):
     print(f"Bluetooth test run {rep['run']}", file=out)
     print(rep["text"], end="" if rep["text"].endswith("\n") else "\n", file=out)
@@ -282,6 +315,7 @@ def show(rep, out):
             print(f"  {addr}  {what}: {ev} events, {flips} TXTOG changes, {rx} received", file=out)
         print("  after the last trial: " + ", ".join(f"{k} {v:04X}" for k, v in t[1].items()), file=out)
     show_rx(rep, out)
+    show_conn(rep, out)
     if rep["cut_text"] or rep["cut_steps"]:
         print("(the FM-1 cut the report short: it did not fit its buffer)", file=out)
 

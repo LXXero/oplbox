@@ -667,12 +667,28 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
         op_buf(b, 0, (const uint8_t *)"\x01\x00", 2, 0, 0);
     /* the windows as le_hw_ioctrl's __set_winsize writes them: WINCNTL0 0x32, the time the receiver listens in WINCNTL2
      * (taken as us from its uses; up to 3b39ab4 the window went into WINCNTL0 and WINCNTL2 stayed 0) */
+    if (b->conn_setup == FM1BLE_CONN_KEEP) {          /* the open's values (E.3), which 58cadc5 left in place */
+        e16(b, FM1BLE_E_WIDEN0, 0);
+        e16(b, FM1BLE_E_WIDEN1, 0x51E7u);
+    } else if (b->conn_setup == FM1BLE_CONN_PAD) {
+        e16(b, FM1BLE_E_WIDEN0, 0);
+        e16(b, FM1BLE_E_WIDEN1, 0x5000u);
+        delay_us = delay_us > FM1BLE_CONN_PAD_US ? delay_us - FM1BLE_CONN_PAD_US : 0u;
+        window_us += 2u * FM1BLE_CONN_PAD_US;
+    } else if (b->conn_setup == FM1BLE_CONN_WIDEN) {
+        uint32_t w = window_us / 2u;                 /* __set_widen(w): w / 625 slots, w % 625 | 0x5000 */
+        e16(b, FM1BLE_E_WIDEN0, w / 625u);
+        e16(b, FM1BLE_E_WIDEN1, (w % 625u) | 0x5000u);
+        delay_us += w;
+    }
     e16(b, FM1BLE_E_WINCNTL0, FM1BLE_WIN0);
     e16(b, FM1BLE_E_WINCNTL1, 0);
     e16(b, FM1BLE_E_WINCNTL2, window_us > 0xFFFFu ? 0xFFFFu : window_us);
     op_arm(b, 7u, delay_us);
     return FM1BLE_OK;
 }
+
+void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup) { b->conn_setup = setup < FM1BLE_CONN_SETUPS ? setup : FM1BLE_CONN_KEEP; }
 
 int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n)
 {
@@ -742,6 +758,11 @@ uint32_t fm1ble_op_service(fm1ble *b, fm1ble_pkt *p)
                 d->rx_scan_req++;
             else
                 d->rx_other++;
+        } else {
+            d->conn_stat = p->stat;
+            d->conn_dhdr = (uint16_t)dhdr;
+            if (p->stat & BIT(8))
+                d->conn_acks++;
         }
         ev |= FM1BLE_EV_RX;
     }
@@ -752,6 +773,9 @@ uint32_t fm1ble_op_service(fm1ble *b, fm1ble_pkt *p)
             (void)tx_next(b);                        /* counts a TXTOG change */
             d->op_adv_done++;
         } else {
+            uint32_t flips = d->tx_flips;
+            (void)tx_next(b);                        /* a TXTOG change: the hardware sent a buffer in the event */
+            d->conn_flips += d->tx_flips - flips;
             d->op_conn_done++;
         }
         ev |= FM1BLE_EV_DONE;

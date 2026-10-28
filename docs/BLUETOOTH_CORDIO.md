@@ -68,18 +68,32 @@ Cordio's PAL"):
   time the PAL saw it minus its time on the air. The scheduler's timer is a deadline checked by `pal_fm1_service`.
 - an operation the baseband never ends ends by its deadline (its start, the window, two packets, 5 ms; an advertising
   event's window is 25 ms for its three channels and the hardware's random delay), so Cordio is never left waiting.
+- a connection event is waited through (since 58cadc5's run): once it is armed, `pal_fm1_service` polls the baseband every
+  2 us until its packet comes or it ends, so the packet's timestamp is that close and Cordio's response goes in at once.
+  At 58cadc5 the PAL ran only when the main loop came back: the FM-1 received the first packet of a connection (inside
+  the wide transmit window), Cordio put the next anchor as late as the loop had been, and the next 17 windows (286 us)
+  missed the central (`pal_conn_ops` 18, `pal_conn_rx` 1; xlap's BlueZ dropped it after 0.56 s). The wait costs the main
+  loop up to Cordio's 300 us load delay plus the window, every connection event (`pal_busy_us_max`). The scheduler's timer
+  is still polled: much later than 300 us (`pal_timer_late_us`; 215 at most at 58cadc5) and Cordio skips the event.
+- where the window lands against the packet is not settled on the chip: the driver has three setups
+  (`fm1ble.h` `FM1BLE_CONN_*`): keep (as up to 58cadc5: WIDEN0/WIDEN1 at the open's values, 487 us of widening the chip may
+  or may not apply), pad (no widening, 625 us earlier and 1250 us longer: covers a slot boundary of the baseband's own) and
+  widen (JieLi's `le_hw_ioctrl` shape: the counter at Cordio's anchor, WIDEN half the window). Each connection event runs
+  one; a missed event moves to the next, an event with its packet keeps it. `pal_setN_counts` and `pal_setN_arr` say what
+  each received and where in its window the packets started.
 
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ
-29). This build attaches no interrupt: everything runs from the main loop, so on the FM-1 a SCAN_RSP and every connection
-response are expected to come too late (the PAL counts them, `resp_late`, and tells Cordio the transmit failed; a scan
+29) or, for connection events, the busy wait above (`pal_resp_us_max` says how long Cordio took). This build attaches no
+interrupt: everything runs from the main loop, so on the FM-1 a SCAN_RSP is expected to come too late (the PAL counts them, `resp_late`, and tells Cordio the transmit failed; a scan
 response may still go out from TX buffer 1 if the hardware sends the last one written there). The host tests call the PAL
 at once, as an interrupt within T_IFS would. Also unchecked: where the hardware's slot boundaries lie against the arming
 write (the model takes one at the write), state 7 with a fixed channel, how TXTOG changes in a connection, the data PDU header
 words, the receive window's unit, the RSSI (not read: Cordio is told 127, not available).
 
-**Tests.** `tests/ble_pal.c` (46 checks; `tests/ble_pal_mutants.py` catches 23 deliberate bugs in the PAL and the driver's
-operations) and `tests/ble_stack.c` (22 checks): NimBLE over Cordio over the PAL with a central doing L2CAP and ATT; with
+**Tests.** `tests/ble_pal.c` (54 checks; `tests/ble_pal_mutants.py` catches 32 deliberate bugs in the PAL and the driver's
+operations; the model sends a connection response from the TX slot as it is T_IFS after the packet, and a connection polled
+every 200 us, as on the FM-1, misses most events without the busy wait and none with it) and `tests/ble_stack.c` (22 checks): NimBLE over Cordio over the PAL with a central doing L2CAP and ATT; with
 `run`, the firmware's test run on the same air, every step PASS (docs/BLUETOOTH.md "Cordio path as built" 4 and 5).
 
 ## Size (tools/build.py, JieLi's clang at `-Os -ffunction-sections`, numbers from the build)

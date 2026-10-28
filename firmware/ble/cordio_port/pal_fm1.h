@@ -12,6 +12,8 @@ typedef struct {
     void *ctx;
     uint16_t sch_setup_us;              /* how long before an operation the scheduler's timer fires: 0 = 2000 us (main-loop
                                            polling, not an interrupt: a guess at the loop's latency [measure on FM-1]) */
+    uint8_t no_busy_wait;               /* 1: a connection event is polled like the rest (up to 58cadc5), not waited through */
+    uint8_t conn_setups;                /* the driver's window setups to try (bit n: FM1BLE_CONN_* n); 0: all three */
 } pal_fm1_cfg;
 
 typedef struct {
@@ -31,6 +33,15 @@ typedef struct {
     uint32_t stuck;                     /* operations the baseband never ended: ended by their deadline */
     uint32_t aes_calls;                 /* PalCryptoAesEcb reached (no AES here: privacy is off, it should stay 0) */
     uint32_t asserts;
+    /* connection events: waited through (busy wait), the longest wait; the most microseconds from a packet seen to
+     * Cordio's response put in (T_IFS is 150); packets received with a bad CRC */
+    uint32_t busy_waits, busy_us_max, resp_us_max, conn_rx_bad;
+    /* the window setups (fm1ble_op_conn_setup): the one in use, how often a missed event moved to the next; per setup the
+     * events, the packets received, and the earliest and latest packet start after the window's start (Cordio's
+     * dueUsec: the anchor minus the window widening), in us */
+    uint32_t conn_setup, setup_moves;
+    uint32_t set_events[3], set_rx[3];
+    int32_t set_arr_min[3], set_arr_max[3];
 } pal_fm1_stats;
 
 void pal_fm1_attach(const pal_fm1_cfg *cfg);

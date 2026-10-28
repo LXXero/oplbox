@@ -537,8 +537,9 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
    to show").
 5. **Test page, USB report, tool: done and host-tested; the run uses the stack.** docs/BLUETOOTH_PAGE.md;
    `tools/fm1_ble_report.py --run --out DIR` over SysEx 0x66 (report) and 0x67 (run); `tests/ble_report_tool.py`. Eight steps
-   (radio, block, hci, adv_set, adv_air, connect, midi_in, midi_out), one line each with raw bytes, 64 counters (20-29 and
-   32-38 the PAL's, 40-55 the RX trials'); a failed step's note says what to do next. The firmware's run (`firmware/ble/fm1ble_test.c`) does the driver's
+   (radio, block, hci, adv_set, adv_air, connect, midi_in, midi_out), one line each with raw bytes, 80 counters (20-29 and
+   32-38 the PAL's, 40-55 the RX trials', 64-79 the connection events': the busy wait, the window setups, the hardware's
+   words); a failed step's note says what to do next. The firmware's run (`firmware/ble/fm1ble_test.c`) does the driver's
    own advertising first, in three air trials from their own addresses (`adv_set`, `adv_air`) and four RX trials with their
    own receive setups (docs/BLUETOOTH_PAGE.md), and then brings up the stack
    on the radio of the trial that sent (`hci`, `connect`, `midi_in`, `midi_out`). `tests/ble_stack.c run` runs it on the air with the central: every step PASS.
@@ -622,8 +623,10 @@ PAL's three-channel events (all well: `pal_adv_ended` = `pal_adv_events`, `pal_s
 `pal_adv_events`, `pal_done_37`, `_38`, `_39` equal); `evtcount` says whether the hardware counted them; ended events
 that no central hears point at what still differs from the trials (the PDU, which is Cordio's). A CONNECT_IND that came
 shows in `rx_conn_ind` and `pal_adv_conn_ind`; then `pal_conn_ops`, `pal_conn_ended` and `pal_conn_rx` say whether
-connection events run, end and hear the central, and a connection that starts and drops needs the receive interrupt
-(`pal_resp_late` above 0: docs/BLUETOOTH_CORDIO.md).
+connection events run, end and hear the central (`fm1_ble_report.py`'s CONNECTION EVENTS: which window setup received,
+where the packets started in it, how long Cordio took to answer against T_IFS, whether TXTOG changed after the events
+and the central's packets carried RXSTAT bit 8). Events that receive and a connection that still drops point at the
+response: its header (SN and NESN in TXDHDR, which JieLi writes differently: bit 2 per TX slot) or its timing.
 
 ## Open questions
 

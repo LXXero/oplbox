@@ -57,6 +57,17 @@ static void run_us(uint64_t us)
     }
 }
 
+/* polled as the FM-1 polls (no interrupt): the main loop comes back every step_us */
+static void run_polled_us(uint64_t us, uint32_t step_us)
+{
+    uint64_t end = bbm.now_us + us;
+    while (bbm.now_us < end) {
+        bb_model_advance_us(step_us);
+        pal_fm1_service();
+        cordio_ctrl_poll();
+    }
+}
+
 /* the first event of this code at or after index `from`, or -1 */
 static int find_ev(int from, uint8_t code, uint8_t sub)
 {
@@ -82,6 +93,52 @@ static int cmd(uint16_t op, const uint8_t *par, uint8_t n)
         if (g_ev[i][0] == 0x0E && g_ev[i][3] == (uint8_t)op && g_ev[i][4] == (uint8_t)(op >> 8))
             return g_ev[i][5];
     return -1;
+}
+
+/* A connection polled from a main loop that comes back every 200 us (the FM-1's PAL runs from the loop: at 58cadc5 it
+ * received 1 packet in 18 connection events, the scheduler's timer at most 215 us late; much later than 300 us, Cordio's
+ * SCH_LOAD_DELAY_US, and Cordio skips events). busy: the PAL waits through each connection event (pal_fm1.c); setups:
+ * the window setups it may try (pal_fm1_cfg conn_setups). Returns the
+ * connection events the model ran whose packet fell outside the peripheral's window; the central writes, the host
+ * sends, the central ends it. */
+static uint32_t polled_conn(fm1ble *b, int busy, uint8_t setups, uint16_t *handle, int *data_ok)
+{
+    static bb_air polled;
+    pal_fm1_cfg pc;
+    uint8_t buf[2];
+    uint32_t missed0 = bbm.air_missed;
+    int k;
+
+    polled = AIR;
+    polled.irq = 0;
+    bbm.air = &polled;
+    memset(&pc, 0, sizeof pc);
+    pc.b = b;
+    pc.no_busy_wait = (uint8_t)!busy;
+    pc.conn_setups = setups;
+    pal_fm1_attach(&pc);
+    memset(&C, 0, sizeof C);
+    buf[0] = 1;
+    cmd(0x200A, buf, 1);
+    g_nev = 0;
+    C.want_conn = 1;
+    run_polled_us(400000, 200);
+    k = find_ev(0, 0x3E, 0x01);
+    *handle = k >= 0 ? (uint16_t)(g_ev[k][4] | g_ev[k][5] << 8) : 0xFFFF;
+    {
+        static const uint8_t att[] = { 0x07, 0x00, 0x04, 0x00, 0x52, 0x10, 0x00, 0x80, 0x80, 0x90, 0x3C, 0x64 };
+        g_nacl = 0;
+        c_send(2, att, sizeof att);
+        run_polled_us(200000, 200);
+        *data_ok = C.connected && C.nq == 0 && g_nacl == 1 && g_acln[0] == 4 + sizeof att;
+    }
+    if (C.connected) {
+        c_send(3, (const uint8_t *)"\x02\x13", 2);
+        run_polled_us(300000, 200);
+    }
+    C.connected = 0;
+    bbm.air = &AIR;
+    return bbm.air_missed - missed0;
 }
 
 static const uint8_t PERIPH[6] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 };   /* least significant first */
@@ -250,6 +307,47 @@ int main(void)
     check(cmd(0x200A, buf, 1) == 0, "advertising enabled again");
     run_us(200000);
     check(C.adv_seen[0] >= 3, "ADV_IND on the air again");
+
+    /* Polled from the main loop (no interrupt), as on the FM-1: waited through, every connection event holds the
+     * central's packet, Cordio's response goes in before T_IFS, data goes both ways; not waited through (up to 58cadc5),
+     * the late timestamps put the anchors late and the windows miss the central's packets, as on the FM-1 */
+    {
+        uint16_t h;
+        int data_ok;
+        uint32_t missed = polled_conn(&B, 1, 0, &h, &data_ok);
+        const pal_fm1_stats *st = pal_fm1_state();
+        check(h != 0xFFFF && missed == 0 && st->conn_rx >= 15 && st->conn_rx + 1u >= st->conn_ops,
+              "polled, waited through: a connection, every event's packet in the window");
+        check(data_ok, "polled, waited through: the central's write reaches the host");
+        check(st->resp_late == 0 && st->busy_waits >= 15 && st->resp_us_max < 150u,
+              "polled, waited through: every response in before T_IFS");
+        check(st->setup_moves == 0 && st->set_rx[FM1BLE_CONN_KEEP] == st->conn_rx && st->set_arr_min[0] >= 0 &&
+              st->set_arr_max[0] <= (int32_t)st->conn_timeout_us + 2600,
+              "polled, waited through: the first setup kept, each packet inside its window");
+        k = find_ev(0, 0x05, 0);
+        check(k >= 0 && (g_ev[k][3] | g_ev[k][4] << 8) == h, "polled: the central ends it");
+        /* not waited through, the window as up to 58cadc5 (one setup): the late timestamps put the anchors late */
+        missed = polled_conn(&B, 0, 1u << FM1BLE_CONN_KEEP, &h, &data_ok);
+        st = pal_fm1_state();
+        check(missed >= 3 && st->conn_rx * 2u < st->conn_ops,
+              "polled, not waited through (58cadc5): most windows miss the central's packets");
+        run_us(2500000);                    /* Cordio's supervision timeout ends that one */
+        /* not waited through, all setups: a missed event moves to the padded window, which holds the late anchor */
+        missed = polled_conn(&B, 0, 0, &h, &data_ok);
+        st = pal_fm1_state();
+        check(st->setup_moves >= 1 && st->set_events[FM1BLE_CONN_PAD] >= 6 && st->set_rx[FM1BLE_CONN_PAD] >= 6,
+              "a missed event moves to the next window setup; the padded one receives");
+        buf[0] = 0;
+        cmd(0x200A, buf, 1);
+        {
+            pal_fm1_cfg pc2;
+            memset(&pc2, 0, sizeof pc2);
+            pc2.b = &B;
+            pal_fm1_attach(&pc2);
+        }
+        buf[0] = 1;
+        check(cmd(0x200A, buf, 1) == 0, "advertising enabled again after the polled connections");
+    }
 
     /* a baseband that never raises a flag: every operation ends by its deadline and Cordio goes on asking */
     {

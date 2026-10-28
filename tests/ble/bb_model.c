@@ -158,22 +158,37 @@ static void air_event(void)
             r = 0;
         }
         if (r > 0 && at >= t && at <= t + win) {
+            /* the packet, then the response T_IFS after its end (conn_respond): what is in the TX slot then goes */
             bbm.now_us = at + bb_model_air_us(r);
             air_rx(req, r, 0);
+            bbm.resp_at = bbm.now_us + 150u;
+            bbm.resp_pending = 1;
             air_irq(1u << 8);
-            bbm.now_us += 150u;
-            n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, pdu);   /* the slot TXTOG names, as for advertising */
-            if (n && a->conn_rsp)
-                a->conn_rsp(a->ctx, bbm.now_us, pdu, n);
-            bbm.now_us += bb_model_air_us(n);
-            if (n)                              /* a buffer sent: TXTOG changes [unchecked in a connection] */
-                air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
+            return;
         } else {
             if (r > 0)
                 bbm.air_missed++;
             bbm.now_us = t + win;
         }
     }
+    air_irq(1u);
+}
+
+/* a connection event's second half, at T_IFS after the central's packet: the PDU of the TX slot TXTOG & 1 names, as for
+ * advertising, TXTOG changed after it [unchecked in a connection], the event flag */
+static void conn_respond(void)
+{
+    const bb_air *a = bbm.air;
+    uint8_t pdu[260];
+    int n;
+    bbm.resp_pending = 0;
+    bbm.now_us = bbm.resp_at;
+    n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, pdu);
+    if (n && a->conn_rsp)
+        a->conn_rsp(a->ctx, bbm.now_us, pdu, n);
+    bbm.now_us += bb_model_air_us(n);
+    if (n)
+        air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
     air_irq(1u);
 }
 
@@ -249,7 +264,14 @@ void bb_model_advance_us(uint64_t us)
 {
     static int in_event;                        /* a delay inside the handler moves the clock, never starts an event */
     uint64_t end = bbm.now_us + us;
-    while (bbm.air && !in_event && bbm.armed && bbm.armed_at_us + bbm.period_us <= end) {
+    while (bbm.air && !in_event && ((bbm.resp_pending && bbm.resp_at <= end) ||
+                                    (bbm.armed && bbm.armed_at_us + bbm.period_us <= end))) {
+        if (bbm.resp_pending && (!bbm.armed || bbm.resp_at <= bbm.armed_at_us + bbm.period_us)) {
+            in_event = 1;
+            conn_respond();
+            in_event = 0;
+            continue;
+        }
         bbm.now_us = bbm.armed_at_us + bbm.period_us;
         bbm.armed = 0;                          /* one-shot: the handler arms the next one */
         if (bbm.silent)                         /* a baseband that runs nothing and raises no flag */

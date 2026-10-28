@@ -38,12 +38,13 @@ typedef struct {
     uint32_t ms;                /* milliseconds the step took, from the run's start to its end */
 } fm1ble_step;
 
-#define FM1BLE_N_CTR    64      /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
+#define FM1BLE_N_CTR    80      /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
 
 /* The counters, in the report's order. tools/fm1_ble_report.py has the same list (tests/ble_report_tool.py holds it to
  * FM1BLE_CTR_NAMES); the firmware at 48ea034 and before sent 24 others (the tool reads those by their count), up to
  * 122afe3 the first 32 of these, with pal_done_37-39 counting the driver's one-channel events that ended, up to 3b39ab4
- * the first 40. The RX trials' four each (rxtN_*) and the receive setup the stack ran on follow. */
+ * the first 40, up to 58cadc5 the first 64. The RX trials' four each (rxtN_*) and the receive setup the stack ran on
+ * follow, then the connection events' (pal_fm1.h: the busy wait, the window setups; fm1ble.h's connection words). */
 enum {
     FM1BLE_C_RADIO_REGS_OK, FM1BLE_C_RADIO_REGS_BAD, FM1BLE_C_VARIANT, FM1BLE_C_RF_COMMON,
     FM1BLE_C_EVENTS, FM1BLE_C_TX_FLIPS, FM1BLE_C_RX_PACKETS, FM1BLE_C_RX_SCAN_REQ,
@@ -57,8 +58,18 @@ enum {
     FM1BLE_C_PAL_CONN_ENDED, FM1BLE_C_PAL_CONN_RX, FM1BLE_C_PAL_REFUSED, FM1BLE_C_EVTCOUNT,
     FM1BLE_C_RXT,                                   /* RX trial k's four: FM1BLE_C_RXT + 4k + FM1BLE_RXT_* */
     FM1BLE_C_RX_STACK_TRIAL = FM1BLE_C_RXT + 16, FM1BLE_C_RX_AGC_TABLE, FM1BLE_C_RX_WIN, FM1BLE_C_AGC_CTL,
-    FM1BLE_C_AGC_RSSI, FM1BLE_C_CONN_WIN, FM1BLE_C_PAL_CONN_TIMEOUT_US, FM1BLE_C_RX_STAT1
+    FM1BLE_C_AGC_RSSI, FM1BLE_C_CONN_WIN, FM1BLE_C_PAL_CONN_TIMEOUT_US, FM1BLE_C_RX_STAT1,
+    FM1BLE_C_PAL_BUSY_WAITS, FM1BLE_C_PAL_BUSY_US_MAX, FM1BLE_C_PAL_RESP_US_MAX, FM1BLE_C_PAL_CONN_RX_BAD,
+    FM1BLE_C_PAL_CONN_SETUP, FM1BLE_C_PAL_SETUP_MOVES, FM1BLE_C_PAL_LATE_OPS, FM1BLE_C_CONN_FLIPS,
+    FM1BLE_C_PAL_SET_COUNTS,                        /* setup k's: FM1BLE_C_PAL_SET_COUNTS + k */
+    FM1BLE_C_CONN_ACKS = FM1BLE_C_PAL_SET_COUNTS + 3,
+    FM1BLE_C_PAL_SET_ARR,                           /* setup k's: FM1BLE_C_PAL_SET_ARR + k */
+    FM1BLE_C_CONN_RX_WORDS = FM1BLE_C_PAL_SET_ARR + 3
 };
+/* the connection events' counters: pal_setN_counts = setup N's events (bits 15-0) and packets received (31-16), each at
+ * most 65535; pal_setN_arr = the earliest (bits 15-0) and latest (31-16) packet start after the window's start, us, as
+ * signed 16-bit (0 with no packet); conn_rx_words = the last connection packet's RXSTAT (15-0, bit 8 "acknowledges ours")
+ * and RXDHDR (31-16) */
 /* an RX trial's counters: counts = events (bits 7-0), TXTOG changes (15-8), packets received (23-16), SCAN_REQs (31-24),
  * each at most 255; stat = the first packet's RXSTAT (15-0) and RXAHDR (31-16), or with none the words RXSTAT0 and RXAHDR0
  * as the trial left them; pkt = that packet's RXDHDR (15-0), the RX buffer it was in (23-16) and LASTCHMAP's low byte
@@ -80,7 +91,11 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
     "rxt2_counts", "rxt2_stat", "rxt2_pkt", "rxt2_bytes", \
     "rxt3_counts", "rxt3_stat", "rxt3_pkt", "rxt3_bytes", \
     "rx_stack_trial", "rx_agc_table", "rx_win", "agc_ctl", \
-    "agc_rssi", "conn_win", "pal_conn_timeout_us", "rx_stat1"
+    "agc_rssi", "conn_win", "pal_conn_timeout_us", "rx_stat1", \
+    "pal_busy_waits", "pal_busy_us_max", "pal_resp_us_max", "pal_conn_rx_bad", \
+    "pal_conn_setup", "pal_setup_moves", "pal_late_ops", "conn_flips", \
+    "pal_set0_counts", "pal_set1_counts", "pal_set2_counts", "conn_acks", \
+    "pal_set0_arr", "pal_set1_arr", "pal_set2_arr", "conn_rx_words"
 
 /* The air trials (adv_air): the driver's own ADV_IND, each trial from its own static random address, so a central's
  * scan (tools/ble_central.py) says which one reached the air. Trial 0: without the shared radio's init (variant 0), at
