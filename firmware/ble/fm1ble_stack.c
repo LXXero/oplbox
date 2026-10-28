@@ -16,6 +16,15 @@ static uint8_t g_sx[64];                /* SysEx from a central is not used by t
 
 static uint32_t now_ms(void *ctx) { (void)ctx; return fm1ble_port_now_us() / 1000u; }
 
+/* The ATT MTU NimBLE offers, connection by connection in turn (ble_nimble.h cfg mtus; since round 8 of the FM-1 Bluetooth
+ * goal). At 1907280 (~/oplbox-ble-runs/1907280-1) BlueZ asked for 517, NimBLE offered 185, the link took 27-octet data
+ * PDUs (Cordio's LL_LENGTH_RSP), and GATT discovery went through ten ATT exchanges until the first response longer than
+ * one data PDU: the 37-byte Read By Type Response, handed over as a start (27 bytes) and a continuation (14). BlueZ never
+ * sent its next request and left 754 events later. With 23 no L2CAP PDU is ever fragmented, either way: the first
+ * connection runs that (the likeliest to resolve GATT), the next one 185 (the fragmented responses, the PDU capture's
+ * air entries: pal_fm1.h PAL_FM1_CAP), and so on in turn. */
+static const uint16_t g_mtus[] = { 23, 185 };
+
 /* HCI as two function calls: the host's commands and ACL to Cordio, Cordio's events and ACL to NimBLE */
 static int to_ctrl(void *ctx, uint8_t type, const uint8_t *p, uint16_t n) { (void)ctx; return cordio_ctrl_from_host(type, p, n); }
 
@@ -75,6 +84,8 @@ int fm1ble_stack_start(fm1ble *b, const uint8_t addr[6])
     nc.pump = pump;
     nc.name = "OPLBOX";
     nc.in = &g_in;
+    nc.mtus = g_mtus;
+    nc.nmtus = (uint8_t)(sizeof g_mtus / sizeof g_mtus[0]);
     if (ble_nimble_init(&nc) != 0) {
         g_st.err = -2;
         return -1;

@@ -427,6 +427,34 @@ int main(void)
               "the central gets it in one data PDU, LLID 2");
         check(find_ev(0, 0x13, 0) >= 0, "Number Of Completed Packets to the host once it was acknowledged");
     }
+
+    /* the host sends one L2CAP PDU longer than a data PDU: NimBLE's 37-byte Read By Type Response of 1907280 (L2CAP length
+     * 37, 41 bytes), in two ACL packets as NimBLE does for Cordio's 27-byte buffers (Packet_Boundary 00, then 01): the
+     * central gets a start (27 bytes, LLID 2) and a continuation (14, LLID 1), and the PAL's fragment trace (pal_fm1.h
+     * PAL_FM1_FRAG) starts at the packet the start answers */
+    {
+        static const uint8_t l2[] = { 0x25, 0x00, 0x04, 0x00, 0x09, 0x07, 0x02, 0x00, 0x02, 0x03, 0x00, 0x00, 0x2A, 0x04,
+                                      0x00, 0x02, 0x05, 0x00, 0x01, 0x2A, 0x06, 0x00, 0x20, 0x07, 0x00, 0x05, 0x2A, 0x09,
+                                      0x00, 0x02, 0x0A, 0x00, 0x3A, 0x2B, 0x0B, 0x00, 0x0A, 0x0C, 0x00, 0x29, 0x2B };
+        uint8_t p[4 + 27], q[4 + 14];
+        const pal_fm1_stats *ps = pal_fm1_state();
+        int got0 = C.ngot;
+        p[0] = (uint8_t)handle; p[1] = (uint8_t)(handle >> 8);
+        p[2] = 27; p[3] = 0;
+        memcpy(p + 4, l2, 27);
+        q[0] = (uint8_t)handle; q[1] = (uint8_t)(handle >> 8 | 1u << 4);    /* Packet_Boundary 01: a continuation */
+        q[2] = 14; q[3] = 0;
+        memcpy(q + 4, l2 + 27, 14);
+        check(ps->frag_conn == 0 && ps->frag_n == 0, "no fragment trace before Cordio hands a fragment");
+        check(cordio_ctrl_from_host(HCI_ACL, p, sizeof p) == 0 && cordio_ctrl_from_host(HCI_ACL, q, sizeof q) == 0,
+              "the controller takes the host's two ACL packets");
+        run_us(100000);
+        check(C.ngot == got0 + 2 && C.gotn[got0] == 2 + 27 && (C.got[got0][0] & 3) == 2 && !memcmp(C.got[got0] + 2, l2, 27) &&
+              C.gotn[got0 + 1] == 2 + 14 && (C.got[got0 + 1][0] & 3) == 1 && !memcmp(C.got[got0 + 1] + 2, l2 + 27, 14),
+              "the central gets it as a start (27 bytes, LLID 2) and a continuation (14, LLID 1)");
+        check(ps->frag_conn == 1 && ps->frag_n >= 2u && (ps->frag[0][0] >> 16 & 3u) == 2u && (ps->frag[0][0] >> 21 & 3u) == 3u,
+              "the fragment trace: the first connection's, from the packet Cordio answered with the start, and later ones");
+    }
     check(pal_fm1_state()->resp_late == late0 && pal_fm1_state()->stuck == 0, "every response in time, no operation stuck");
 
     /* the central ends it: LL_TERMINATE_IND, remote user terminated */
@@ -741,6 +769,20 @@ int main(void)
             polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             check(!bbm.drop_data && h != 0xFFFF && data_ok && g_feat_rsp == 1 && cap_count(st, 1, 3, 0x09) == 1,
                   "ARQ ahead, the feature response not heard: sent again from its slot, heard once, captured once");
+            /* the chip takes the central's ATT write as new on the air but RXTOG does not move (bb_model hold_l2): the PAL
+             * tells Cordio it is a repeat, and the capture keeps it (bit 2 clear) once, after the feature request */
+            bbm.hold_l2 = 1;
+            polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            {
+                int rep = 0, att = 0;
+                for (k = 0; k < (int)st->cap_n; k++) {
+                    const uint8_t *e = st->cap[k];
+                    if (!(e[0] & 1u) && (e[1] & 3u) == 2u && e[2] == 12u && e[6] == 7u && e[10] == 0x52u)
+                        *((e[0] & 4u) ? &att : &rep) += 1;
+                }
+                check(!bbm.hold_l2 && h != 0xFFFF && !data_ok && rep == 1 && att == 0 && st->arq_dup >= 1u,
+                      "ARQ ahead, an ATT write the chip takes without moving RXTOG: lost to the host, captured once as a repeat");
+            }
             g_burst = 2;
             polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             check(h != 0xFFFF && data_ok && g_feat_rsp == 1 && st->later_given == st->later_rx,

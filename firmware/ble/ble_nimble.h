@@ -27,7 +27,14 @@ typedef struct {
     const char *name;                   /* the device name: at most 29 characters; "OPLBOX" */
     ble_midi_in *in;                    /* BLE-MIDI packets written by the central go here */
     uint16_t adv_itvl_min, adv_itvl_max;/* advertising interval, 0.625 ms units; 0: 30 and 60 ms */
+    /* the ATT MTU NimBLE offers (ble_att_set_preferred_mtu, 23-517), the k-th connection mtus[k % nmtus]; nmtus 0: the
+     * build's (syscfg.h BLE_ATT_PREFERRED_MTU, 185). With 23, an ATT PDU and its 4-byte L2CAP header fit one 27-octet
+     * data PDU, so no L2CAP PDU either way is ever fragmented (the FM-1's test run alternates 23 and 185: fm1ble_stack.c) */
+    const uint16_t *mtus;
+    uint8_t nmtus;
 } ble_nimble_cfg;
+
+#define BLE_NIMBLE_CONN_MTUS 4u        /* ble_nimble_status conn_mtu, pref_mtu: the first four connections */
 
 enum { BLE_NIMBLE_OFF, BLE_NIMBLE_STARTING, BLE_NIMBLE_ADVERTISING, BLE_NIMBLE_CONNECTED, BLE_NIMBLE_FAILED };
 
@@ -42,6 +49,9 @@ typedef struct {
     uint8_t notify_on;                  /* the central enabled notifications on the characteristic */
     uint8_t bdaddr[6];                  /* the public address, most significant byte first */
     uint32_t connects, disconnects, writes, notified, notify_failed, update_asked, hci_refused, failures, rx_bad;
+    /* the first BLE_NIMBLE_CONN_MTUS connections: the MTU NimBLE offered (cfg mtus), and the one the central's MTU
+     * exchange settled on (0: no exchange) */
+    uint16_t pref_mtu[BLE_NIMBLE_CONN_MTUS], conn_mtu[BLE_NIMBLE_CONN_MTUS];
 } ble_nimble_status;
 
 /* Starts the host. Returns 0, or a NimBLE error; the state is FAILED then. The host's start-up (a few commands) runs

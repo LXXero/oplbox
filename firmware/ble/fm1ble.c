@@ -815,6 +815,18 @@ uint32_t fm1ble_op_txstate(fm1ble *b)
            ((e[FM1BLE_E_TXBUF0CNTL] & 1u) ? FM1BLE_TXS_BUF0 : 0u) | ((e[FM1BLE_E_TXBUF0CNTL + 1u] & 1u) ? FM1BLE_TXS_BUF1 : 0u);
 }
 
+uint32_t fm1ble_op_slot(fm1ble *b, int s)
+{
+    uint32_t dh, ptr;
+    if (!b->blk)
+        return 0;
+    dh = g16(b, s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
+    ptr = g16(b, s ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0);
+    if (!(dh >> 8) || ptr >= FM1BLE_BLOCK_SIZE)
+        return dh;
+    return dh | (uint32_t)b->blk[ptr] << 16;
+}
+
 int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n)
 {
     if (!b->link_open)
