@@ -147,7 +147,7 @@ stack's with the time and RSSI (its active scan sends the SCAN_REQs the RX trial
 finds the new sequencer port, captures it with `aseqdump`,
 sends a Note On (90 3C 64) with `aseqsend`, waits for the FM-1's Note On (the run's midi_out) and disconnects. A
 connection that drops, fails or resolves no GATT services before the port comes is tried again, up to `--tries` connects
-(default 6), one second apart: each runs the FM-1's next window setup. From the computer the FM-1 is plugged into:
+(default 7), one second apart: each runs the FM-1's next window setup. From the computer the FM-1 is plugged into:
 
 ```
 python3 tools/fm1_ble_report.py --run --wait 30 --central xlap --out ble-run
