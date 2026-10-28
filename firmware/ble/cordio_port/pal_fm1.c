@@ -108,7 +108,7 @@ static uint32_t g_rng;
 
 /* the connection event in flight: armed with setup g_set, its packet seen (and when), the busy wait's start */
 static uint8_t g_set, g_conn_open, g_conn_rx, g_bw_on;
-static uint32_t g_rx_t, g_bw_t0;
+static uint32_t g_rx_t, g_bw_t0, g_win_early;   /* g_win_early: how much earlier than g_due the window was armed to start */
 
 static uint32_t now(void) { return fm1ble_port_now_us(); }
 static uint32_t air_us(uint32_t pdu_len) { return (1u + 4u + pdu_len + 3u) * 8u; }   /* 1M PHY: preamble, AA, PDU, CRC */
@@ -330,6 +330,7 @@ void PalBbBleTxData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
 
 void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
 {
+    uint32_t delay;
     conn_end();                         /* one still open (Cordio went on without its end): ended here */
     op_begin(g_rx_timeout + 2u * FM1BLE_CONN_PAD_US);
     g_wait = W_RX;
@@ -338,10 +339,13 @@ void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
     g_aev = 0;
     if (g_chan <= 36)
         fm1ble_op_conn_setup(g_cfg.b, g_set);
-    if (g_chan > 36 || fm1ble_op_conn(g_cfg.b, delay_to_due(), g_rx_timeout) != FM1BLE_OK) {
+    delay = delay_to_due();
+    if (g_chan > 36 || fm1ble_op_conn(g_cfg.b, delay, g_rx_timeout) != FM1BLE_OK) {
         op_refused();
         return;
     }
+    /* PAD arms the counter FM1BLE_CONN_PAD_US earlier, but fm1ble_op_conn clamps the delay at 0 */
+    g_win_early = g_set == FM1BLE_CONN_PAD ? (delay > FM1BLE_CONN_PAD_US ? FM1BLE_CONN_PAD_US : delay) : 0u;
     g_armed = 1;
     g_kind = K_CONN;
     g_conn_open = 1;
@@ -455,7 +459,8 @@ void pal_fm1_service(void)
             g_held = 1;
             progress = 1;
             if (g_kind == K_CONN && g_conn_open) {
-                int32_t arr = (int32_t)(g_held_ts - g_due);
+                /* from the window's own start for this setup (g_win_early before g_due) */
+                int32_t arr = (int32_t)(g_held_ts - g_due) + (int32_t)g_win_early;
                 g_st.conn_rx++;
                 if (!p.ok)
                     g_st.conn_rx_bad++;
