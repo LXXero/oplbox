@@ -842,7 +842,8 @@ def show_central(c, out):
         print(f"  {addr}  {what}: " + (f"seen at {d['first']:.1f} s, RSSI {d.get('rssi')}" if d else "not seen"), file=out)
     if "connected" in c:
         if c["connected"] and "services" in c:
-            print(f"  GATT services resolved: {'yes' if c['services'] else 'no'}; dropped: "
+            when = f" ({c['services_at']:g} s after the connect)" if c['services'] and c.get('services_at') is not None else ""
+            print(f"  GATT services resolved: {'yes' if c['services'] else 'no'}{when}; dropped: "
                   f"{'after %g s' % c['dropped'] if c.get('dropped') is not None else 'no'}", file=out)
         print(f"  connect: {'yes' if c['connected'] else 'no'}; MIDI port: {c.get('port') or 'none'}; Note On sent: "
               f"{'yes' if c.get('sent') else 'no'}; heard from the FM-1: {c.get('received') or 'nothing'}", file=out)

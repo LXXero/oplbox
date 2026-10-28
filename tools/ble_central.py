@@ -12,8 +12,14 @@ aseqsend, waits for the FM-1's own Note On to come back as a notification, and d
 --timeout (default 120 s).
 
 With --json the last line on stdout is the result as JSON: seen {addr: {first, last, rssi, name}}, stack_seen,
-connected, services (BlueZ resolved the FM-1's GATT services), dropped (seconds after the connect when BlueZ said
-Connected: no, or null), port, sent, received (the aseqdump lines from the FM-1), errors. Without, a short summary.
+connected, services (BlueZ resolved the FM-1's GATT services), services_at (seconds after the connect when it said so,
+or null), dropped (seconds after the connect when BlueZ said Connected: no, or null), port, sent, received (the aseqdump
+lines from the FM-1), errors. Without, a short summary.
+
+BlueZ makes the MIDI port while it is still discovering, and says ServicesResolved: yes only once its discovery ends, which
+can come after the Note On went both ways. So after the MIDI part it goes on reading bluetoothctl for up to 10 s, until
+ServicesResolved: yes or a drop, before it disconnects (the FM-1's run keeps the connection up for the central to close:
+fm1ble_test.h FM1BLE_HOLD_MS).
 
 bluetoothctl says "Connection successful" on LE once its controller has sent the CONNECT_IND, whether or not the
 peripheral got it. So no MIDI port after a connect is first a question of the connection: with no GATT services resolved
@@ -43,7 +49,7 @@ import time
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x01|\x02|\r")
 DEVICE = re.compile(r"\[(NEW|CHG|DEL)\]\s+Device\s+([0-9A-Fa-f:]{17})\s*(.*)")
 PORT = re.compile(r"^\s*(\d+):(\d+)\s+(.*?)\s{2,}(.*)$")
-STEP = {"connect": 25.0, "port": 10.0, "notify": 15.0, "settle": 0.5, "quit": 3.0, "again": 1.0}   # seconds; the tests shorten them
+STEP = {"connect": 25.0, "port": 10.0, "notify": 15.0, "settle": 0.5, "quit": 3.0, "again": 1.0, "services": 10.0}   # seconds; the tests shorten them
 
 
 class Ctl:
@@ -132,6 +138,7 @@ def connect_once(a, ctl, res, stack, end, ports0, device, at, log):
         return False
     att["connected"] = True
     t_conn = time.monotonic()
+    att["connected_at"] = at(t_conn)
     log(f"{at(t_conn):6.2f} connected")
     port_end = min(end, t_conn + STEP["port"])
     while time.monotonic() < port_end and not res["port"] and res["dropped"] is None:
@@ -139,8 +146,8 @@ def connect_once(a, ctl, res, stack, end, ports0, device, at, log):
             if line is None:
                 break
             device(t, line)
-            if re.search(r"ServicesResolved:\s*yes", line):
-                res["services"] = True
+            if re.search(r"ServicesResolved:\s*yes", line) and not res["services"]:
+                res["services"], res["services_at"] = True, round(t - t_conn, 2)
             if re.search(r"Connected:\s*no", line):
                 res["dropped"] = round(t - t_conn, 2)
                 log(f"{at(t):6.2f} BlueZ dropped the connection")
@@ -159,8 +166,8 @@ def run(a, log):
     end = t0 + a.timeout
     stack = a.stack.upper()
     watch = {stack, *(x.upper() for x in a.trials)}
-    res = {"seen": {}, "stack_seen": False, "connected": False, "services": False, "dropped": None, "port": None,
-           "sent": False, "received": [], "errors": [], "attempts": []}
+    res = {"seen": {}, "stack_seen": False, "connected": False, "services": False, "services_at": None, "dropped": None,
+           "port": None, "sent": False, "received": [], "errors": [], "attempts": []}
 
     def at(t):
         return round(t - t0, 2)
@@ -182,6 +189,24 @@ def run(a, log):
         elif m.group(1) == "NEW" and rest:
             d["name"] = rest
         return addr
+
+    def follow(until):
+        """bluetoothctl's lines after the MIDI part, up to `until`: until ServicesResolved: yes or a drop (BlueZ's discovery
+        goes on after the MIDI port comes)"""
+        att = res["attempts"][-1]
+        for t, line in ctl.lines(until) if not res["services"] and res["dropped"] is None else ():
+            if line is None:
+                break
+            device(t, line)
+            if re.search(r"ServicesResolved:\s*yes", line):
+                res["services"], res["services_at"] = True, round(at(t) - att["connected_at"], 2)
+                log(f"{at(t):6.2f} GATT services resolved")
+                break
+            if re.search(r"Connected:\s*no", line):
+                res["dropped"] = round(at(t) - att["connected_at"], 2)
+                log(f"{at(t):6.2f} BlueZ dropped the connection")
+                break
+        att["services"], att["dropped"] = res["services"], res["dropped"]
 
     ctl = Ctl(a.bluetoothctl)
     try:
@@ -214,7 +239,7 @@ def run(a, log):
                 time.sleep(STEP["again"])
                 for k in ("connected", "services", "port"):
                     res[k] = False if k != "port" else None
-                res["dropped"] = None
+                res["dropped"] = res["services_at"] = None
                 res["errors"] = [e for e in res["errors"] if not e.startswith("connect:")]
             if not connect_once(a, ctl, res, stack, end, ports0, device, at, log):
                 continue
@@ -269,6 +294,7 @@ def run(a, log):
         finally:
             dump.kill()
             dump.wait()
+        follow(min(end, time.monotonic() + STEP["services"]))
         return res
     finally:
         if res["connected"]:

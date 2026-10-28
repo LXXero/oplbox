@@ -190,14 +190,16 @@ static uint16_t central_session(void)
 static int c_hci_done(void) { return R.step[FM1BLE_STEP_HCI].result != FM1BLE_NOT_RUN; }
 static int c_conn_done(void) { return R.step[FM1BLE_STEP_CONNECT].result != FM1BLE_NOT_RUN; }
 static int c_run_done(void) { return R.state == FM1BLE_DONE; }
+static int c_out_done(void) { return R.step[FM1BLE_STEP_MIDI_OUT].result != FM1BLE_NOT_RUN; }
 
 /* The Bluetooth test run as the FM-1 runs it (firmware/ble/fm1ble_test.c), here on the model's air with the central: the
  * driver's own advertising first (adv_set, adv_air) and the RX trials, the central scanning actively (a SCAN_REQ to every
  * ADV_IND, as BlueZ's scan le does), then the stack (hci), the central connects (connect), plays a note (midi_in) and is
- * sent one (midi_out). */
+ * sent one (midi_out). The run then keeps the connection up for the central to close (FM1BLE_HOLD_MS): with stay the
+ * central never does and the run closes it once the hold is over. */
 static uint32_t rxt(int k, int w) { return R.ctr[FM1BLE_C_RXT + 4 * k + w]; }
 
-static int test_run(void)
+static int test_run(int stay)
 {
     uint16_t val;
     uint8_t r[64];
@@ -247,7 +249,18 @@ static int test_run(void)
     check(g_run_mtu == 23 && ble_nimble_state()->pref_mtu[0] == 23 && ble_nimble_state()->conn_mtu[0] == 23,
           "the run's first connection: NimBLE offers MTU 23 (fm1ble_stack.c), so the central's 517 settles on 23");
     att_wait(0xFF, r, 300);
-    check(run_until(c_run_done, 6000), "the run ends");
+    check(run_until(c_out_done, 6000) && !run_until(c_run_done, 2000) && ble_nimble_state()->state == BLE_NIMBLE_CONNECTED,
+          "after midi_out the run keeps the connection up for the central (BlueZ resolves GATT services after the MIDI port)");
+    if (!stay)
+        c_send(3, (const uint8_t *)"\x02\x13", 2);  /* LL_TERMINATE_IND: the central closes it */
+    check(run_until(c_run_done, stay ? FM1BLE_HOLD_MS : 3000u), "the run ends");
+    {
+        const fm1ble_step *o = &R.step[FM1BLE_STEP_MIDI_OUT];
+        uint32_t h = o->nraw >= 12 ? (uint32_t)(o->raw[8] | o->raw[9] << 8 | o->raw[10] << 16 | (uint32_t)o->raw[11] << 24) : 0u;
+        check(o->nraw == 12 && (stay ? (h & FM1BLE_HOLD_CLOSED) && (h & 0xFFFFFFu) >= FM1BLE_HOLD_MS
+                                     : !(h & FM1BLE_HOLD_CLOSED) && (h & 0xFFFFFFu) >= 2000u && (h & 0xFFFFFFu) < 5000u),
+              stay ? "midi_out's hold word: the run closed it, after FM1BLE_HOLD_MS" : "midi_out's hold word: the central closed it");
+    }
     check(R.step[FM1BLE_STEP_MIDI_IN].result == FM1BLE_PASS && R.step[FM1BLE_STEP_MIDI_IN].nraw >= 3 &&
           R.step[FM1BLE_STEP_MIDI_IN].raw[0] == 0x90 && R.step[FM1BLE_STEP_MIDI_IN].raw[1] == 0x3C && R.step[FM1BLE_STEP_MIDI_IN].raw[2] == 0x64,
           "the run: midi_in PASS with the central's Note On (90 3C 64) as evidence");
@@ -300,8 +313,9 @@ static int test_run(void)
           R.ctr[FM1BLE_C_PAL_CFG] == (PAL_FM1_TIFS_US | PAL_FM1_STALE_US << 16) &&
           R.ctr[FM1BLE_C_PAL_TX_ORDER] == (FM1BLE_TX_ARQ | FM1BLE_TX_AIR << 4 | FM1BLE_TX_INTIME << 8 | FM1BLE_TX_JIELI << 12),
           "the event log's word d: the mode and Cordio's response; the PAL's budgets and order in the counters");
-    check(ble_nimble_state()->disconnects == 1, "the run closed the connection before turning the radio off");
-    printf("ble_stack run: %d checks, %s (steps' ms: hci %u, connect %u, midi_in %u, midi_out %u)\n", checks, bad ? "FAILED" : "all passed",
+    check(ble_nimble_state()->disconnects == 1 && ble_nimble_state()->state != BLE_NIMBLE_CONNECTED,
+          "the connection is closed before the radio goes off");
+    printf("ble_stack run%s: %d checks, %s (steps' ms: hci %u, connect %u, midi_in %u, midi_out %u)\n", stay ? "-stay" : "", checks, bad ? "FAILED" : "all passed",
            (unsigned)R.step[FM1BLE_STEP_HCI].ms, (unsigned)R.step[FM1BLE_STEP_CONNECT].ms, (unsigned)R.step[FM1BLE_STEP_MIDI_IN].ms,
            (unsigned)R.step[FM1BLE_STEP_MIDI_OUT].ms);
     return bad;
@@ -319,7 +333,9 @@ int main(int argc, char **argv)
     uint16_t val = 0, h;
 
     if (argc > 1 && !strcmp(argv[1], "run"))
-        return test_run();
+        return test_run(0);
+    if (argc > 1 && !strcmp(argv[1], "run-stay"))
+        return test_run(1);
     bb_model_reset();
     check(fm1ble_radio_up(&B, 0, NULL) == FM1BLE_OK && fm1ble_bb_init(&B, blk) == FM1BLE_OK, "the driver comes up on the model");
     bbm.air = &AIR;

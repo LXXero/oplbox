@@ -99,6 +99,18 @@ check(r["connected"] and r["services"] and r["dropped"] is None and r["port"] ==
       and r["errors"] == [] and len(r["attempts"]) == 3 and [t["dropped"] is not None for t in r["attempts"]] == [True, True, False],
       f"dropfirst: the third connect comes up and the Note On goes both ways: {r}")
 check(cmds.count("connect C2:46:4D:31:00:01") == 3, f"dropfirst: three connects: {cmds}")
+# BlueZ makes the MIDI port before its discovery ends: ServicesResolved: yes comes after the port (and here after the
+# Note On), and the central goes on reading for it before it disconnects
+rc, r, cmds, sent, err = central("lateservices")
+check(r["services"] and r["services_at"] is not None and r["services_at"] >= 0.4 and r["port"] == "128:0" and
+      r["sent"] and len(r["received"]) == 1 and r["errors"] == [] and r["attempts"][-1]["services"] and
+      r["dropped"] is None, f"lateservices: services resolved after the port, still read: {r}")
+check("GATT services resolved" in err and cmds.count("disconnect C2:46:4D:31:00:01") == 1,
+      f"lateservices: said on stderr, then one disconnect: {cmds}")
+out = io.StringIO()
+br.show_central(r, out)
+check("GATT services resolved: yes (" in out.getvalue() and "s after the connect); dropped: no" in out.getvalue(),
+      f"show_central, services after the port:\n{out.getvalue()}")
 noservices_cmds = central("noservices")[2]
 check(noservices_cmds.count("disconnect C2:46:4D:31:00:01") >= 2, f"noservices: closed before connecting again: {noservices_cmds}")
 

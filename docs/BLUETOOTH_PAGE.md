@@ -80,7 +80,7 @@ The stack then runs with the gain table and the window of the first of trials 2,
 | `hci` | NimBLE's start-up went through Cordio and the PAL and ended with advertising on (via Cordio) | Cordio's commands, events, heap used, NimBLE's fail code, refused sends (u32 each), the address |
 | `connect` | a central connected within the wait | interval, latency, timeout, ATT MTU (u32 each); on a failure, the last received PDU's first bytes |
 | `midi_in` | a BLE-MIDI write from the central reached the MIDI input (`ble_midi_get`) | the message (3 bytes), the writes counted |
-| `midi_out` | OPLBOX's notification of a Note On (90 3C 64) was acknowledged: Cordio sent Number Of Completed Packets | notified, NOCP events (u32 each) |
+| `midi_out` | OPLBOX's notification of a Note On (90 3C 64) was acknowledged: Cordio sent Number Of Completed Packets | notified, NOCP events (u32 each); after a PASS the run keeps the connection up for the central to close, at most 15 s (`FM1BLE_HOLD_MS`), then a u32: the ms it stayed up, bit 31 set when the run closed it itself |
 
 The counters (`fm1ble_ctr_name`, `FM1BLE_CTR_NAMES` in fm1ble_test.h, the tool's list held equal to it): the driver's
 `radio_regs_ok`, `radio_regs_bad`, `variant` (the radio the stack runs on), `rf_common`, `events` (event flags since the
@@ -162,7 +162,9 @@ the MIDI part BlueZ built with MIDI support, which makes an ALSA sequencer port 
 or later for `aseqdump` and `aseqsend`). It scans (LE) and logs every advertisement from the trials' addresses and the
 stack's with the time and RSSI (its active scan sends the SCAN_REQs the RX trials count), then connects to the stack,
 finds the new sequencer port, captures it with `aseqdump`,
-sends a Note On (90 3C 64) with `aseqsend`, waits for the FM-1's Note On (the run's midi_out) and disconnects. A
+sends a Note On (90 3C 64) with `aseqsend`, waits for the FM-1's Note On (the run's midi_out), then up to 10 s more for
+BlueZ's `ServicesResolved: yes` (its discovery ends after it made the port; the FM-1 keeps the connection up for this)
+and disconnects. A
 connection that drops, fails or resolves no GATT services before the port comes is tried again, up to `--tries` connects
 (default 7), one second apart: each runs the FM-1's next TX mode. The report tool runs on the computer the FM-1 is
 plugged into (USB MIDI), and the central on whichever computer is near it; the two can be the same one. With the FM-1 on
