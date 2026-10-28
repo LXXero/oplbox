@@ -885,8 +885,9 @@ def run(a, backend, out):
         dev.link.close()
         if btmon and not read_ok:                    # start() or read() failed: do not leave the capture running
             btmon.stop()
-        if central and central.p.poll() is None and not a.run:
+        if central and central.p.poll() is None and not read_ok:
             central.p.kill()
+            central.p.wait()
     rep = decode(raw)
     if want is not None and rep["run"] != want:
         if btmon:
