@@ -537,8 +537,8 @@ for want in "   200 ms  wifi page 0: WIFI TEST (STAGE 9)" "   300 ms  ble page 0
             "ble page 0: COUNTERS 11/24   20/33" "ble page 1: PAL_SET3_COUNTS" "ble page 4: PAL_LOG_N" \
             "ble page 0: COUNTERS 15/24   24/33" "ble page 8: EV11_C" \
             "ble page 0: COUNTERS 16/24   25/33" "ble page 1: PAL_SET4_COUNTS" "ble page 7: PAL_CONNS" \
-            "ble page 0: COUNTERS 20/24   29/33" "ble page 1: NIMBLE_CONNS" "ble page 2: PROBE_N" \
-            "ble page 0: COUNTERS 24/24   33/33" "ble page 8: PROBE_WINDOWS" "ble page 0: BLUETOOTH TEST (STAGE 5)   1/33" \
+            "ble page 0: COUNTERS 20/24   29/33" "ble page 1: NIMBLE_CONNS" "ble page 2: PAL_STALE_RX" \
+            "ble page 0: COUNTERS 24/24   33/33" "ble page 8: PAL_RESP_US_MIN" "ble page 0: BLUETOOTH TEST (STAGE 5)   1/33" \
             "  5500 ms  wifi page 0: WIFI TEST (STAGE 9)"; do
   grep -qF -- "$want" build/host/ble_page.txt || { echo "FAIL: Bluetooth page: no line '$want'" >&2; exit 1; }
 done

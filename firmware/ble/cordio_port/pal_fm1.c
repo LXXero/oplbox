@@ -55,6 +55,15 @@
  *
  * What a baseband that never answers does: each operation has a deadline (its start, the window and two packets, plus
  * 5 ms); past it the operation counts as ended, so Cordio is never left waiting (the stub PAL's hang, docs/BLUETOOTH_CORDIO.md).
+ * A connection event ended that way is halted (fm1ble_op_halt), so it cannot finish into the next one.
+ *
+ * The TX side (since f0e6d08). Each connection also runs one of the driver's TX modes (fm1ble.h FM1BLE_TX_*), the k-th
+ * connection the k-th enabled one of PAL_FM1_TX_ORDER, kept with the setup once a connection received PAL_FM1_GOOD
+ * packets. A packet flag that starts PAL_FM1_STALE_US or more before the event's window could open is an earlier event's,
+ * raised late (at f0e6d08 one came 1192 us before dueUsec and Cordio anchored on it): it is dropped, not given to Cordio.
+ * In FM1BLE_TX_INTIME a response Cordio hands over more than PAL_FM1_TIFS_US after the packet was seen is not put in
+ * (the empty PDU repeating the last SN goes) and Cordio is told the transmit failed. The log's and the summaries' fourth
+ * words say what the TX side did (pal_fm1.h).
  */
 #include <string.h>
 #include "wsf_types.h"
