@@ -285,10 +285,12 @@ static int test_run(void)
         }
         check(c[16] == 23u && c[17] == 0u && c[24] == 23u && c[25] == 0u && (c[18] | c[26]) == 0u && c[15] == 0u &&
               c[32 + 7] == 0u, "the capture's head: MTU 23 offered and settled on the first connection, no fragment");
-        check(c[0] == 2u && c[2] == PAL_FM1_CAP_BYTES && n == c[1] && n >= 4 && c[3] == 1u && (c[4] | c[5] << 8) == 1 &&
+        check(c[0] == 3u && c[2] == PAL_FM1_CAP_BYTES && n == c[1] && n >= 4 && c[3] == 1u && (c[4] | c[5] << 8) == 1 &&
               c[6] == 0xFFu && c[7] == PAL_FM1_ARQ_STUCK && (c[8] | c[9] << 8) == 1 && (c[10] | c[11] << 8) == 0 &&
               (c[12] | c[13] << 8) >= 3 && c[14] == PAL_FM1_L2_GOOD && from_c >= 2 && from_n >= 2,
               "the PDU capture: ARQ ahead, bit 2 changed at the first packet, ATT PDUs from the central and from NimBLE");
+        check((c[128] | c[129] | c[130] | c[131]) == 0u && (c[140] | c[141] | c[142] | c[143]) == 0u,
+              "the capture's cross-check (layout 3): the central's SN and RXTOG agree at every packet");
     }
     check(R.ctr[FM1BLE_C_PAL_STALE_RX] == 0 && R.ctr[FM1BLE_C_PAL_HALTS] == 0 && R.ctr[FM1BLE_C_PAL_RESP_SKIPPED] == 0 &&
           (R.ctr[FM1BLE_C_PAL_RESP_HIST] & 0xFFu) > 0 && R.ctr[FM1BLE_C_PAL_RESP_US_MIN] < 50u &&

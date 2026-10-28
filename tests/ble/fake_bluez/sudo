@@ -1,0 +1,7 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# A stand-in for sudo, for tests/ble_report_tool.py: runs the command after its options (-n), as the user;
+# FAKE_SUDO_DENY set: refuses, as sudo -n does when it would ask for a password.
+if [ -n "$FAKE_SUDO_DENY" ]; then echo "sudo: a password is required" >&2; exit 1; fi
+while [ "${1#-}" != "$1" ]; do shift; done
+exec "$@"

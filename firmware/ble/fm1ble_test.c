@@ -116,7 +116,8 @@ static void rx_seen(uint32_t k)
 }
 
 typedef char cap_fits[FM1BLE_CAP_MAX == FM1BLE_CAP_HEAD + PAL_FM1_CAP * PAL_FM1_CAP_BYTES ? 1 : -1];
-typedef char cap_head_fits[FM1BLE_CAP_HEAD == 32u + 8u * PAL_FM1_FRAG && BLE_NIMBLE_CONN_MTUS == 4u ? 1 : -1];
+typedef char cap_head_fits[FM1BLE_CAP_HEAD == 32u + 8u * PAL_FM1_FRAG + 12u + 4u * PAL_FM1_SNX &&
+                            BLE_NIMBLE_CONN_MTUS == 4u ? 1 : -1];
 
 static void put16le(uint8_t *p, uint32_t v) { v = v > 0xFFFFu ? 0xFFFFu : v; p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 
@@ -126,7 +127,7 @@ static void capture(fm1ble_run *r, const pal_fm1_stats *p)
     uint32_t n = p->cap_n < PAL_FM1_CAP ? p->cap_n : PAL_FM1_CAP;
     uint8_t *c = r->cap;
     memset(c, 0, FM1BLE_CAP_HEAD);
-    c[0] = 2;
+    c[0] = 3;
     c[1] = (uint8_t)n;
     c[2] = PAL_FM1_CAP_BYTES;
     c[3] = (uint8_t)(p->arq_conns > 0xFFu ? 0xFFu : p->arq_conns);
@@ -151,6 +152,15 @@ static void capture(fm1ble_run *r, const pal_fm1_stats *p)
             c[33 + 4 * k] = (uint8_t)(w >> 8);
             c[34 + 4 * k] = (uint8_t)(w >> 16);
             c[35 + 4 * k] = (uint8_t)(w >> 24);
+        }
+        for (k = 0; k < 6u; k++)
+            put16le(c + 128 + 2 * k, p->sn_x[k]);
+        for (k = 0; k < PAL_FM1_SNX; k++) {
+            uint32_t w = k < p->snx_n ? p->snx[k] : 0u;
+            c[140 + 4 * k] = (uint8_t)w;
+            c[141 + 4 * k] = (uint8_t)(w >> 8);
+            c[142 + 4 * k] = (uint8_t)(w >> 16);
+            c[143 + 4 * k] = (uint8_t)(w >> 24);
         }
     }
     memcpy(c + FM1BLE_CAP_HEAD, p->cap, n * PAL_FM1_CAP_BYTES);

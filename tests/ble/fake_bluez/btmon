@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# A stand-in for BlueZ's btmon, for tests/ble_report_tool.py (tools/fm1_ble_report.py --btmon): a connection to the stack,
+# GATT's first requests and answers, a request left unanswered, the central's disconnection, in btmon's text format (made
+# up from its format, not recorded); then it waits until it is stopped.
+import sys
+import time
+sys.stdout.write("""Bluetooth monitor ver 5.79
+= Note: Linux version 6.12.0 (x86_64)                                  0.000000
+> HCI Event: LE Meta Event (0x3e) plen 31                        #10 [hci0] 23.812345
+      LE Enhanced Connection Complete (0x0a)
+        Status: Success (0x00)
+        Handle: 3585
+        Role: Central (0x00)
+        Peer address type: Random (0x01)
+        Peer address: C2:46:4D:31:00:01 (Static)
+< ACL Data TX: Handle 3585 flags 0x00 dlen 7                     #20 [hci0] 23.912345
+      ATT: Exchange MTU Request (0x02) len 2
+        Client RX MTU: 517
+> ACL Data RX: Handle 3585 flags 0x02 dlen 7                     #22 [hci0] 23.950000
+      ATT: Exchange MTU Response (0x03) len 2
+        Server RX MTU: 23
+> HCI Event: LE Meta Event (0x3e) plen 12                        #23 [hci0] 23.960000
+      LE Data Length Change (0x07)
+        Max TX octets: 27
+< ACL Data TX: Handle 3585 flags 0x00 dlen 11                    #30 [hci0] 24.100000
+      ATT: Read By Type Request (0x08) len 6
+        Handle range: 0x000d-0xffff
+        Attribute type: Characteristic (0x2803)
+> HCI Event: Number of Completed Packets (0x13) plen 5           #31 [hci0] 24.120000
+        Num handles: 1
+> HCI Event: Disconnect Complete (0x05) plen 4                   #40 [hci0] 54.200000
+        Status: Success (0x00)
+        Handle: 3585
+        Reason: Remote User Terminated Connection (0x13)
+""")
+sys.stdout.flush()
+while True:
+    time.sleep(1)

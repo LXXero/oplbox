@@ -220,7 +220,7 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
 /* The PDU capture (since round 7 of the FM-1 Bluetooth goal): the PAL's (pal_fm1.h PAL_FM1_CAP, PAL_FM1_CAP_BYTES, 32 of
  * 20 bytes) and ARQ's ways, after the steps' frames in the report as one more frame, index FM1BLE_STEPS
  * (tools/fm1_ble_report.py prints it as PDU CAPTURE). Its bytes: a head of FM1BLE_CAP_HEAD,
- *   0 the layout (2; 1 up to round 7: bytes 0-14 only, a 16-byte head); 1 the entries; 2 an entry's bytes; 3 the ARQ
+ *   0 the layout (3; 2 up to 807d70f: bytes 0-127 only, a 128-byte head; 1 up to round 7: bytes 0-14 only, a 16-byte head); 1 the entries; 2 an entry's bytes; 3 the ARQ
  *   connections started (at most 255); 4-5 the first 16 connections that ran ARQ ahead (bit k: connection k); 6 the way
  *   kept (1 ahead, 0 in T_IFS, 0xFF none); 7 PAL_FM1_ARQ_STUCK; 8-9 and 10-11 bit 2 changed at a first packet and after
  *   PAL_FM1_ARQ_STUCK; 12-13 the responses written ahead; 14 PAL_FM1_L2_GOOD; 15 the connection the fragment trace is of
@@ -228,8 +228,10 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
  *   16-23 the ATT MTU NimBLE offered on each of the first four connections and 24-31 the one their MTU exchange settled
  *   on (u16 each, 0: none; ble_nimble.h pref_mtu, conn_mtu; since round 8);
  *   32-127 the fragment trace (pal_fm1.h PAL_FM1_FRAG): 12 packets of two u32 words, 0 for none;
+ *   128-139 the cross-check's six counts (pal_fm1.h sn_x, u16 each) and 140-159 its first five words (PAL_FM1_SNX, u32
+ *   each, 0 for none; since round 2 of the resumed goal);
  * then the entries as pal_fm1.h lays them out. */
-#define FM1BLE_CAP_HEAD     128u
+#define FM1BLE_CAP_HEAD     160u
 #define FM1BLE_CAP_MAX      (FM1BLE_CAP_HEAD + 32u * 20u)
 
 enum { FM1BLE_IDLE, FM1BLE_RUNNING, FM1BLE_DONE };

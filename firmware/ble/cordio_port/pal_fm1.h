@@ -60,8 +60,24 @@ typedef struct {
  * last connection (at e3d2a74 the second connection's first packet moved it, and the central took every one of Cordio's
  * PDUs after it as a repeat: 244 sent again, RXTOG moving at the central's packets, TXTOG never), so bit 2 of both slots
  * is changed. And PAL_FM1_ARQ_STUCK packets in a row at which RXTOG moved (the central heard the chip's NESN) and TXTOG
- * did not (it took nothing the chip sent) change it too. */
+ * did not (it took nothing the chip sent) change it too (since round 2 of the resumed goal: packets new by their SN,
+ * below, in place of RXTOG moving). */
 #define PAL_FM1_ARQ_STUCK   3u
+
+/* New or a repeat, in ARQ (since round 2 of the resumed FM-1 Bluetooth goal, 807d70f): the central's SN, RXDHDR bit 3
+ * (bits 4-0 as on the air: LLID, NESN, SN, MD; the 1b251ea and 807d70f traces alternate bit 3 packet by packet and set
+ * bit 4 only before a second packet in the event), against the SN the PAL expects next (0 at a connection's start, changed
+ * at each new packet with a good CRC), as the Core Specification does it (Vol 6 Part B 4.5.9). Up to 807d70f RXTOG
+ * decided: in the first connection the central's Read By Type request at event 33 (SN 1 after SN 0 at event 29, so new)
+ * came with RXTOG unmoved, the PAL told Cordio it was a repeat, and the central's next packets (SN 0, then 1) show the
+ * chip had acknowledged it on the air, so BlueZ never got an answer and GATT never resolved; RXTOG also moved at every
+ * packet with a bad CRC in the header trace (5 of 5). The cross-check (sn_x below) counts the packets at which RXTOG and
+ * the SN disagree, and at which TXTOG and the central's NESN disagree on whether the central took the chip's last packet
+ * (its NESN changed since its previous packet), and keeps the first PAL_FM1_SNX of them, one word each:
+ *   15-0 the connection's event (the first 0); 20-16 RXDHDR bits 4-0; 21 RXTOG moved at it; 22 a packet with a bad CRC
+ *   came since the previous good one; 23 TXTOG moved since the previous good packet; 27-24 the connection since the
+ *   attach (1-15, 15 and later 15); 28 which: 0 the SN and RXTOG, 1 the NESN and TXTOG. */
+#define PAL_FM1_SNX         5
 
 /* The PDU capture: the first PAL_FM1_CAP data PDUs with a payload since pal_fm1_attach, either way, PAL_FM1_CAP_BYTES
  * each: the central's as the chip received them (good CRC: new to Cordio, and since round 8 also those Cordio was told
@@ -147,7 +163,8 @@ typedef struct {
  * And for each of the first PAL_FM1_CONNS connections: ll_ops, the control opcodes 0-31 the central sent (bit n: opcode n,
  * good CRC); ll_cnt, the central's L2CAP PDUs (LLID 2) Cordio took as new (7-0), Cordio's non-empty responses put in
  * (15-8), the packets Cordio was told did not acknowledge its last PDU (23-16), RXTOG's changes (31-24), each at most 255.
- * arq_dup and arq_unwritten (ARQ only): packets Cordio was told were repeats (RXTOG unchanged once it had moved), and
+ * arq_dup and arq_unwritten (ARQ only): packets Cordio was told were repeats (their SN not the one expected; up to 807d70f
+ * RXTOG unchanged once it had moved), and
  * responses that did not go in (too late, or after the event), so Cordio was told its PDU was not acknowledged.
  * Packets after the first in a connection event (since round 6 of the FM-1 Bluetooth goal: at 1b251ea BlueZ sent
  * LL_LENGTH_REQ with MD set and its first L2CAP PDU T_IFS after the response, in the same event; the chip's ARQ
@@ -215,6 +232,13 @@ typedef struct {
      * started) */
     uint32_t frag_n, frag_conn;
     uint32_t frag[PAL_FM1_FRAG][2];
+    /* the cross-check (PAL_FM1_SNX above), ARQ only: good packets new by their SN at which RXTOG did not move, and repeats
+     * by their SN at which it did; packets with a bad CRC at which RXTOG moved, and did not; good packets after a good one
+     * (no bad CRC between) at which TXTOG moved and the central's NESN stayed, and at which the NESN changed and TXTOG
+     * stayed; the disagreements kept so far and their words */
+    uint32_t sn_x[6];
+    uint32_t snx_n;
+    uint32_t snx[PAL_FM1_SNX];
 } pal_fm1_stats;
 
 void pal_fm1_attach(const pal_fm1_cfg *cfg);
