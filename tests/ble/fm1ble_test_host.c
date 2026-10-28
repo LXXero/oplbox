@@ -130,15 +130,25 @@ static void finish(fm1ble_run *r, int i)
             r->ctr[FM1BLE_C_PAL_ARQ_DUP] = 1u | 4u << 16; r->ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] = 1u | 3u << 16;
             r->ctr[FM1BLE_C_STACK_ACL] = 3u | 2u << 16; r->ctr[FM1BLE_C_STACK_NOCP] = 2u;
             r->ctr[FM1BLE_C_NIMBLE_MTU] = 185u | 1u << 16; r->ctr[FM1BLE_C_PAL_RXTOG] = 1u;
-            /* the PDU capture (made up): two ARQ connections, the first ahead; bit 2 changed once at a first packet;
-             * BlueZ's MTU request, NimBLE's answer written ahead, BlueZ's Read By Group Type request and NimBLE's error */
+            /* the PDU capture (made up, layout 2): two ARQ connections, the first ahead; bit 2 changed once at a first
+             * packet; MTU 23 offered and settled on the first connection, 185 on the second; the second's fragment trace,
+             * two packets (Cordio's start answered, then the start in the slot TXTOG names); BlueZ's MTU request,
+             * NimBLE's answer written ahead, BlueZ's Read By Group Type request and NimBLE's error, and on the second
+             * connection a Read By Type request Cordio was told was a repeat */
             {
                 static const uint8_t cap[] = {
-                    1, 4, 0x14, 2, 1, 0, 0xFF, 3, 1, 0, 0, 0, 0x28, 0, 3, 0,
-                    6, 2, 7, 4, 0, 1, 3, 0, 4, 0, 2, 5, 2, 0, 0, 0, 0, 0, 0, 0,
-                    7, 0x0A, 7, 5, 0, 9, 3, 0, 4, 0, 3, 0x17, 0, 0, 0, 0, 0, 0, 0, 0,
-                    6, 2, 0x0B, 7, 0, 1, 7, 0, 4, 0, 0x10, 1, 0, 0xFF, 0xFF, 0, 0x28, 0, 0, 0,
-                    7, 0x0E, 9, 8, 0, 0x0C, 5, 0, 4, 0, 1, 0x10, 1, 0, 0x0A, 0, 0, 0, 0, 0 };
+                    2, 5, 0x14, 2, 1, 0, 0xFF, 3, 1, 0, 0, 0, 0x28, 0, 3, 2, 0x17, 0, 0xB9, 0,
+                    0, 0, 0, 0, 0x17, 0, 0xB9, 0, 0, 0, 0, 0, 0xE2, 7, 0xF2, 0x4B, 5, 0, 0, 0xA5,
+                    0x61, 0, 0xE9, 0x15, 2, 0x1B, 0x25, 0xA6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 6, 2, 7, 4, 0, 1, 3, 0, 4, 0, 2, 5,
+                    2, 0, 0, 0, 0, 0, 0, 0, 7, 0x0A, 7, 5, 0, 9, 3, 0, 4, 0, 3, 0x17,
+                    0, 0, 0, 0, 0, 0, 0, 0, 6, 2, 0x0B, 7, 0, 1, 7, 0, 4, 0, 0x10, 1,
+                    0, 0xFF, 0xFF, 0, 0x28, 0, 0, 0, 7, 0x0E, 9, 8, 0, 0x0C, 5, 0, 4, 0, 1, 0x10,
+                    1, 0, 0x0A, 0, 0, 0, 0, 0, 0x12, 2, 0x0B, 0x20, 0, 0, 7, 0, 4, 0, 8, 0x0D,
+                    0, 0xFF, 0xFF, 3, 0x28, 0, 0, 0 };
                 memcpy(r->cap, cap, sizeof cap);
                 r->ncap = sizeof cap;
             }

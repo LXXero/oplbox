@@ -151,12 +151,20 @@ static int c_advertising(void) { return is_state(BLE_NIMBLE_ADVERTISING) && C.ad
 static int c_connected(void) { return is_state(BLE_NIMBLE_CONNECTED); }
 static int c_notify_on(void) { return ble_nimble_state()->notify_on; }
 
+static uint16_t g_run_mtu;            /* the MTU NimBLE answered the central's exchange with (central_session) */
+
 /* the central's side of a session: find the characteristic, subscribe, play a Note On; returns the value handle */
 static uint16_t central_session(void)
 {
-    uint8_t r[64];
+    uint8_t r[200];
     uint16_t val = 0, h;
     int n, i;
+    {                                   /* BlueZ's first ATT request: Exchange MTU for 517 */
+        uint8_t q[3] = { 0x02, 0x05, 0x02 };
+        att_send(q, sizeof q);
+        n = att_wait(0x03, r, 2000);
+        g_run_mtu = n == 3 && r[0] == 0x03 ? (uint16_t)(r[1] | r[2] << 8) : 0;
+    }
     for (h = 1; h && !val;) {
         uint8_t q[7] = { 0x08, (uint8_t)h, (uint8_t)(h >> 8), 0xFF, 0xFF, 0x03, 0x28 };
         att_send(q, sizeof q);
@@ -236,6 +244,8 @@ static int test_run(void)
     check(run_until(c_conn_done, 3000) && R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_PASS, "the run: connect PASS");
     val = central_session();
     check(val != 0, "the central finds the characteristic during the run");
+    check(g_run_mtu == 23 && ble_nimble_state()->pref_mtu[0] == 23 && ble_nimble_state()->conn_mtu[0] == 23,
+          "the run's first connection: NimBLE offers MTU 23 (fm1ble_stack.c), so the central's 517 settles on 23");
     att_wait(0xFF, r, 300);
     check(run_until(c_run_done, 6000), "the run ends");
     check(R.step[FM1BLE_STEP_MIDI_IN].result == FM1BLE_PASS && R.step[FM1BLE_STEP_MIDI_IN].nraw >= 3 &&
@@ -273,7 +283,9 @@ static int test_run(void)
             if ((e[1] & 3u) == 2u && e[2] >= 5u && e[8] == 4u && e[9] == 0u)
                 *((e[0] & 1u) ? &from_n : &from_c) += 1;
         }
-        check(c[0] == 1u && c[2] == PAL_FM1_CAP_BYTES && n == c[1] && n >= 4 && c[3] == 1u && (c[4] | c[5] << 8) == 1 &&
+        check(c[16] == 23u && c[17] == 0u && c[24] == 23u && c[25] == 0u && (c[18] | c[26]) == 0u && c[15] == 0u &&
+              c[32 + 7] == 0u, "the capture's head: MTU 23 offered and settled on the first connection, no fragment");
+        check(c[0] == 2u && c[2] == PAL_FM1_CAP_BYTES && n == c[1] && n >= 4 && c[3] == 1u && (c[4] | c[5] << 8) == 1 &&
               c[6] == 0xFFu && c[7] == PAL_FM1_ARQ_STUCK && (c[8] | c[9] << 8) == 1 && (c[10] | c[11] << 8) == 0 &&
               (c[12] | c[13] << 8) >= 3 && c[14] == PAL_FM1_L2_GOOD && from_c >= 2 && from_n >= 2,
               "the PDU capture: ARQ ahead, bit 2 changed at the first packet, ATT PDUs from the central and from NimBLE");
@@ -300,7 +312,7 @@ int main(int argc, char **argv)
     cordio_ctrl_cfg c;
     pal_fm1_cfg pc;
     ble_nimble_cfg nc;
-    uint8_t r[64], adv[31];
+    uint8_t r[200], adv[31];
     int n, nadv, i;
     uint16_t val = 0, h;
 
@@ -312,6 +324,8 @@ int main(int argc, char **argv)
     bbm.hw_arq = 1;                                  /* the first connection runs FM1BLE_TX_ARQ: SN and NESN are the chip's */
     memset(&pc, 0, sizeof pc);
     pc.b = &B;
+    pc.arq_ways = PAL_FM1_ARQ_AHEAD;                 /* the FM-1's first way (fm1ble_stack.c), and the central misses */
+    bbm.drop_rsp = 3;                                /* every third response: the chip sends again (fragments too) */
     pal_fm1_attach(&pc);
     memset(&c, 0, sizeof c);
     c.to_host.send = ctrl_to_host;
@@ -342,6 +356,15 @@ int main(int argc, char **argv)
     check(run_until(c_connected, 1000), "a CONNECT_IND: NimBLE is connected");
     check(C.chan_bad == 0 && C.aa_bad == 0 && bbm.air_missed == 0, "connection events on the right channels, none missed");
 
+    /* BlueZ's first ATT request (1907280-1): Exchange MTU (0x02) for 517; NimBLE offers 185 (syscfg.h), so the responses
+     * below can be longer than a data PDU's 27 octets and come as a start and continuations (LLID 2, then 1) */
+    {
+        uint8_t q[3] = { 0x02, 0x05, 0x02 };
+        att_send(q, sizeof q);
+        n = att_wait(0x03, r, 2000);
+        check(n == 3 && r[0] == 0x03 && (r[1] | r[2] << 8) == 185, "Exchange MTU: NimBLE answers 185");
+    }
+
     /* find the characteristic: Read By Type (0x08) of characteristic declarations (0x2803) over the whole range */
     for (h = 1; h && !val;) {
         uint8_t q[7] = { 0x08, (uint8_t)h, (uint8_t)(h >> 8), 0xFF, 0xFF, 0x03, 0x28 };
@@ -358,6 +381,30 @@ int main(int argc, char **argv)
     }
     check(val != 0, "the central finds the BLE-MIDI characteristic over ATT");
     check(r[0] == 0x09 && r[1] == 21 && (r[2 + 2] & 0x16) == 0x16, "its properties: read, write without response, notify");
+    {
+        int cont = 0;
+        for (i = 0; i < C.ngot; i++)
+            cont += (C.got[i][0] & 3) == 1 && C.got[i][1];
+        check(cont >= 1, "at MTU 185 a response came fragmented (a continuation, LLID 1), and the central put it together");
+    }
+    /* the fragment trace (pal_fm1.h PAL_FM1_FRAG): from the packet NimBLE's first fragmented response answers, the slot
+     * TXTOG named at each packet: the start (27 bytes, LLID 2) and then the continuation (LLID 1) on the air, in turn */
+    {
+        const pal_fm1_stats *ps = pal_fm1_state();
+        int start = -1, cont = -1;
+        for (i = 0; i < (int)ps->frag_n; i++) {
+            uint32_t sw = ps->frag[i][1];
+            if (start < 0 && (sw & 3u) == 2u && (sw >> 8 & 0xFFu) == 27u)
+                start = i;
+            if (start >= 0 && cont < 0 && (sw & 3u) == 1u && (sw >> 8 & 0xFFu))
+                cont = i;
+        }
+        check(ps->frag_conn == 1 && ps->frag_n >= 4u && ps->frag_n <= PAL_FM1_FRAG && (ps->frag[0][0] >> 16 & 3u) == 2u &&
+              (ps->frag[0][0] & 1u << 22) && (ps->frag[0][1] >> 31) && (ps->frag[0][1] >> 29 & 1u),
+              "the fragment trace: the first connection's, from the packet answered with a start, ahead, its later packets");
+        check(start >= 0 && cont > start && (ps->frag[start][1] >> 16 & 0xFFu) == 0x25u,
+              "and the chip's slot held the start (L2CAP length 37: 25 in its first byte), then the continuation");
+    }
 
     /* subscribe: Write Request (0x12) of 0x0001 to the client characteristic configuration descriptor after the value */
     {

@@ -126,8 +126,10 @@ LL_OPS = ["CONN_UPDATE_IND", "CHANNEL_MAP_IND", "TERMINATE_IND", "ENC_REQ", "ENC
           "PERIPHERAL_FEATURE_REQ", "CONN_PARAM_REQ", "CONN_PARAM_RSP", "REJECT_EXT_IND", "PING_REQ", "PING_RSP",
           "LENGTH_REQ", "LENGTH_RSP", "PHY_REQ", "PHY_RSP", "PHY_UPDATE_IND", "MIN_USED_CHANNELS_IND"]
 LOG_NONE = 0x8000                        # pal_fm1.h PAL_FM1_LOG_NONE
-# the PDU capture (firmware/ble/fm1ble_test.h FM1BLE_CAP_*, since round 7): a frame after the steps', index len(STEPS)
-CAP_HEAD = 16
+# the PDU capture (firmware/ble/fm1ble_test.h FM1BLE_CAP_*, since round 7): a frame after the steps', index len(STEPS);
+# its head by layout: 1 (round 7) 16 bytes, 2 (since round 8) 128: NimBLE's MTUs and the fragment trace (pal_fm1.h PAL_FM1_FRAG)
+CAP_HEADS = {1: 16, 2: 128}
+FRAG = 12
 ATT_OPS = {0x01: "ATT Error Rsp", 0x02: "ATT Exchange MTU Req", 0x03: "ATT Exchange MTU Rsp", 0x04: "ATT Find Information Req",
            0x05: "ATT Find Information Rsp", 0x06: "ATT Find By Type Value Req", 0x07: "ATT Find By Type Value Rsp",
            0x08: "ATT Read By Type Req", 0x09: "ATT Read By Type Rsp", 0x0A: "ATT Read Req", 0x0B: "ATT Read Rsp",
@@ -418,6 +420,28 @@ def ll_op(op, llid):
     return {1: "empty" if not op else "continuation", 2: "L2CAP"}.get(llid, f"LLID {llid}")
 
 
+def trace_line(w):
+    """one header trace word (pal_fm1.h PAL_FM1_TRACE_*): the packet, the toggles, what Cordio was told, its answer"""
+    rx = f"{w & 0x1F:02X} {ll_op(w >> 8 & 0xFF, w & 3):<22s}{'' if w >> 5 & 1 else ' crc'}"
+    tog = f"{'R' if w >> 6 & 1 else '-'}{'T' if w >> 7 & 1 else '-'}"
+    told = f"{'ack' if w >> 23 & 1 else 'nak'} {'new' if w >> 24 & 1 else 'rep'}" if w >> 5 & 1 else "       "
+    ans = "-"
+    if w >> 21 & 1:
+        h = w >> 16 & 0x1F
+        ans = (f"{h:02X} {ll_op(w >> 25, h & 3) if h & 3 != 1 or w >> 25 else 'empty'}"
+               f"{'' if w >> 22 & 1 else ' (not put in)'}")
+    return f"{rx} {tog}  {told}  {ans}"
+
+
+def slot_line(sw):
+    """the fragment trace's second word (pal_fm1.h PAL_FM1_FRAG): the TX slots as the packet was seen"""
+    dh, b0 = sw & 0xFFFF, sw >> 16 & 0xFF
+    ln, llid = dh >> 8, dh & 3
+    kind = {1: "continuation" if ln else "empty", 2: "start", 3: "control"}.get(llid, f"LLID {llid}")
+    return (f"slot {sw >> 24 & 1}: {kind} {ln:2d} bytes, SN {dh >> 2 & 1}, first byte {b0:02X}; the other slot LLID "
+            f"{sw >> 26 & 3}, SN {sw >> 28 & 1}; RXTOG {sw >> 25 & 1}{'; ahead' if sw >> 29 & 1 else ''}")
+
+
 def show_ll(c, out):
     """the link layer (pal_fm1.h PAL_FM1_TRACE_*, ll_ops, ll_cnt) and the host's side, for a report that has them"""
     if "tr0_0" not in c:
@@ -448,15 +472,7 @@ def show_ll(c, out):
         for i, w in enumerate(words):
             if not w:
                 break
-            rx = f"{w & 0x1F:02X} {ll_op(w >> 8 & 0xFF, w & 3):<22s}{'' if w >> 5 & 1 else ' crc'}"
-            tog = f"{'R' if w >> 6 & 1 else '-'}{'T' if w >> 7 & 1 else '-'}"
-            told = f"{'ack' if w >> 23 & 1 else 'nak'} {'new' if w >> 24 & 1 else 'rep'}" if w >> 5 & 1 else "       "
-            ans = "-"
-            if w >> 21 & 1:
-                h = w >> 16 & 0x1F
-                ans = (f"{h:02X} {ll_op(w >> 25, h & 3) if h & 3 != 1 or w >> 25 else 'empty'}"
-                       f"{'' if w >> 22 & 1 else ' (not put in)'}")
-            print(f"    {i:2d}  {rx} {tog}  {told}  {ans}", file=out)
+            print(f"    {i:2d}  {trace_line(w)}", file=out)
 
 
 def pdu_what(llid, data, n):
@@ -489,9 +505,9 @@ def pdu_what(llid, data, n):
 def show_capture(rep, out):
     """the PDU capture and ARQ's ways (fm1ble_test.h FM1BLE_CAP_*, pal_fm1.h PAL_FM1_CAP), for a report that has them"""
     c = rep.get("capture")
-    if not c or len(c) < CAP_HEAD or c[0] != 1:
+    if not c or c[0] not in CAP_HEADS or len(c) < CAP_HEADS[c[0]]:
         return
-    n, size = c[1], c[2]
+    n, size, head = c[1], c[2], CAP_HEADS[c[0]]
     u16 = lambda i: int.from_bytes(c[i:i + 2], "little")  # noqa: E731
     ahead = [str(k + 1) for k in range(16) if u16(4) >> k & 1]
     kept = {0: "in T_IFS", 1: "ahead"}.get(c[6], "none")
@@ -500,9 +516,24 @@ def show_capture(rep, out):
           f"(after {c[14]} L2CAP PDUs from the central); responses written ahead {u16(12)}", file=out)
     print(f"  the chip's SN: bit 2 changed at a connection's first packet {u16(8)}, after {c[7]} packets the central took "
           f"none of {u16(10)}", file=out)
+    if c[0] >= 2:
+        mtus = [f"{k + 1}: offered {u16(16 + 2 * k)}, settled {u16(24 + 2 * k) or 'no exchange'}" for k in range(4)
+                if u16(16 + 2 * k)]
+        print(f"  NimBLE's ATT MTU by connection: {'; '.join(mtus) or 'no connection'}", file=out)
+        words = [(int.from_bytes(c[32 + 8 * k:36 + 8 * k], "little"), int.from_bytes(c[36 + 8 * k:40 + 8 * k], "little"))
+                 for k in range(FRAG)]
+        words = [w for w in words if w[1] >> 31]
+        if not words:
+            print("  fragment trace: Cordio handed no fragment of an L2CAP PDU", file=out)
+        else:
+            print(f"  fragment trace (connection {c[15]}, from the packet Cordio first answered with a fragment): the packet "
+                  f"as the header trace; the TX slot TXTOG named when it was seen, before Cordio's answer went in", file=out)
+            for i, (w, sw) in enumerate(words):
+                print(f"    {i:2d}  {trace_line(w)}", file=out)
+                print(f"          {slot_line(sw)}", file=out)
     print("     # conn    ev  from     hdr len  side  what", file=out)
     for k in range(n):
-        e = c[CAP_HEAD + size * k:CAP_HEAD + size * (k + 1)]
+        e = c[head + size * k:head + size * (k + 1)]
         if len(e) < 6:
             break
         mine, ln, ev = e[0] & 1, e[2], e[3] | e[4] << 8
@@ -512,8 +543,9 @@ def show_capture(rep, out):
         else:
             frm = "central" + ("" if e[0] >> 1 & 1 else "!")
             side = ("R" if e[5] & 1 else "-") + ("T" if e[5] & 2 else "-") + ("+" if e[0] >> 3 & 1 else "")
-        print(f"  {k:4d} {(e[0] >> 4) + 1:4d} {ev:5d}  {frm:8s} {e[1]:02X} {ln:4d}  {side:5s} {pdu_what(e[1] & 3, data, ln)}",
-              file=out)
+        told = "" if mine or e[0] >> 2 & 1 else "  [Cordio was told: a repeat]"
+        print(f"  {k:4d} {(e[0] >> 4) + 1:4d} {ev:5d}  {frm:8s} {e[1]:02X} {ln:4d}  {side:5s} "
+              f"{pdu_what(e[1] & 3, data, ln)}{told}", file=out)
         print(f"{'':30s}{data.hex(' ')}", file=out)
     print("  (from: Cordio+ written ahead; side: Cordio's response time after the packet was seen, or for the central's, "
           "RXTOG/TXTOG changed at it, + a later packet of its event; hdr: RXDHDR bits 4-0 as the chip wrote them, or "

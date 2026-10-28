@@ -295,6 +295,10 @@ int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n);
 /* The TX side's words as they are now, for the PAL's log: TXDHDR0 bits 7-0, TXDHDR1 bits 15-8, TXTOG bit 0 in 16, RXTOG
  * bit 0 in 17, TXBUF0CNTL bit 0 in 18, TXBUF1CNTL bit 0 in 19. 0 before fm1ble_bb_init. */
 uint32_t fm1ble_op_txstate(fm1ble *b);
+/* TX slot s (0, 1) of a connection as the hardware holds it, for the PAL's fragment trace (pal_fm1.h PAL_FM1_FRAG):
+ * TXDHDR0 or TXDHDR1 (15-0: the length in 15-8, the LLID in 1-0, bit 2 ARQ's SN on the air) and the first payload byte
+ * at the slot's TXPTR (23-16; 0 for length 0, or a TXPTR outside the block). 0 before fm1ble_bb_init. */
+uint32_t fm1ble_op_slot(fm1ble *b, int s);
 #define FM1BLE_TXS_TXTOG    (1u << 16)
 #define FM1BLE_TXS_RXTOG    (1u << 17)
 #define FM1BLE_TXS_BUF0     (1u << 18)

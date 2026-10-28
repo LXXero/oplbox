@@ -65,6 +65,9 @@ static int c_conn(void) { return is_state(BLE_NIMBLE_CONNECTED); }
 static int c_notify(void) { return ble_nimble_state()->notify_on; }
 static int c_failed(void) { return is_state(BLE_NIMBLE_FAILED); }
 
+/* the MTU offered connection by connection (ble_nimble.h cfg mtus): the first the build's 185, the second 23 */
+static const uint16_t g_mtus[] = { 185, 23 };
+
 static ble_nimble_cfg cfg(void)
 {
     ble_nimble_cfg c;
@@ -74,6 +77,8 @@ static ble_nimble_cfg cfg(void)
     c.pump = pump;
     c.name = "OPLBOX";
     c.in = &g_in;
+    c.mtus = g_mtus;
+    c.nmtus = 2;
     return c;
 }
 
@@ -113,25 +118,30 @@ static void le16(uint8_t *p, unsigned v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v
 static unsigned rd16(const uint8_t *p) { return (unsigned)(p[0] | p[1] << 8); }
 
 /* One ATT PDU from the central, as one L2CAP PDU in one ACL packet (the central's buffers are not modelled). */
-static void att_send(const uint8_t *pdu, uint16_t n)
+static void att_send_on(uint16_t handle, const uint8_t *pdu, uint16_t n)
 {
     uint8_t l2[HCI_L2CAP_MAX], pkt[HCI_ACL_MAX];
     le16(l2, n);
     le16(l2 + 2, L2CAP_CID_ATT);
     memcpy(l2 + 4, pdu, n);
-    ble_nimble_receive(HCI_ACL, pkt, hci_acl_pack(pkt, 0x0040, HCI_PB_FIRST_FLUSH, l2, (uint16_t)(4 + n)));
+    ble_nimble_receive(HCI_ACL, pkt, hci_acl_pack(pkt, handle, HCI_PB_FIRST_FLUSH, l2, (uint16_t)(4 + n)));
 }
 
-/* Sends a request and waits for the host's one reply. Returns its length (0: none), the PDU in M.last. */
-static uint16_t att_req(const uint8_t *pdu, uint16_t n)
+static void att_send(const uint8_t *pdu, uint16_t n) { att_send_on(0x0040, pdu, n); }
+
+/* Sends a request on this connection and waits for the host's one reply. Returns its length (0: none), the PDU in
+ * M.last. */
+static uint16_t att_req_on(uint16_t handle, const uint8_t *pdu, uint16_t n)
 {
     uint32_t before = M.l2cap_from_host;
     uint32_t t;
-    att_send(pdu, n);
+    att_send_on(handle, pdu, n);
     for (t = 0; t < 100 && M.l2cap_from_host == before; t++)
         run(1);
     return M.l2cap_from_host == before ? 0 : M.nlast;
 }
+
+static uint16_t att_req(const uint8_t *pdu, uint16_t n) { return att_req_on(0x0040, pdu, n); }
 
 static int is_err(uint8_t req, uint8_t code)
 {
@@ -441,6 +451,11 @@ static void leave_and_return(void)
     check(s->conn == 0x0041, "the second connection's handle");
     check(!s->notify_on, "notifications are off again on a new connection");
     check(s->mtu == 23, "the MTU is back to 23");
+    q[0] = 0x02; le16(q + 1, 247);       /* the second connection offers 23 (cfg mtus): the exchange settles on it */
+    check(att_req_on(0x0041, q, 3) == 3 && M.last[0] == 0x03 && rd16(M.last + 1) == 23 && s->mtu == 23,
+          "the second connection: NimBLE answers Exchange MTU with 23, the next of cfg mtus");
+    check(s->pref_mtu[0] == 185 && s->pref_mtu[1] == 23 && s->conn_mtu[0] == 185 && s->conn_mtu[1] == 23 &&
+          s->pref_mtu[2] == 0 && s->conn_mtu[2] == 0, "the status: each connection's MTU offered and settled on");
     check(ble_midi_get(&g_in, &st, &d1, &d2) == 0, "the message nobody read from the old connection is gone");
     check(ble_nimble_notify(NULL, (const uint8_t *)"\x80\x80\x90\x3c\x7f", 5) == -1, "no notification until the new central subscribes");
 

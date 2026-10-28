@@ -91,6 +91,10 @@ typedef struct {
      * clock jumps in (jump_us, once) */
     int hw_arq, drop_data, jump_drop, drop_one;
     uint8_t rx_exp;
+    /* hold_l2 (with hw_arq): the chip takes the next new L2CAP PDU (LLID 2) as new on the air (rx_exp changes, the
+     * central's packet is acknowledged) but RXTOG does not change (once), so the PAL can only judge it a repeat: the shape
+     * 1907280 may have had after NimBLE's fragmented response (pal_fm1.h PAL_FM1_CAP) */
+    int hold_l2;
     /* own_sn (with hw_arq): the chip judges an acknowledgement by an SN state of its own, arq_sn (it changes with TXTOG at
      * each one), not by the slot's bit 2, which stays the SN on the air; nothing resets it at a CONNECT_IND, so a test
      * sets arq_sn to what a last connection left (the second connection at e3d2a74). tx_latch_us (0: at T_IFS): the

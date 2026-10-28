@@ -169,6 +169,8 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         g_st.conn = ev->connect.conn_handle;
         g_st.mtu = BLE_ATT_MTU_DFLT;
         g_st.notify_on = 0;
+        if (g_st.connects < BLE_NIMBLE_CONN_MTUS)
+            g_st.pref_mtu[g_st.connects] = ble_att_preferred_mtu();
         g_st.connects++;
         if (g_cfg.in)
             ble_midi_in_reset(g_cfg.in);
@@ -203,6 +205,8 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         break;
     case BLE_GAP_EVENT_MTU:
         g_st.mtu = ev->mtu.value;
+        if (g_st.connects && g_st.connects <= BLE_NIMBLE_CONN_MTUS)
+            g_st.conn_mtu[g_st.connects - 1] = ev->mtu.value;
         break;
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (ev->subscribe.attr_handle == g_val_handle)
@@ -226,6 +230,8 @@ static int adv_start(void)
     uint32_t n, m;
     int rc;
 
+    if (g_cfg.nmtus)                    /* the next connection's MTU (ble_nimble.h cfg mtus) */
+        ble_att_set_preferred_mtu(g_cfg.mtus[g_st.connects % g_cfg.nmtus]);
     n = ble_midi_adv_data(data);
     m = ble_midi_scan_rsp(rsp, g_cfg.name);
     rc = ble_gap_adv_set_data(data, (int)n);

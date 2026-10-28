@@ -116,6 +116,7 @@ static void rx_seen(uint32_t k)
 }
 
 typedef char cap_fits[FM1BLE_CAP_MAX == FM1BLE_CAP_HEAD + PAL_FM1_CAP * PAL_FM1_CAP_BYTES ? 1 : -1];
+typedef char cap_head_fits[FM1BLE_CAP_HEAD == 32u + 8u * PAL_FM1_FRAG && BLE_NIMBLE_CONN_MTUS == 4u ? 1 : -1];
 
 static void put16le(uint8_t *p, uint32_t v) { v = v > 0xFFFFu ? 0xFFFFu : v; p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 
@@ -125,7 +126,7 @@ static void capture(fm1ble_run *r, const pal_fm1_stats *p)
     uint32_t n = p->cap_n < PAL_FM1_CAP ? p->cap_n : PAL_FM1_CAP;
     uint8_t *c = r->cap;
     memset(c, 0, FM1BLE_CAP_HEAD);
-    c[0] = 1;
+    c[0] = 2;
     c[1] = (uint8_t)n;
     c[2] = PAL_FM1_CAP_BYTES;
     c[3] = (uint8_t)(p->arq_conns > 0xFFu ? 0xFFu : p->arq_conns);
@@ -136,6 +137,22 @@ static void capture(fm1ble_run *r, const pal_fm1_stats *p)
     put16le(c + 10, p->sn_flips_stuck);
     put16le(c + 12, p->ahead_put);
     c[14] = PAL_FM1_L2_GOOD;
+    c[15] = (uint8_t)(p->frag_conn > 0xFFu ? 0xFFu : p->frag_conn);
+    {
+        const ble_nimble_status *ns = ble_nimble_state();
+        uint32_t k;
+        for (k = 0; k < BLE_NIMBLE_CONN_MTUS; k++) {
+            put16le(c + 16 + 2 * k, ns->pref_mtu[k]);
+            put16le(c + 24 + 2 * k, ns->conn_mtu[k]);
+        }
+        for (k = 0; k < 2u * PAL_FM1_FRAG; k++) {
+            uint32_t w = k / 2u < p->frag_n ? p->frag[k / 2u][k % 2u] : 0u;
+            c[32 + 4 * k] = (uint8_t)w;
+            c[33 + 4 * k] = (uint8_t)(w >> 8);
+            c[34 + 4 * k] = (uint8_t)(w >> 16);
+            c[35 + 4 * k] = (uint8_t)(w >> 24);
+        }
+    }
     memcpy(c + FM1BLE_CAP_HEAD, p->cap, n * PAL_FM1_CAP_BYTES);
     r->ncap = (uint16_t)(FM1BLE_CAP_HEAD + n * PAL_FM1_CAP_BYTES);
 }

@@ -110,7 +110,10 @@ static void conn_rx(const uint8_t *req, int r, uint64_t at)
         }
         if ((req[0] >> 3 & 1u) == bbm.rx_exp) {
             bbm.rx_exp ^= 1u;
-            air16w(FM1BLE_E_RXTOG, air16(FM1BLE_E_RXTOG) ^ 1u);
+            if (bbm.hold_l2 && (req[0] & 3u) == 2u && req[1])
+                bbm.hold_l2 = 0;            /* hold_l2: new on the air, RXTOG left as it was */
+            else
+                air16w(FM1BLE_E_RXTOG, air16(FM1BLE_E_RXTOG) ^ 1u);
         }
         air16w(FM1BLE_E_RXDHDR0, (uint32_t)req[1] << 8 | (req[0] & 3u) | (req[0] >> 1 & 8u));
     }

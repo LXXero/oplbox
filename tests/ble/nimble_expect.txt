@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # tests/ble_nimble.c: what the NimBLE host (firmware/ble/ble_nimble.c) and the fake controller said to each other in one
 # session: start-up, advertising, a central that connects, walks the database, subscribes, writes and is sent MIDI
-# (one notification in six ACL fragments), asks for a shorter interval, leaves, a second central, the host ends it.
+# (one notification in six ACL fragments), asks for a shorter interval, leaves, a second central (the host answers its
+# Exchange MTU with 23, the second of the test's cfg mtus), the host ends it.
 # Captured from a run and then read line by line against the Bluetooth Core Specification (opcodes, parameter
 # lengths, ATT opcodes and handles); the bytes after the data in Set Advertising Data and Set Scan Response Data are
 # whatever NimBLE's command buffer held (it does not clear them), so they are ?? here.
@@ -107,6 +108,8 @@ evt 0e 01 0a 20 00
 evt 3e 01 00 41 00 01 01 02 00 00 ee ff c0 0c 00 00 00 48 00 00
 cmd 2016 41 00
 evt 0e 01 16 20 01
+acl> 0041 0 03 00 04 00 03 17 00
+evt 13 01 41 00 01 00
 cmd 0406 41 00 13
 evt 0f 00 01 06 04
 evt 05 00 41 00 16

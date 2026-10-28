@@ -64,8 +64,10 @@ typedef struct {
 #define PAL_FM1_ARQ_STUCK   3u
 
 /* The PDU capture: the first PAL_FM1_CAP data PDUs with a payload since pal_fm1_attach, either way, PAL_FM1_CAP_BYTES
- * each: the central's as the chip received them (new to Cordio, good CRC) and Cordio's as it handed them over (one entry
- * for a PDU handed again unchanged). For the bytes of what went each way: at e3d2a74 the header trace showed BlueZ's two
+ * each: the central's as the chip received them (good CRC: new to Cordio, and since round 8 also those Cordio was told
+ * were repeats, one entry while the bytes stay the same) and Cordio's as it handed them over (one entry for a PDU handed
+ * again unchanged). At 1907280 BlueZ sent nothing new after NimBLE's first fragmented response: a request the PAL told
+ * Cordio was a repeat would not have shown. For the bytes of what went each way: at e3d2a74 the header trace showed BlueZ's two
  * L2CAP PDUs (3 and 7 bytes) and NimBLE's three (12, 3 and 5), and GATT never resolved. An entry:
  *   0: bit 0 Cordio's (1) or the central's (0); bit 1 the central's with a good CRC, or Cordio's written ahead; bit 2 the
  *      central's new to Cordio, or Cordio's put in; bit 3 the central's a later packet of its event; bits 7-4 the
@@ -77,6 +79,18 @@ typedef struct {
  *   6-19: the payload's first 14 bytes (the L2CAP header and 10 bytes of ATT or signalling). */
 #define PAL_FM1_CAP         32
 #define PAL_FM1_CAP_BYTES   20
+
+/* The fragment trace (since round 8 of the FM-1 Bluetooth goal): from the packet that Cordio first answers with a
+ * fragment of an L2CAP PDU (a start, LLID 2, whose L2CAP length is more than the data PDU holds, or a continuation, LLID
+ * 1, with a payload), PAL_FM1_FRAG packets of that connection (good CRC or not), two words each:
+ *   0: the header trace's word (PAL_FM1_TRACE_* below) for that packet;
+ *   1: the TX slots as the packet was seen, before Cordio's response went in: the slot TXTOG named (the one the chip
+ *      sends at T_IFS), fm1ble.h fm1ble_op_slot's word (15-0 its TXDHDR: the length in 15-8, bit 2 the SN on the air, the
+ *      LLID in 1-0; 23-16 its first payload byte), TXTOG (24), RXTOG (25), the other slot's TXDHDR bits 2-0 (28-26), the
+ *      connection writes ahead (29), 31 set.
+ * At 1907280 the start (27 bytes) and the continuation (14) were handed over, and the capture cannot say what the chip
+ * put on the air. */
+#define PAL_FM1_FRAG        12
 
 /* FM1BLE_TX_INTIME: Cordio's response goes in only this many us after the PAL saw the packet. The flag comes at the
  * packet's end [unchecked]; T_IFS is 150 us and the hardware reads the slot before its preamble. Cordio took 42 us at most
@@ -197,6 +211,10 @@ typedef struct {
     uint32_t arq_conns, ahead_conns, good_ahead, ahead_put, sn_flips_first, sn_flips_stuck;
     uint32_t cap_n;
     uint8_t cap[PAL_FM1_CAP][PAL_FM1_CAP_BYTES];
+    /* the fragment trace (PAL_FM1_FRAG above): its packets so far, the connection it is of (1 + since the attach, 0: not
+     * started) */
+    uint32_t frag_n, frag_conn;
+    uint32_t frag[PAL_FM1_FRAG][2];
 } pal_fm1_stats;
 
 void pal_fm1_attach(const pal_fm1_cfg *cfg);

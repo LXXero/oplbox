@@ -248,10 +248,26 @@ check("PDU CAPTURE (what went each way" in out and
       "     1    1     5  Cordio+  0A    7  18us  ATT Exchange MTU Rsp: MTU 23" in out and
       "     2    1     7  central  02   11  R-    ATT Read By Group Type Req: 0001-FFFF, type 2800" in out and
       "     3    1     8  Cordio+  0E    9  24us  ATT Error Rsp: ATT Read By Group Type Req, handle 0001, Attribute Not Found"
-      in out and "05 00 04 00 01 10 01 00 0a" in out,
+      in out and "05 00 04 00 01 10 01 00 0a" in out and
+      "  NimBLE's ATT MTU by connection: 1: offered 23, settled 23; 2: offered 185, settled 185" in out and
+      "  fragment trace (connection 2, from the packet Cordio first answered with a fragment)" in out and
+      "     0  02 L2CAP                  RT  ack new  12 L2CAP" in out and
+      "          slot 1: empty  0 bytes, SN 1, first byte 00; the other slot LLID 1, SN 0; RXTOG 0; ahead" in out and
+      "     1  01 empty                  R-  ack new  09 continuation" in out and
+      "          slot 0: start 27 bytes, SN 0, first byte 25; the other slot LLID 1, SN 0; RXTOG 1; ahead" in out and
+      "     4    2    32  central  02   11  --    ATT Read By Type Req: 000D-FFFF, type 2803  [Cordio was told: a repeat]"
+      in out,
       f"--run: the PDU capture:\n{out[out.find('PDU CAPTURE'):]}")
-check(rep["capture"] is not None and len(rep["capture"]) == 16 + 4 * 20 and
+check(rep["capture"] is not None and len(rep["capture"]) == 128 + 5 * 20 and
       [s["step"] for s in rep["steps"]] == br.STEPS, "the capture frame decoded apart from the steps")
+# a layout-1 capture (round 7, a 16-byte head: the reports of 1907280 and before) reads as it did, no MTUs or trace
+cap1 = bytes([1, 1, 0x14, 1, 1, 0, 0xFF, 3, 1, 0, 0, 0, 2, 0, 3, 0,
+              6, 2, 7, 4, 0, 1, 3, 0, 4, 0, 2, 5, 2, 0, 0, 0, 0, 0, 0, 0])
+o1 = io.StringIO()
+br.show_capture({"capture": cap1}, o1)
+check("     0    1     4  central  02    7  R-    ATT Exchange MTU Req: MTU 517" in o1.getvalue() and
+      "MTU by connection" not in o1.getvalue() and "fragment trace" not in o1.getvalue() and "repeat]" not in o1.getvalue(),
+      f"a layout-1 capture:\n{o1.getvalue()}")
 check(open(wait_out).read() == "3\n", "--wait 3: the FM-1 was not told 3 s")
 check(open(os.path.join(d, "report.txt")).read() == rep["text"], "--out: report.txt is not the report's text")
 check(open(os.path.join(d, "report.bin"), "rb").read()[10:] == raw[10:], "--out: report.bin is not the report")

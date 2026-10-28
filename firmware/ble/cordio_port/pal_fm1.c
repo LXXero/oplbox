@@ -175,6 +175,12 @@ static uint32_t *g_tr;
  * which RXTOG moved and TXTOG did not; Cordio's last PDU captured (header, length, first bytes) */
 static uint8_t g_ahead, g_aw, g_first, g_tog0, g_tog_p, g_stuck;
 static uint8_t g_cap_last[2u + 14u];
+/* the central's last PDU captured (LLID, length, first bytes; pal_fm1.h PAL_FM1_CAP: a repeat once while it stays the
+ * same); the packet's two fragment-trace words (pal_fm1.h PAL_FM1_FRAG), kept for the response that may start the trace,
+ * and the trace entry of this packet (NULL: none) */
+static uint8_t g_cap_c[2u + 14u];
+static uint32_t g_pkt_w, g_pkt_sw;
+static uint32_t *g_ftr;
 
 enum { END_FLAG, END_DEADLINE, END_CORDIO };
 
@@ -328,6 +334,8 @@ static void conn_start(void)
     g_first = 1;
     g_tog0 = g_tog_p = g_tog_w;
     memset(g_cap_last, 0, sizeof g_cap_last);
+    memset(g_cap_c, 0, sizeof g_cap_c);
+    g_ftr = NULL;
 }
 
 /* One entry of the PDU capture (pal_fm1.h PAL_FM1_CAP): flags (bits 3-0, the connection is added), the header bits, the
@@ -382,7 +390,11 @@ static void conn_packet(const fm1ble_pkt *p)
     uint8_t tog = (x & FM1BLE_TXS_TXTOG) ? 1u : 0u, rxt = (x & FM1BLE_TXS_RXTOG) ? 1u : 0u;
     uint8_t moved = tog != g_tog_w, rxch = rxt != g_rxtog, llid = p->hdr[0] & 3u, h = p->hdr[0];
     uint8_t first = p->hdr[1] ? p->payload[0] : 0u, ack, isnew, first_pkt = g_first, tmoved = tog != g_tog_p;
+    uint32_t sw = 0;
 
+    if (g_tx == FM1BLE_TX_ARQ)          /* the slots before Cordio's response (pal_fm1.h PAL_FM1_FRAG word 1) */
+        sw = (fm1ble_op_slot(g_cfg.b, tog) & 0xFFFFFFu) | (uint32_t)tog << 24 | (uint32_t)rxt << 25 |
+             (fm1ble_op_slot(g_cfg.b, tog ^ 1u) & 7u) << 26 | (uint32_t)(g_ahead ? 1u : 0u) << 29 | 1u << 31;
     if (rxch && c)
         *c = sat_add8(*c, 24);
     if (p->ok && g_tx == FM1BLE_TX_ARQ) {
@@ -420,15 +432,41 @@ static void conn_packet(const fm1ble_pkt *p)
     }
     if (p->ok && llid == 2u && p->hdr[1] && isnew)
         g_cl2++;
-    if (p->ok && p->hdr[1] && isnew)
-        cap_add((uint8_t)(1u << 1 | 1u << 2 | (g_conn_rx ? 1u << 3 : 0u)), p->hdr[0], p->payload, p->hdr[1],
-                (uint8_t)((rxch ? 1u : 0u) | (tmoved ? 2u : 0u)));
+    if (p->ok && p->hdr[1]) {           /* the capture: new to Cordio, or a repeat whose bytes differ from the last one */
+        uint8_t key[sizeof g_cap_c], m = (uint8_t)(p->hdr[1] < sizeof key - 2u ? p->hdr[1] : sizeof key - 2u);
+        memset(key, 0, sizeof key);
+        key[0] = llid;
+        key[1] = p->hdr[1];
+        memcpy(key + 2, p->payload, m);
+        if (isnew || memcmp(key, g_cap_c, sizeof key))
+            cap_add((uint8_t)(1u << 1 | (isnew ? 1u << 2 : 0u) | (g_conn_rx ? 1u << 3 : 0u)), p->hdr[0], p->payload,
+                    p->hdr[1], (uint8_t)((rxch ? 1u : 0u) | (tmoved ? 2u : 0u)));
+        memcpy(g_cap_c, key, sizeof key);
+    }
+    g_pkt_w = (uint32_t)(p->hdr[0] & 0x1Fu) | (p->ok ? 1u << 5 : 0u) | (rxch ? 1u << 6 : 0u) | (moved ? 1u << 7 : 0u) |
+              (uint32_t)first << 8 | (p->ok && ack ? 1u << 23 : 0u) | (p->ok && isnew ? 1u << 24 : 0u);
+    g_pkt_sw = sw;
     g_tr = NULL;
     if (k < PAL_FM1_TRACE_CONNS && g_trn < PAL_FM1_TRACE_PER) {
         g_tr = &g_st.trace[k][g_trn++];
-        *g_tr = (uint32_t)(p->hdr[0] & 0x1Fu) | (p->ok ? 1u << 5 : 0u) | (rxch ? 1u << 6 : 0u) | (moved ? 1u << 7 : 0u) |
-                (uint32_t)first << 8 | (p->ok && ack ? 1u << 23 : 0u) | (p->ok && isnew ? 1u << 24 : 0u);
+        *g_tr = g_pkt_w;
     }
+    g_ftr = NULL;                       /* the fragment trace, once started, takes this connection's next packets */
+    if (g_st.frag_conn == g_st.conns && g_st.frag_n && g_st.frag_n < PAL_FM1_FRAG) {
+        g_ftr = g_st.frag[g_st.frag_n++];
+        g_ftr[0] = g_pkt_w;
+        g_ftr[1] = sw;
+    }
+}
+
+/* Cordio's response bits into the packet's trace words (pal_fm1.h PAL_FM1_TRACE_*, PAL_FM1_FRAG) */
+static void trace_or(uint32_t bits)
+{
+    g_pkt_w |= bits;
+    if (g_tr)
+        *g_tr |= bits;
+    if (g_ftr)
+        g_ftr[0] |= bits;
 }
 
 static uint32_t sat(uint32_t v, uint32_t max) { return v > max ? max : v; }
@@ -648,6 +686,7 @@ void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
     conn_end(END_CORDIO);               /* one still open (Cordio went on without its end): ended here */
     op_begin(g_rx_timeout + 2u * FM1BLE_CONN_WIDE_US);
     g_tr = NULL;
+    g_ftr = NULL;
     g_wait = W_RX;
     g_rxbuf = pBuf;
     g_rxlen = len;
@@ -703,8 +742,7 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
     if (g_kind == K_CONN && n >= 2u) {          /* Cordio's SN and NESN now, and the trace (pal_fm1.h) */
         g_csn = (uint8_t)(pdu[0] >> 3 & 1u);
         g_cnesn = (uint8_t)(pdu[0] >> 2 & 1u);
-        if (g_tr)
-            *g_tr |= (uint32_t)(pdu[0] & 0x1Fu) << 16 | 1u << 21 | (uint32_t)(pdu[1] ? pdu[2] & 0x7Fu : 0u) << 25;
+        trace_or((uint32_t)(pdu[0] & 0x1Fu) << 16 | 1u << 21 | (uint32_t)(pdu[1] ? pdu[2] & 0x7Fu : 0u) << 25);
     }
     if (g_kind == K_CONN && g_tx == FM1BLE_TX_ARQ && !ahead)
         g_wrote = 0;                            /* until it goes in below */
@@ -743,8 +781,15 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
     }
     g_st.resp_set++;
     if (g_kind == K_CONN) {
-        if (g_tr)
-            *g_tr |= 1u << 22;
+        trace_or(1u << 22);
+        if (g_conn_rx && !g_st.frag_conn && n > 2u && ((pdu[0] & 3u) == 1u ||
+            ((pdu[0] & 3u) == 2u && pdu[1] >= 2u && (uint32_t)(pdu[2] | pdu[3] << 8) + 4u > pdu[1]))) {
+            g_st.frag_conn = g_st.conns;        /* Cordio's first fragment: the trace starts at the packet it answers */
+            g_st.frag_n = 1;
+            g_ftr = g_st.frag[0];
+            g_ftr[0] = g_pkt_w;
+            g_ftr[1] = g_pkt_sw;
+        }
         if (pdu[1] && g_st.conns - 1u < PAL_FM1_CONNS)
             g_st.ll_cnt[g_st.conns - 1u] = sat_add8(g_st.ll_cnt[g_st.conns - 1u], 8);
         if (ahead) {                            /* in the slot sent next: TXTOG naming it says the chip sends it */

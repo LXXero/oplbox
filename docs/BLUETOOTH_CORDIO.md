@@ -175,6 +175,28 @@ Cordio's PAL"):
   get through only with bit 2 changed; and the whole stack (`tests/ble_stack.c run`) passes GATT, MIDI in and MIDI out
   on ARQ ahead with the SN left at 1.
 
+- **1907280, the done-check after round 7 (2026-10-28, `~/oplbox-ble-runs/1907280-1` on xryzen):** the link layer held:
+  3 connections on padw arq ahead, 1186 of 1262 events received, Cordio's response within 72 us every time, 42 bad CRCs.
+  GATT discovery in the first connection went through ten ATT exchanges (BlueZ asked for MTU 517, NimBLE offered 185;
+  Cordio's LL_LENGTH_RSP kept data PDUs at 27 octets): MTU, Read By Type 2B3A, the primary services, 2801, 2802, then Read
+  By Type 2803 over the whole range. NimBLE's answer to that was the first L2CAP PDU longer than a data PDU, 37 bytes of
+  ATT (41 with the L2CAP header), handed over as a start (27 bytes, MD 1) and two events later a continuation (14, 10 us
+  after the packet). BlueZ sent no further request: a CHANNEL_MAP_IND at once and another 468 events later, then
+  LL_TERMINATE_IND (0x13, its host) 754 events after the continuation. The later connections dropped early. Two readings,
+  and the capture cannot tell them apart: (1) the chip did not put the start and the continuation on the air in turn
+  (the capture holds Cordio's PDUs as handed over, not as sent), so BlueZ could not put the response together; (2) BlueZ's
+  next request came and the PAL told Cordio it was a repeat (RXTOG not moved), which the capture leaves out. On the model
+  the fragmented responses get through on ARQ ahead with the central missing responses, the chip's SN left at 1 and a TX
+  latch: the model does not have the failure. Round 8's changes: NimBLE offers ATT MTU 23 on the first connection and
+  185 on the next, in turn (`fm1ble_stack.c`, `ble_nimble.h` cfg mtus): at 23 an ATT PDU and its L2CAP header fit one
+  27-octet data PDU, so nothing is fragmented either way, which is the likeliest way to GATT on this chip; the 185
+  connection shows the fragmented path. For both readings: the capture keeps the central's PDUs Cordio was told were
+  repeats (once while their bytes stay the same), and a fragment trace (pal_fm1.h PAL_FM1_FRAG) records, from the packet
+  Cordio first answers with a fragment, twelve packets with the header trace's word and the TX slot TXTOG named when each
+  was seen (its length, LLID, SN and first byte: the start's L2CAP length 25 or the continuation's first byte), so the
+  next run shows what the chip had in the slot it sent. The capture's head (layout 2) carries each connection's MTU
+  offered and settled on, and the trace.
+
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ
 29) or, for connection events, the busy wait above (`pal_resp_us_max` says how long Cordio took). This build attaches no
@@ -185,12 +207,13 @@ at once, as an interrupt within T_IFS would. Also unchecked: where the hardware'
 write (the model takes one at the write), state 7 with a fixed channel, how TXTOG changes in a connection, the data PDU header
 words, the receive window's unit, the RSSI (not read: Cordio is told 127, not available).
 
-**Tests.** `tests/ble_pal.c` (112 checks; `tests/ble_pal_mutants.py` catches 83 deliberate bugs in the PAL and the driver's
+**Tests.** `tests/ble_pal.c` (117 checks; `tests/ble_pal_mutants.py` catches 88 deliberate bugs in the PAL and the driver's
 operations; the model can count a slot more than op_arm writes, take the bit offset only with bit 15, and take the
 window from WINCNTL0 (`bb_model.h` cnt_jieli, bit15, win0), so each new setup is shown to receive on the chip it is for; the model sends a connection response from the TX slot as it is T_IFS after the packet, and a connection polled
 every 200 us, as on the FM-1, misses most events without the busy wait and none with it; with the padded window alone,
 each event armed under 625 us before its due time opens the window at once, and the PAL's arrival positions must match
-where the model opened it) and `tests/ble_stack.c` (22 checks): NimBLE over Cordio over the PAL with a central doing L2CAP and ATT; with
+where the model opened it) and `tests/ble_stack.c` (26 checks): NimBLE over Cordio over the PAL with a central doing L2CAP and ATT
+(an MTU of 185, so its discovery responses come fragmented, on ARQ ahead with every third response missed); with
 `run`, the firmware's test run on the same air, every step PASS (docs/BLUETOOTH.md "Cordio path as built" 4 and 5).
 
 ## Size (tools/build.py, JieLi's clang at `-Os -ffunction-sections`, numbers from the build)

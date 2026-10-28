@@ -103,6 +103,10 @@ MUTANTS = (
      "#define BLE_NPL_RUN_MAX 32", "#define BLE_NPL_RUN_MAX 1"),
     ("ble_nimble_npl.c", "the main loop never stops running events",
      "while (n < BLE_NPL_RUN_MAX && (ev", "while ((ev"),
+    ("ble_nimble.c", "every connection offered the build's MTU, not the next of cfg mtus",
+     "        ble_att_set_preferred_mtu(g_cfg.mtus[g_st.connects % g_cfg.nmtus]);\n", "        ;\n"),
+    ("ble_nimble.c", "the MTU a connection settled on not kept per connection",
+     "            g_st.conn_mtu[g_st.connects - 1] = ev->mtu.value;\n", "            ;\n"),
 )
 
 

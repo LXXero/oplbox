@@ -190,13 +190,24 @@ MUTANTS = (
     ("a TX mode kept on packets alone (a349877 kept INTIME on 462, no GATT)", PAL,
      "if (g_st.conns && g_cl2)", "if (g_st.conns && g_cpk >= PAL_FM1_GOOD)"),
     ("the trace leaves out that Cordio's response went in", PAL,
-     "            *g_tr |= 1u << 22;\n", "            ;\n"),
+     "        trace_or(1u << 22);\n", "        ;\n"),
     ("the link-layer counts leave out the central's L2CAP PDUs", PAL,
      "            *c = sat_add8(*c, 0);\n", "            ;\n"),
     ("ARQ: Cordio told MD 0, one exchange per event (1b251ea: the central's L2CAP PDU after LL_LENGTH_REQ lost)", PAL,
      "(isnew ? g_cnesn : g_cnesn ^ 1u) << 3 | 1u << 4);", "(isnew ? g_cnesn : g_cnesn ^ 1u) << 3);"),
     ("Cordio's response completed only at the event's end (a later packet held over the next one)", PAL,
      "if (g_wait == W_TIFS_TX && (g_done || (g_held && g_kind == K_CONN))) {", "if (g_wait == W_TIFS_TX && g_done) {"),
+    # round 8: the central's repeats in the PDU capture, the fragment trace (pal_fm1.h PAL_FM1_CAP, PAL_FM1_FRAG)
+    ("the central's PDUs Cordio was told were repeats left out of the capture", PAL,
+     "if (isnew || memcmp(key, g_cap_c, sizeof key))", "if (isnew)"),
+    ("a repeat captured as new to Cordio", PAL,
+     "(isnew ? 1u << 2 : 0u)", "1u << 2"),
+    ("the fragment trace never names its connection", PAL,
+     "g_st.frag_conn = g_st.conns;", "g_st.frag_conn = 0;"),
+    ("a start that fits its data PDU taken for a fragment", PAL,
+     "(uint32_t)(pdu[2] | pdu[3] << 8) + 4u > pdu[1]", "(uint32_t)(pdu[2] | pdu[3] << 8) + 4u >= pdu[1]"),
+    ("the fragment trace keeps only the packet it started at", PAL,
+     "g_st.frag_conn == g_st.conns && g_st.frag_n && g_st.frag_n < PAL_FM1_FRAG", "0"),
 )
 
 
