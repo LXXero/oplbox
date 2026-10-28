@@ -203,7 +203,8 @@ check("connections: 2 started on the PAL, NimBLE 2 connects and 1 disconnects; k
       "stale 1, halted 1" in out and
       "connection 2: padb jieli, 40 events, 38 received; packets 31 (first) and 29 (last) us after dueUsec; TXTOG changed in "
       "37, stale 0, halted 0" in out and
-      "(each connection runs one window setup, the next connection the next one)" in out,
+      "(each connection runs one TX mode, the next connection the next one; window setups used: padb, padw)" in out and
+      "each connection runs one window setup" not in out,
       f"--run: each connection's summary:\n{out}")
 check(open(wait_out).read() == "3\n", "--wait 3: the FM-1 was not told 3 s")
 check(open(os.path.join(d, "report.txt")).read() == rep["text"], "--out: report.txt is not the report's text")
