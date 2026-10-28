@@ -197,6 +197,8 @@ static int test_run(void)
     bb_model_reset();
     bbm.air = &AIR;
     bbm.hw_arq = 1;                                  /* the first connection runs FM1BLE_TX_ARQ: SN and NESN are the chip's */
+    bbm.own_sn = 1;                                  /* its own SN state, left at 1 (e3d2a74's second connection) */
+    bbm.arq_sn = 1;
     g_run = 1;
     C.scan_all = 1;
     fm1ble_test_begin(&R, 0, 4000);
@@ -261,6 +263,21 @@ static int test_run(void)
           R.ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] == 0 && (R.ctr[FM1BLE_C_STACK_ACL] & 0xFFFFu) >= 3u &&
           (R.ctr[FM1BLE_C_STACK_ACL] >> 16) >= 3u && (R.ctr[FM1BLE_C_NIMBLE_MTU] >> 16) >= 1u,
           "the link layer's counters: L2CAP both ways on ARQ, the trace, ACL to and from NimBLE, the central's write");
+    /* the PDU capture (fm1ble_test.h FM1BLE_CAP_*): ARQ ahead (the first way), bit 2 changed at the first packet, and
+     * the bytes both ways: an ATT PDU (L2CAP channel 4) from the central and one from NimBLE */
+    {
+        const uint8_t *c = R.cap;
+        int n = R.ncap > FM1BLE_CAP_HEAD ? (R.ncap - (int)FM1BLE_CAP_HEAD) / c[2] : 0, from_c = 0, from_n = 0;
+        for (k = 0; k < n; k++) {
+            const uint8_t *e = c + FM1BLE_CAP_HEAD + c[2] * k;
+            if ((e[1] & 3u) == 2u && e[2] >= 5u && e[8] == 4u && e[9] == 0u)
+                *((e[0] & 1u) ? &from_n : &from_c) += 1;
+        }
+        check(c[0] == 1u && c[2] == PAL_FM1_CAP_BYTES && n == c[1] && n >= 4 && c[3] == 1u && (c[4] | c[5] << 8) == 1 &&
+              c[6] == 0xFFu && c[7] == PAL_FM1_ARQ_STUCK && (c[8] | c[9] << 8) == 1 && (c[10] | c[11] << 8) == 0 &&
+              (c[12] | c[13] << 8) >= 3 && c[14] == PAL_FM1_L2_GOOD && from_c >= 2 && from_n >= 2,
+              "the PDU capture: ARQ ahead, bit 2 changed at the first packet, ATT PDUs from the central and from NimBLE");
+    }
     check(R.ctr[FM1BLE_C_PAL_STALE_RX] == 0 && R.ctr[FM1BLE_C_PAL_HALTS] == 0 && R.ctr[FM1BLE_C_PAL_RESP_SKIPPED] == 0 &&
           (R.ctr[FM1BLE_C_PAL_RESP_HIST] & 0xFFu) > 0 && R.ctr[FM1BLE_C_PAL_RESP_US_MIN] < 50u &&
           (R.ctr[FM1BLE_C_PAL_FIRST_RX_TX] >> 31) == 1u,

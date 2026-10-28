@@ -568,8 +568,13 @@ static void op_buf(fm1ble *b, int k, const uint8_t *pdu, uint16_t n, int adv, ui
 {
     uint8_t *t;
     uint32_t len = n >= 2u ? pdu[1] : 0u;
-    if (!adv && b->conn_tx == FM1BLE_TX_ARQ)         /* ARQ: the buffer of the slot TXTOG names, the other one untouched */
-        k = (int)(g16(b, FM1BLE_E_TXTOG) & 1u);
+    if (!adv && b->conn_tx == FM1BLE_TX_ARQ) {       /* ARQ: the buffer of the slot TXTOG names, the other one untouched; */
+        k = (int)(g16(b, FM1BLE_E_TXTOG) & 1u);     /* ahead: the other one, this one untouched */
+        if (b->arq_ahead) {
+            k ^= 1;
+            b->ahead_pend = (uint8_t)(1 + k);
+        }
+    }
     t = b->blk + b->tx[k];
     memset(t, 0, FM1BLE_TX_SIZE);
     t[0x10] = n ? pdu[0] : 0;
@@ -719,9 +724,13 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
         /* ARQ: the slot the hardware sends after the central's next acknowledgement gets an empty PDU, so an ack never
          * sends that slot's older PDU again as new; the slot TXTOG names keeps what it holds (sent, not yet acknowledged) */
         uint32_t s = (g16(b, FM1BLE_E_TXTOG) & 1u) ^ 1u, off = s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0;
-        memset(b->blk + b->tx[s], 0, FM1BLE_TX_SIZE);
-        e16(b, s ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0, (uint32_t)b->tx[s] + FM1BLE_TX_HDR);
-        e16(b, off, (g16(b, off) & 4u) | 1u);
+        if (b->ahead_pend == 1u + (s ^ 1u))          /* ahead: the response TXTOG names now is the hardware's to send */
+            b->ahead_pend = 0;
+        if (!b->arq_ahead || b->ahead_pend != 1u + s) {   /* ahead: a response not named yet stays */
+            memset(b->blk + b->tx[s], 0, FM1BLE_TX_SIZE);
+            e16(b, s ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0, (uint32_t)b->tx[s] + FM1BLE_TX_HDR);
+            e16(b, off, (g16(b, off) & 4u) | 1u);
+        }
     }                                                /* JIELI: the slots keep the last response (the same SN) */
     /* the windows as le_hw_ioctrl's __set_winsize writes them: WINCNTL0 0x32, the time the receiver listens in WINCNTL2
      * (taken as us from its uses; up to 3b39ab4 the window went into WINCNTL0 and WINCNTL2 stayed 0) */
@@ -764,6 +773,7 @@ void fm1ble_op_conn_begin(fm1ble *b, uint8_t tx_mode)
     uint32_t tog;
     b->conn_tx = tx_mode < FM1BLE_TX_MODES ? tx_mode : FM1BLE_TX_AIR;
     b->tx_sn = 0;
+    b->arq_ahead = b->ahead_pend = 0;
     if (!b->link_open || b->conn_tx == FM1BLE_TX_AIR)
         return;
     /* __hw_rx_buf_process on a CONNECT_IND (fm1ble.h FM1BLE_TX_JIELI): two empty PDUs, bit 2 clear in the one sent first */
@@ -776,6 +786,21 @@ void fm1ble_op_conn_begin(fm1ble *b, uint8_t tx_mode)
     e16(b, FM1BLE_E_TXAHDR1, 0);
     e16(b, FM1BLE_E_TXDHDR0, tog | 1u);
     e16(b, FM1BLE_E_TXDHDR1, (tog ^ 4u) | 1u);
+    fm1ble_port_sync();
+}
+
+void fm1ble_op_arq_ahead(fm1ble *b, int on)
+{
+    b->arq_ahead = (uint8_t)(on != 0);
+    b->ahead_pend = 0;
+}
+
+void fm1ble_op_arq_flip(fm1ble *b)
+{
+    if (!b->link_open)
+        return;
+    e16(b, FM1BLE_E_TXDHDR0, g16(b, FM1BLE_E_TXDHDR0) ^ 4u);
+    e16(b, FM1BLE_E_TXDHDR1, g16(b, FM1BLE_E_TXDHDR1) ^ 4u);
     fm1ble_port_sync();
 }
 

@@ -240,6 +240,18 @@ check("LINK LAYER (the PAL's header trace" in out and
       "     2  01 empty                  crc --           05 empty (not put in)" in out and
       "     0  02 L2CAP                  R-  nak new  01 empty" in out,
       f"--run: the link layer:\n{out[out.find('LINK LAYER'):]}")
+check("PDU CAPTURE (what went each way" in out and
+      "  ARQ connections 2: ahead 1, the others in T_IFS; kept: none (after 3 L2CAP PDUs from the central); responses "
+      "written ahead 40" in out and
+      "  the chip's SN: bit 2 changed at a connection's first packet 1, after 3 packets the central took none of 0" in out and
+      "     0    1     4  central  02    7  R-    ATT Exchange MTU Req: MTU 517" in out and
+      "     1    1     5  Cordio+  0A    7  18us  ATT Exchange MTU Rsp: MTU 23" in out and
+      "     2    1     7  central  02   11  R-    ATT Read By Group Type Req: 0001-FFFF, type 2800" in out and
+      "     3    1     8  Cordio+  0E    9  24us  ATT Error Rsp: ATT Read By Group Type Req, handle 0001, Attribute Not Found"
+      in out and "05 00 04 00 01 10 01 00 0a" in out,
+      f"--run: the PDU capture:\n{out[out.find('PDU CAPTURE'):]}")
+check(rep["capture"] is not None and len(rep["capture"]) == 16 + 4 * 20 and
+      [s["step"] for s in rep["steps"]] == br.STEPS, "the capture frame decoded apart from the steps")
 check(open(wait_out).read() == "3\n", "--wait 3: the FM-1 was not told 3 s")
 check(open(os.path.join(d, "report.txt")).read() == rep["text"], "--out: report.txt is not the report's text")
 check(open(os.path.join(d, "report.bin"), "rb").read()[10:] == raw[10:], "--out: report.bin is not the report")
@@ -249,6 +261,7 @@ files = sorted(f for f in os.listdir(d) if f.startswith("step-"))
 check(files == ["step-1-radio.bin", "step-3-hci.bin", "step-6-connect.bin", "step-7-midi_in.bin", "step-8-midi_out.bin"],
       f"--out: step files {files}")
 check(open(os.path.join(d, "step-3-hci.bin"), "rb").read() == st["hci"]["data"], "--out: the hci step's bytes")
+check(open(os.path.join(d, "capture.bin"), "rb").read() == rep["capture"], "--out: capture.bin is not the capture")
 rc, out, err = tool(dev, "--run", "--out", d)
 check(rc == 0 and open(wait_out).read() == "20\n", f"--run without --wait: exit {rc} {err}, told {open(wait_out).read()!r}")
 rc, out, err = tool(dev, "--read")

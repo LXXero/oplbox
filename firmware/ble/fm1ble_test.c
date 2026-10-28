@@ -115,6 +115,31 @@ static void rx_seen(uint32_t k)
         g_rx[k].bytes |= (uint32_t)d->rx_last[i] << (8u * i);
 }
 
+typedef char cap_fits[FM1BLE_CAP_MAX == FM1BLE_CAP_HEAD + PAL_FM1_CAP * PAL_FM1_CAP_BYTES ? 1 : -1];
+
+static void put16le(uint8_t *p, uint32_t v) { v = v > 0xFFFFu ? 0xFFFFu : v; p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+
+/* the PDU capture and ARQ's ways (fm1ble_test.h FM1BLE_CAP_*) */
+static void capture(fm1ble_run *r, const pal_fm1_stats *p)
+{
+    uint32_t n = p->cap_n < PAL_FM1_CAP ? p->cap_n : PAL_FM1_CAP;
+    uint8_t *c = r->cap;
+    memset(c, 0, FM1BLE_CAP_HEAD);
+    c[0] = 1;
+    c[1] = (uint8_t)n;
+    c[2] = PAL_FM1_CAP_BYTES;
+    c[3] = (uint8_t)(p->arq_conns > 0xFFu ? 0xFFu : p->arq_conns);
+    put16le(c + 4, p->ahead_conns & 0xFFFFu);
+    c[6] = (uint8_t)p->good_ahead;
+    c[7] = PAL_FM1_ARQ_STUCK;
+    put16le(c + 8, p->sn_flips_first);
+    put16le(c + 10, p->sn_flips_stuck);
+    put16le(c + 12, p->ahead_put);
+    c[14] = PAL_FM1_L2_GOOD;
+    memcpy(c + FM1BLE_CAP_HEAD, p->cap, n * PAL_FM1_CAP_BYTES);
+    r->ncap = (uint16_t)(FM1BLE_CAP_HEAD + n * PAL_FM1_CAP_BYTES);
+}
+
 static void counters(fm1ble_run *r)
 {
     const fm1ble_diag *d = &g_b.d;
@@ -269,6 +294,7 @@ static void counters(fm1ble_run *r)
     }
     if (g_b.blk)
         r->ctr[FM1BLE_C_PAL_RXTOG] = ew(FM1BLE_E_RXTOG) | ew(FM1BLE_E_TXTOG) << 16;
+    capture(r, p);
 }
 
 /* the addresses: made-up static random ones (the FM-1 has no device address: docs/BLUETOOTH_RADIO.md PalCfgLoadData),

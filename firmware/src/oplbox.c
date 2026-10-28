@@ -2677,7 +2677,7 @@ static void wifi_page(void)
 #define BLE_TEXT_MAX 12288u                      /* 3072 cut the FM-1's report at 122afe3 (13 pages); 3351 for 14 at 3b39ab4;
                                                     4190 for 17 at 58cadc5, 4757 for 19 at a7c1738, about 6100 for 24 at
                                                     5474159, so about 8500 for 33 */
-#define BLE_REPORT_MAX (WR_HEAD + BLE_TEXT_MAX + 2u + 4u * FM1BLE_N_CTR + FM1BLE_STEPS * (6u + FM1BLE_RAW))
+#define BLE_REPORT_MAX (WR_HEAD + BLE_TEXT_MAX + 2u + 4u * FM1BLE_N_CTR + FM1BLE_STEPS * (6u + FM1BLE_RAW) + 6u + FM1BLE_CAP_MAX)
 static uint8_t ble_rep[BLE_REPORT_MAX] __attribute__((section(".pool")));
 static fm1ble_run ble_run __attribute__((section(".pool")));
 static uint32_t ble_rep_n, ble_rep_serial, ble_runs, ble_req, ble_state, ble_wait_s;   /* ble_req: a run asked for over USB */
@@ -2802,6 +2802,7 @@ static void ble_report_build(const fm1ble_run *r)
     wr_line(&w, s);
     wr_counters(&w, r->ctr, FM1BLE_N_CTR);
     for (i = 0; i < FM1BLE_STEPS; i++) wr_frame(&w, i, r->step[i].result, r->step[i].nraw, r->step[i].raw, r->step[i].nraw);
+    if (r->ncap) wr_frame(&w, FM1BLE_STEPS, 0, r->ncap, r->cap, r->ncap);   /* the PDU capture (fm1ble_test.h FM1BLE_CAP_*) */
     ble_rep_n = w.n;
     ble_rep_serial++;
 #ifdef DINGHY_HOST

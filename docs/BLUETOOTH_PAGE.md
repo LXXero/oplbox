@@ -199,6 +199,15 @@ prints the text, the counters, one line per step with its evidence in hex, and t
 (the report as sent), `counters.txt` and `step-N-<name>.bin` for each step that kept evidence, so an HCI trace or a register
 list can be diffed against `tests/ble/session_expect.txt` or docs/BLUETOOTH_RADIO.md without a photo.
 
+Since round 7 of the FM-1 Bluetooth goal one more frame follows the eight steps' (index 8, not a step and not a page): the
+PDU capture (`fm1ble_test.h` `FM1BLE_CAP_*`, `pal_fm1.h` `PAL_FM1_CAP`). A 16-byte head says how ARQ's connections ran
+(how many, which wrote ahead, the way kept, the chip's SN changed at a first packet and after `PAL_FM1_ARQ_STUCK`, the
+responses written ahead), then up to 32 entries of 20 bytes: the first data PDUs with a payload either way, the
+central's as the chip received them and Cordio's as it handed them over, each with its connection, event, header bits,
+length and first 14 payload bytes. The counters could not carry it: their count is a byte and 248 are used. The tool
+prints it as PDU CAPTURE, each entry named (an LL control PDU, an ATT PDU with its MTU, range, type or error, an L2CAP
+signalling PDU) with its bytes, and `--out` writes it as `capture.bin`.
+
 ## What is tested, and what is not
 
 On the host (`tests/run_host.sh`): the SysEx commands against `ble_sysex.c` (statuses, the wait byte, chunking, EDIT),
