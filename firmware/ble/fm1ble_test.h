@@ -93,7 +93,9 @@ enum {
 /* Since round 4 (the hardware's ARQ, fm1ble.h FM1BLE_TX_ARQ): trC_N the PAL's header trace (pal_fm1.h PAL_FM1_TRACE_*),
  * connection C's N-th connection event with a packet (0: none); connK_ops and connK_ll the first four connections'
  * link-layer counts (pal_fm1.h ll_ops, ll_cnt); pal_tx3_counts and pal_tx3_sent the fourth TX mode's (ARQ) as pal_txK_*; pal_arq_dup and
- * pal_arq_unwritten pal_fm1.h's arq_dup and arq_unwritten; stack_acl the HCI ACL packets the host sent the controller
+ * pal_arq_unwritten pal_fm1.h's arq_dup and arq_unwritten (15-0, each at most 65535) and, since round 6 (0 in an earlier
+ * report: not counted), later_rx and later_given (31-16): the packets after the first in a connection event, the ones
+ * given to Cordio; stack_acl the HCI ACL packets the host sent the controller
  * (15-0) and the controller the host (31-16), each at most 65535 (did an ATT PDU reach NimBLE, did NimBLE answer);
  * stack_nocp the Number Of Completed Packets events; nimble_mtu NimBLE's ATT MTU (15-0) and the central's writes (31-16);
  * pal_rxtog RXTOG (15-0) and TXTOG (31-16) as the run's last poll read them (the connection's end). 248 in all: the

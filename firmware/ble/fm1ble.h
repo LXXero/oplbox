@@ -267,7 +267,7 @@ void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup);
  * INTIME put Cordio's SN in MD; and the PAL handed Cordio RXDHDR bits 4-2 as NESN, SN, MD, so Cordio read the central's
  * MD (0) as its SN, took the first packet (LL_FEATURE_REQ) and every later one as a repeat, and dropped them.
  *   FM1BLE_TX_ARQ      the hardware's ARQ: a response goes only into the slot TXTOG & 1 names (each slot its own buffer),
- *                      TXDHDR = length << 8 | bit 2 kept | LLID, MD 0 (one exchange per event, as the PAL runs it); at
+ *                      TXDHDR = length << 8 | bit 2 kept | LLID, MD 0 (Cordio's PDUs one an event); at
  *                      every arm the other slot gets an empty PDU, so an acknowledgement never sends an older PDU again.
  *                      The PAL gives Cordio SN and NESN of its own making (pal_fm1.c "ARQ"). */
 #define FM1BLE_TX_AIR       0u

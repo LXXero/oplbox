@@ -24,7 +24,8 @@
  * 122afe3: on 37 it ends having sent nothing, on 38 and 39 it never ends; a connection event (state 7) as: the central's packet received when it starts inside the window
  * (WINCNTL2, us, as le_hw_ioctrl's __set_winsize puts it; the receiver set up as above), then T_IFS after its end the PDU of the TX slot TXTOG & 1 names (header TXDHDR bits 4-0, length bits 15-8), TXTOG
  * changed after it: the slot is read at that time, so a response put in after T_IFS is not the one sent; the event
- * flag at the end of either. Times are on the model's clock, in us. */
+ * flag at the end of either, or, when conn_next gives the central's next packet (it sent MD), that packet T_IFS after the
+ * response and the same again, the flag after the last. Times are on the model's clock, in us. */
 typedef struct {
     int (*adv)(void *ctx, uint64_t t, uint8_t chan, const uint8_t *pdu, int n, uint8_t *req);    /* returns the request's length, 0: none */
     void (*scan_rsp)(void *ctx, uint64_t t, const uint8_t *pdu, int n);
@@ -32,6 +33,7 @@ typedef struct {
     void (*conn_rsp)(void *ctx, uint64_t t, const uint8_t *pdu, int n);
     void (*irq)(void *ctx);
     void *ctx;
+    int (*conn_next)(void *ctx, uint8_t *pdu);    /* the central's next packet in the event, 0: the event ends; may be NULL */
 } bb_air;
 
 typedef struct { uint32_t addr, val; } bb_write;
@@ -73,6 +75,7 @@ typedef struct {
     int64_t conn_off_min, conn_off_max;
     int resp_pending;                   /* a connection event waits for T_IFS to send its response (conn_respond) */
     uint64_t resp_at;
+    uint32_t later_in;                  /* packets after the first in a connection event (bb_air conn_next) */
     /* hw_nesn: a data PDU's NESN (header bit 2) is the hardware's, not TXDHDR bit 2: the received packet's SN plus one
      * (fm1ble.h FM1BLE_TX_JIELI: ble_hw_tx keeps TXDHDR bit 2 as it is, so the chip writes it [unchecked what it holds]);
      * rx_sn the last received data packet's SN. jump_reads, jump_us: after a connection packet's flag, the clock jumps

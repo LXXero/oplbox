@@ -258,8 +258,8 @@ static void counters(fm1ble_run *r)
     }
     r->ctr[FM1BLE_C_PAL_TX3_COUNTS] = sat16(p->tx_events[FM1BLE_TX_ARQ]) | sat16(p->tx_rx[FM1BLE_TX_ARQ]) << 16;
     r->ctr[FM1BLE_C_PAL_TX3_SENT] = sat16(p->tx_sent[FM1BLE_TX_ARQ]) | sat16(p->tx_acks[FM1BLE_TX_ARQ]) << 16;
-    r->ctr[FM1BLE_C_PAL_ARQ_DUP] = p->arq_dup;
-    r->ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] = p->arq_unwritten;
+    r->ctr[FM1BLE_C_PAL_ARQ_DUP] = sat16(p->arq_dup) | sat16(p->later_rx) << 16;
+    r->ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] = sat16(p->arq_unwritten) | sat16(p->later_given) << 16;
     {
         const fm1ble_stack_info *si = fm1ble_stack_state();
         const ble_nimble_status *ns = ble_nimble_state();

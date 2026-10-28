@@ -70,9 +70,19 @@
  * own state (the SN and NESN of the last response Cordio handed over) and the chip's toggles: a packet acknowledges
  * Cordio's last PDU when that PDU went into a slot and TXTOG has changed since (the chip moved to the other slot); it is new
  * when RXTOG changed at it, or when RXTOG has not moved yet in the connection (a chip whose RXTOG does not follow new
- * packets: every packet new). MD goes to Cordio as 0, one exchange per event. A response too late for T_IFS is not put in,
+ * packets: every packet new). MD goes to Cordio as 1 (since round 6; up to 1b251ea as 0), so Cordio keeps a receive buffer
+ * for a later packet in the same event, whichever RXDHDR bit is really the central's MD; an event with no later packet
+ * ends with Cordio's receive timing out at the event's end. At 1b251ea BlueZ sent LL_LENGTH_REQ with MD set and its first
+ * L2CAP PDU in the same event: the chip's ARQ acknowledged it on the air, but Cordio (told MD 0) had closed the event, so
+ * the PDU never reached Cordio and no ATT request reached NimBLE. A response too late for T_IFS is not put in,
  * and the next packet tells Cordio its PDU was not acknowledged, so it hands the same one again. The header trace and each
  * connection's link-layer counts (pal_fm1.h PAL_FM1_TRACE_*) say, for every mode, what went each way.
+ *
+ * Packets after the first in an event (every mode). Cordio's response is complete when the central's next packet comes
+ * (it went at T_IFS before it), not only at the event's end, so Cordio takes each packet of the event in turn; up to
+ * 1b251ea the completion waited for the event's end and a later packet was held over Cordio's response. The busy wait
+ * does not run through the response (pal_fm1_service may run from the interrupt): a later packet the main loop comes
+ * back to too late for T_IFS still reaches Cordio, and in ARQ its answer goes at the next event (not acknowledged).
  */
 #include <string.h>
 #include "wsf_types.h"
@@ -149,6 +159,7 @@ static uint32_t g_txs0, g_csent, g_cstale, g_chalt;
  * went in, RXTOG at the last packet and whether it has moved in the connection (ARQ above); the central's L2CAP PDUs Cordio
  * took as new; the event's trace word (pal_fm1.h, NULL: none), the connection's trace words so far */
 static uint8_t g_csn, g_cnesn, g_tog_w, g_wrote, g_rxtog, g_rxmoved;
+static uint8_t g_held_later;            /* the held packet is a later one of its event (pal_fm1.h later_rx) */
 static uint32_t g_cl2, g_trn;
 static uint32_t *g_tr;
 
@@ -304,7 +315,7 @@ static void conn_packet(const fm1ble_pkt *p)
         isnew = (uint8_t)(rxch || !g_rxmoved);
         if (!isnew)
             g_st.arq_dup++;
-        h = (uint8_t)(llid | (ack ? g_csn ^ 1u : g_csn) << 2 | (isnew ? g_cnesn : g_cnesn ^ 1u) << 3);
+        h = (uint8_t)(llid | (ack ? g_csn ^ 1u : g_csn) << 2 | (isnew ? g_cnesn : g_cnesn ^ 1u) << 3 | 1u << 4);
         g_held_pdu[0] = h;
     }
     if (rxch)
@@ -681,6 +692,8 @@ static int deliver(void)
         memcpy(g_rxbuf, g_held_pdu, n);
         g_held = 0;
         g_wait = W_NONE;
+        if (g_held_later)
+            g_st.later_given++;
         if (g_held_ok)
             g_st.rx_ok++;
         else
@@ -694,10 +707,15 @@ static int deliver(void)
         rx(g_fail ? BB_STATUS_FAILED : BB_STATUS_RX_TIMEOUT, RSSI_NONE, 0, now(), 0);
         return 1;
     }
-    if (g_wait == W_TIFS_TX && g_done) {
+    if (g_wait == W_TIFS_TX && (g_done || (g_held && g_kind == K_CONN))) {
+        /* at the event's end, or when the central's next packet in the event came (the response before it went, so
+         * Cordio takes that packet next); in ARQ a response left out does not end the event: the next packet tells
+         * Cordio its PDU was not acknowledged */
+        int late = g_resp_late && !(g_held && g_kind == K_CONN && g_tx == FM1BLE_TX_ARQ);
         g_wait = W_NONE;
+        g_resp_late = 0;
         g_st.tx_done++;
-        tx(g_resp_late || g_fail ? BB_STATUS_FAILED : BB_STATUS_SUCCESS);
+        tx(late || g_fail ? BB_STATUS_FAILED : BB_STATUS_SUCCESS);
         return 1;
     }
     return 0;
@@ -737,9 +755,14 @@ void pal_fm1_service(void)
             g_held_ok = p.ok;
             g_held_ts = t - air_us(g_held_n);
             g_held = 1;
+            g_held_later = 0;
             progress = 1;
-            if (g_kind == K_CONN && g_conn_open)
+            if (g_kind == K_CONN && g_conn_open) {
+                g_held_later = g_conn_rx;
+                if (g_conn_rx)
+                    g_st.later_rx++;
                 conn_packet(&p);
+            }
             if (g_kind == K_CONN && g_conn_open) {
                 /* from the window's own start for this setup (g_win_early before g_due) */
                 int32_t arr = (int32_t)(g_held_ts - g_due) + (int32_t)g_win_early;

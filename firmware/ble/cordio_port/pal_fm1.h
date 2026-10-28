@@ -93,7 +93,11 @@ typedef struct {
  * good CRC); ll_cnt, the central's L2CAP PDUs (LLID 2) Cordio took as new (7-0), Cordio's non-empty responses put in
  * (15-8), the packets Cordio was told did not acknowledge its last PDU (23-16), RXTOG's changes (31-24), each at most 255.
  * arq_dup and arq_unwritten (ARQ only): packets Cordio was told were repeats (RXTOG unchanged once it had moved), and
- * responses that did not go in (too late, or after the event), so Cordio was told its PDU was not acknowledged. */
+ * responses that did not go in (too late, or after the event), so Cordio was told its PDU was not acknowledged.
+ * Packets after the first in a connection event (since round 6 of the FM-1 Bluetooth goal: at 1b251ea BlueZ sent
+ * LL_LENGTH_REQ with MD set and its first L2CAP PDU T_IFS after the response, in the same event; the chip's ARQ
+ * acknowledged it on the air, Cordio had closed the event and never got it, so no ATT request reached NimBLE):
+ * later_rx such packets, later_given the ones given to Cordio. */
 #define PAL_FM1_TRACE_CONNS 2
 #define PAL_FM1_TRACE_PER   20
 
@@ -145,6 +149,7 @@ typedef struct {
     /* the header trace and each connection's link-layer counts (PAL_FM1_TRACE_CONNS above) */
     uint32_t trace[PAL_FM1_TRACE_CONNS][PAL_FM1_TRACE_PER];
     uint32_t ll_ops[PAL_FM1_CONNS], ll_cnt[PAL_FM1_CONNS], arq_dup, arq_unwritten;
+    uint32_t later_rx, later_given;
 } pal_fm1_stats;
 
 void pal_fm1_attach(const pal_fm1_cfg *cfg);

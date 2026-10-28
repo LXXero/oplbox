@@ -3,7 +3,9 @@
  * tests/ble_stack.c): it hears the peripheral's advertising packets, answers one with a SCAN_REQ or a CONNECT_IND when
  * asked, then runs the connection as the Core Specification says (Vol 6 Part B: the transmit window 4.5.3, channel
  * selection algorithm #1 4.5.8.2, SN and NESN 4.5.9): an empty PDU or the next queued data PDU at each anchor, the
- * peripheral's answers kept in order. Own code. Host only. */
+ * peripheral's answers kept in order. With burst set it sends its queue in one event as BlueZ did at 1b251ea (LL_LENGTH_REQ
+ * with MD set, its first L2CAP PDU T_IFS after the response): MD set while more is queued after the packet, the next packet
+ * after a response it heard (4.5.6). Own code. Host only. */
 #ifndef OPLBOX_TESTS_BLE_AIR_CENTRAL_H
 #define OPLBOX_TESTS_BLE_AIR_CENTRAL_H
 
@@ -41,6 +43,10 @@ typedef struct {
     uint8_t sn, nesn;
     uint8_t last[40];                   /* the PDU last sent (LLID, length, payload), sent again until acknowledged (4.5.9) */
     int inflight, last_data;            /* it was sent and not acknowledged yet; it is the queue's head (not an empty PDU) */
+    int burst;                          /* MD set while more is queued: the queue in one event (above) */
+    uint8_t md;                         /* the last packet's MD */
+    int heard_last;                     /* the response to the last packet was heard */
+    int in_event;                       /* packets sent in this event (at most 8: the event's length) */
     uint8_t q[16][40];                  /* data PDUs to send (header byte LLID only, length, payload) */
     int nq;
     uint32_t events, heard, acked, chan_bad, aa_bad, data_in;

@@ -70,6 +70,29 @@ static void c_scan_rsp(void *ctx, uint64_t t, const uint8_t *pdu, int n)
     C.rsp_n = n;
 }
 
+/* the packet the central sends now: a new PDU, or the one not acknowledged again as it was; SN, NESN and MD (burst) */
+static int c_pdu(uint8_t *pdu)
+{
+    if (!C.inflight) {
+        if (C.nq) {
+            memcpy(C.last, C.q[0], (size_t)(2 + C.q[0][1]));
+            C.last_data = 1;
+        } else {
+            C.last[0] = 1;                                   /* an empty PDU: LLID 1, length 0 */
+            C.last[1] = 0;
+            C.last_data = 0;
+        }
+        C.inflight = 1;
+    }
+    C.md = (uint8_t)(C.burst && C.last_data && C.nq > 1);
+    C.heard_last = 0;
+    pdu[0] = C.last[0];
+    pdu[1] = C.last[1];
+    memcpy(pdu + 2, C.last + 2, pdu[1]);
+    pdu[0] = (uint8_t)((pdu[0] & 3u) | C.nesn << 2 | C.sn << 3 | C.md << 4);
+    return 2 + pdu[1];
+}
+
 static int c_conn(void *ctx, uint64_t t, uint32_t win, uint8_t chan, uint32_t aa, uint32_t crc, uint8_t *pdu, uint64_t *at)
 {
     uint64_t a;
@@ -98,29 +121,26 @@ static int c_conn(void *ctx, uint64_t t, uint32_t win, uint8_t chan, uint32_t aa
         C.aa_bad++;
         return 0;
     }
-    if (!C.inflight) {                                      /* a new PDU; one not acknowledged goes again as it was */
-        if (C.nq) {
-            memcpy(C.last, C.q[0], (size_t)(2 + C.q[0][1]));
-            C.last_data = 1;
-        } else {
-            C.last[0] = 1;                                   /* an empty PDU: LLID 1, length 0 */
-            C.last[1] = 0;
-            C.last_data = 0;
-        }
-        C.inflight = 1;
-    }
-    pdu[0] = C.last[0];
-    pdu[1] = C.last[1];
-    memcpy(pdu + 2, C.last + 2, pdu[1]);
-    pdu[0] = (uint8_t)((pdu[0] & 3u) | C.nesn << 2 | C.sn << 3);
     *at = a;
-    return 2 + pdu[1];
+    C.in_event = 1;
+    return c_pdu(pdu);
+}
+
+/* the next packet in the event: after a heard response, when the last one said MD (4.5.6) */
+static int c_conn_next(void *ctx, uint8_t *pdu)
+{
+    (void)ctx;
+    if (!C.connected || !C.md || !C.heard_last || C.in_event >= 8)
+        return 0;
+    C.in_event++;
+    return c_pdu(pdu);
 }
 
 static void c_conn_rsp(void *ctx, uint64_t t, const uint8_t *pdu, int n)
 {
     uint8_t sn = (pdu[0] >> 3) & 1u, nesn = (pdu[0] >> 2) & 1u;
     (void)ctx; (void)t;
+    C.heard_last = 1;
     C.heard++;
     if (nesn != C.sn) {                                     /* our packet was acknowledged (4.5.9) */
         C.acked++;
@@ -151,4 +171,4 @@ void c_send(uint8_t llid, const uint8_t *p, uint8_t n)
     C.nq++;
 }
 
-const bb_air AIR = { c_adv, c_scan_rsp, c_conn, c_conn_rsp, air_central_irq, 0 };
+const bb_air AIR = { c_adv, c_scan_rsp, c_conn, c_conn_rsp, air_central_irq, 0, c_conn_next };

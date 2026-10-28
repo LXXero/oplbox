@@ -168,6 +168,10 @@ MUTANTS = (
      "            *g_tr |= 1u << 22;\n", "            ;\n"),
     ("the link-layer counts leave out the central's L2CAP PDUs", PAL,
      "            *c = sat_add8(*c, 0);\n", "            ;\n"),
+    ("ARQ: Cordio told MD 0, one exchange per event (1b251ea: the central's L2CAP PDU after LL_LENGTH_REQ lost)", PAL,
+     "(isnew ? g_cnesn : g_cnesn ^ 1u) << 3 | 1u << 4);", "(isnew ? g_cnesn : g_cnesn ^ 1u) << 3);"),
+    ("Cordio's response completed only at the event's end (a later packet held over the next one)", PAL,
+     "if (g_wait == W_TIFS_TX && (g_done || (g_held && g_kind == K_CONN))) {", "if (g_wait == W_TIFS_TX && g_done) {"),
 )
 
 

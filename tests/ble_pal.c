@@ -67,6 +67,7 @@ static uint32_t g_hook_ev;
 static uint64_t g_hang_t0;
 static uint8_t g_tx_modes;              /* polled_run's pal_fm1_cfg tx_modes */
 static int g_feat, g_feat_rsp;          /* polled_run: the central asks LL_FEATURE_REQ first; LL_FEATURE_RSPs it got */
+static int g_burst;                     /* polled_run: the central's burst (air_central.h); 2: a second ATT write after the first */
 
 static void hook(void)
 {
@@ -177,6 +178,7 @@ static uint32_t polled_run(fm1ble *b, int attach, int busy, uint8_t setups, int 
     if (attach)
         pal_fm1_attach(&pc);
     memset(&C, 0, sizeof C);
+    C.burst = g_burst;
     buf[0] = 1;
     cmd(0x200A, buf, 1);
     g_nev = 0;
@@ -191,8 +193,11 @@ static uint32_t polled_run(fm1ble *b, int attach, int busy, uint8_t setups, int 
         if (g_feat)
             c_send(3, feat, sizeof feat);
         c_send(2, att, sizeof att);
+        if (g_burst > 1)
+            c_send(2, att, sizeof att);
         run_polled_us(200000, 200);
-        *data_ok = C.connected && C.nq == 0 && g_nacl == 1 && g_acln[0] == 4 + sizeof att;
+        *data_ok = C.connected && C.nq == 0 && g_nacl == 1 + (g_burst > 1) && g_acln[0] == 4 + sizeof att &&
+                   (g_burst < 2 || g_acln[1] == 4 + sizeof att);
         g_feat_rsp = 0;
         for (k = 0; k < C.ngot; k++)
             if ((C.got[k][0] & 3u) == 3u && C.got[k][2] == 0x09)
@@ -611,6 +616,23 @@ int main(void)
             check(h != 0xFFFF && data_ok && g_feat_rsp == 1 && st->arq_dup >= 3u && st->arq_unwritten == 0,
                   "ARQ, the central missing every fifth response: its repeats told to Cordio as repeats, nothing lost or doubled");
             bbm.drop_rsp = 0;
+            /* the central sends its queue in one event, as BlueZ did at 1b251ea (LL_LENGTH_REQ with MD set, its first L2CAP
+             * PDU T_IFS after the response): the ATT write comes as the event's second packet, the chip's ARQ takes it,
+             * and it reaches the host (up to 1b251ea Cordio, told MD 0, had closed the event: the write was lost) */
+            g_burst = 1;
+            bbm.later_in = 0;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(h != 0xFFFF && data_ok && g_feat_rsp == 1 && bbm.later_in >= 1u && st->later_rx >= 1u &&
+                  st->later_given == st->later_rx,
+                  "ARQ, the central's ATT write as the second packet of an event (MD set): given to Cordio, it reaches the host");
+            /* and three in one event (the two writes after the feature request): each taken when the next comes, so none
+             * is held over the next one (up to 1b251ea Cordio's response completed only at the event's end) */
+            g_burst = 2;
+            bbm.later_in = 0;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(h != 0xFFFF && data_ok && g_feat_rsp == 1 && bbm.later_in >= 2u && st->later_given == st->later_rx,
+                  "ARQ, three packets in one event: both ATT writes reach the host in order");
+            g_burst = 0;
             /* the central misses the feature response itself: its next packet does not acknowledge it, Cordio is told so
              * and hands it again into the slot the chip sends again */
             bbm.drop_data = 1;
