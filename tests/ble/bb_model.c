@@ -4,6 +4,7 @@
 #include "bb_model.h"
 #include "fm1ble_port.h"
 #include "fm1ble_regs.h"
+#include "fm1ble_agc.h"
 
 bb_model bbm;
 
@@ -77,6 +78,9 @@ static void air_rx(const uint8_t *pdu, int n, int adv)
     air16w(FM1BLE_E_RXSTAT0, 1);
 }
 
+/* the receiver listens after its own TX (bb_air): the gain table written whole and a window in WINCNTL2 */
+static int air_listens(void) { return bbm.agc_n == (int)FM1BLE_AGC_WORDS && !bbm.agc_bad && air16(FM1BLE_E_WINCNTL2) != 0; }
+
 static void air_irq(uint32_t bit)
 {
     pend(bit);
@@ -117,6 +121,10 @@ static void air_event(void)
                 break;
             bbm.tx_sent++;
             r = a->adv ? a->adv(a->ctx, t, (uint8_t)c, pdu, n, req) : 0;
+            if (r > 0 && !air_listens()) {
+                bbm.rx_deaf++;
+                r = 0;
+            }
             t += bb_model_air_us(n) + 150u;
             if (r > 0) {
                 bbm.now_us = t + bb_model_air_us(r);
@@ -140,11 +148,15 @@ static void air_event(void)
         }
         air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
     } else if (state == 7u) {
-        uint32_t win = (uint32_t)air16(FM1BLE_E_WINCNTL0) | (uint32_t)air16(FM1BLE_E_WINCNTL1) << 16;
+        uint32_t win = air16(FM1BLE_E_WINCNTL2);
         uint32_t aa = (uint32_t)air16(FM1BLE_E_BDADDR0) | (uint32_t)air16(FM1BLE_E_BDADDR1) << 16;
         uint32_t crc = (uint32_t)air16(FM1BLE_E_CRCWORD0) | (uint32_t)(air16(FM1BLE_E_CRCWORD1) & 0xFFu) << 16;
         uint64_t at = 0;
         r = a->conn ? a->conn(a->ctx, t, win, (uint8_t)chan, aa, crc, req, &at) : 0;
+        if (r > 0 && !air_listens()) {
+            bbm.rx_deaf++;
+            r = 0;
+        }
         if (r > 0 && at >= t && at <= t + win) {
             bbm.now_us = at + bb_model_air_us(r);
             air_rx(req, r, 0);
@@ -205,6 +217,13 @@ void fm1ble_port_wr32(uint32_t addr, uint32_t v)
         }
     } else if (addr == FM1BLE_BB_IRQ_CLR) {
         *slot(FM1BLE_BB_IRQ_PEND, 1) &= ~v;
+    } else if (addr == FM1BLE_AGC_TAB_AT) {
+        bbm.agc_n = 0;
+        bbm.agc_bad = v != 0;
+    } else if (addr == FM1BLE_AGC_TAB) {
+        if (bbm.agc_n >= (int)FM1BLE_AGC_WORDS || v != FM1BLE_AGC_TABLE[bbm.agc_n])
+            bbm.agc_bad++;
+        bbm.agc_n++;
     } else if (addr == FM1BLE_BB_RAM_START) {
         bbm.blk = 0;                    /* resolved by the test through the address it hands the driver */
     }

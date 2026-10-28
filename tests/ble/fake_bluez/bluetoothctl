@@ -3,7 +3,9 @@
 # A stand-in for BlueZ's bluetoothctl in interactive mode, for tests/ble_central_tool.py: the lines the real one prints,
 # with its colours and prompt, for the commands tools/ble_central.py sends. Made up from bluetoothctl's output format,
 # not recorded. FAKE_BLUEZ_STATE: a directory for the commands and the "connected" port; FAKE_BLUEZ_MODE: ok, nostack
-# (the stack's address never heard, only a cached entry removed), nomidi (no sequencer port after connecting), noconnect (the connection fails).
+# (the stack's address never heard, only a cached entry removed), nomidi (the services resolved, no sequencer port),
+# noconnect (the connection fails), noservices (connected, no GATT services ever resolved: the peripheral never answered),
+# dropped (connected, then Connected: no: what a central sees when the peripheral missed its CONNECT_IND).
 import os
 import sys
 st, mode = os.environ["FAKE_BLUEZ_STATE"], os.environ.get("FAKE_BLUEZ_MODE", "ok")
@@ -43,6 +45,12 @@ for line in sys.stdin:
             continue
         out(f"[\x1b[0;93mCHG\x1b[0m] Device {a} Connected: yes")
         out("Connection successful")
+        if mode == "dropped":
+            out(f"[\x1b[0;93mCHG\x1b[0m] Device {a} Connected: no")
+            continue
+        if mode == "noservices":
+            continue
+        out(f"[\x1b[0;93mCHG\x1b[0m] Device {a} ServicesResolved: yes")
         if mode != "nomidi":
             open(os.path.join(st, "port"), "w").close()
     elif cmd.startswith("disconnect "):

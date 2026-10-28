@@ -12,7 +12,13 @@ aseqsend, waits for the FM-1's own Note On to come back as a notification, and d
 --timeout (default 120 s).
 
 With --json the last line on stdout is the result as JSON: seen {addr: {first, last, rssi, name}}, stack_seen,
-connected, port, sent, received (the aseqdump lines from the FM-1), errors. Without, a short summary.
+connected, services (BlueZ resolved the FM-1's GATT services), dropped (seconds after the connect when BlueZ said
+Connected: no, or null), port, sent, received (the aseqdump lines from the FM-1), errors. Without, a short summary.
+
+bluetoothctl says "Connection successful" on LE once its controller has sent the CONNECT_IND, whether or not the
+peripheral got it. So no MIDI port after a connect is first a question of the connection: with no GATT services resolved
+(ServicesResolved: yes never came) or a drop, the connection never came up on the FM-1's side, and the result says so;
+only with the services resolved and still no port is it BlueZ's MIDI side.
 
 tools/fm1_ble_report.py --run --central HOST starts this on HOST over ssh (`ssh HOST python3 - ARGS` with this file on
 stdin), so the run on the FM-1 and the central's side come back as one report. Exit code 0 when it finished (whatever
@@ -100,7 +106,8 @@ def run(a, log):
     end = t0 + a.timeout
     stack = a.stack.upper()
     watch = {stack, *(x.upper() for x in a.trials)}
-    res = {"seen": {}, "stack_seen": False, "connected": False, "port": None, "sent": False, "received": [], "errors": []}
+    res = {"seen": {}, "stack_seen": False, "connected": False, "services": False, "dropped": None, "port": None,
+           "sent": False, "received": [], "errors": []}
 
     def at(t):
         return round(t - t0, 2)
@@ -150,6 +157,8 @@ def run(a, log):
             if line is None:
                 break
             device(t, line)
+            if re.search(r"ServicesResolved:\s*yes", line):
+                res["services"] = True
             if "Connection successful" in line or re.search(r"Connected:\s*yes", line):
                 res["connected"] = True
                 break
@@ -160,20 +169,39 @@ def run(a, log):
             if not any(e.startswith("connect:") for e in res["errors"]):
                 res["errors"].append("connect: no answer")
             return res
-        log(f"{at(time.monotonic()):6.2f} connected")
+        t_conn = time.monotonic()
+        log(f"{at(t_conn):6.2f} connected")
+        port_end = min(end, t_conn + STEP["port"])
+        while time.monotonic() < port_end and not res["port"] and res["dropped"] is None:
+            for t, line in ctl.lines(min(port_end, time.monotonic() + 0.2)):     # BlueZ's word on the connection meanwhile
+                if line is None:
+                    break
+                device(t, line)
+                if re.search(r"ServicesResolved:\s*yes", line):
+                    res["services"] = True
+                if re.search(r"Connected:\s*no", line):
+                    res["dropped"] = round(t - t_conn, 2)
+                    log(f"{at(t):6.2f} BlueZ dropped the connection")
+                    break
+            if ports0 is not None and res["dropped"] is None:
+                new = {k: v for k, v in (seq_ports() or {}).items() if k not in ports0}
+                if new:
+                    res["port"] = sorted(new)[0]
+                    res["port_name"] = new[res["port"]]
+        if res["dropped"] is not None:
+            res["errors"].append(f"the connection never came up on the FM-1's side: BlueZ dropped it {res['dropped']:g} s "
+                                 f"after sending CONNECT_IND, {'after' if res['services'] else 'before'} resolving GATT services "
+                                 "(the FM-1 did not receive the CONNECT_IND or did not answer in the connection)")
+            return res
+        if not res["services"] and not res["port"]:
+            res["errors"].append(f"the connection never came up on the FM-1's side: no GATT services resolved in "
+                                 f"{STEP['port']:g} s (bluetoothctl says connected once it has sent CONNECT_IND)")
+            return res
         if ports0 is None:
             res["errors"].append("no aseqdump (alsa-utils): the MIDI part is left out")
             return res
-        port_end = min(end, time.monotonic() + STEP["port"])
-        while time.monotonic() < port_end and not res["port"]:
-            new = {k: v for k, v in (seq_ports() or {}).items() if k not in ports0}
-            if new:
-                res["port"] = sorted(new)[0]
-                res["port_name"] = new[res["port"]]
-                break
-            time.sleep(0.2)
         if not res["port"]:
-            res["errors"].append("no ALSA sequencer port came for the FM-1 (BlueZ without MIDI support?)")
+            res["errors"].append("GATT services resolved, but no ALSA sequencer port came for the FM-1 (BlueZ's MIDI plugin?)")
             return res
         log(f"{at(time.monotonic()):6.2f} MIDI port {res['port']} ({res['port_name']})")
         dump = subprocess.Popen(["aseqdump", "-p", res["port"]], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

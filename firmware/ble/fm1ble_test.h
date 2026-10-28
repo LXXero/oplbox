@@ -38,11 +38,12 @@ typedef struct {
     uint32_t ms;                /* milliseconds the step took, from the run's start to its end */
 } fm1ble_step;
 
-#define FM1BLE_N_CTR    40      /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
+#define FM1BLE_N_CTR    64      /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
 
 /* The counters, in the report's order. tools/fm1_ble_report.py has the same list (tests/ble_report_tool.py holds it to
  * FM1BLE_CTR_NAMES); the firmware at 48ea034 and before sent 24 others (the tool reads those by their count), up to
- * 122afe3 the first 32 of these, with pal_done_37-39 counting the driver's one-channel events that ended. */
+ * 122afe3 the first 32 of these, with pal_done_37-39 counting the driver's one-channel events that ended, up to 3b39ab4
+ * the first 40. The RX trials' four each (rxtN_*) and the receive setup the stack ran on follow. */
 enum {
     FM1BLE_C_RADIO_REGS_OK, FM1BLE_C_RADIO_REGS_BAD, FM1BLE_C_VARIANT, FM1BLE_C_RF_COMMON,
     FM1BLE_C_EVENTS, FM1BLE_C_TX_FLIPS, FM1BLE_C_RX_PACKETS, FM1BLE_C_RX_SCAN_REQ,
@@ -53,8 +54,16 @@ enum {
     FM1BLE_C_PAL_RESP_LATE, FM1BLE_C_PAL_STUCK, FM1BLE_C_PAL_TIMER_LATE_US, FM1BLE_C_PAL_DONE_37,
     FM1BLE_C_PAL_DONE_38, FM1BLE_C_PAL_DONE_39, FM1BLE_C_TXPWR, FM1BLE_C_RAM_END,
     FM1BLE_C_PAL_ADV_EVENTS, FM1BLE_C_PAL_ADV_COVERED, FM1BLE_C_PAL_ADV_ENDED, FM1BLE_C_PAL_ADV_CONN_IND,
-    FM1BLE_C_PAL_CONN_ENDED, FM1BLE_C_PAL_CONN_RX, FM1BLE_C_PAL_REFUSED, FM1BLE_C_EVTCOUNT
+    FM1BLE_C_PAL_CONN_ENDED, FM1BLE_C_PAL_CONN_RX, FM1BLE_C_PAL_REFUSED, FM1BLE_C_EVTCOUNT,
+    FM1BLE_C_RXT,                                   /* RX trial k's four: FM1BLE_C_RXT + 4k + FM1BLE_RXT_* */
+    FM1BLE_C_RX_STACK_TRIAL = FM1BLE_C_RXT + 16, FM1BLE_C_RX_AGC_TABLE, FM1BLE_C_RX_WIN, FM1BLE_C_AGC_CTL,
+    FM1BLE_C_AGC_RSSI, FM1BLE_C_CONN_WIN, FM1BLE_C_PAL_CONN_TIMEOUT_US, FM1BLE_C_RX_STAT1
 };
+/* an RX trial's counters: counts = events (bits 7-0), TXTOG changes (15-8), packets received (23-16), SCAN_REQs (31-24),
+ * each at most 255; stat = the first packet's RXSTAT (15-0) and RXAHDR (31-16), or with none the words RXSTAT0 and RXAHDR0
+ * as the trial left them; pkt = that packet's RXDHDR (15-0), the RX buffer it was in (23-16) and LASTCHMAP's low byte
+ * (31-24); bytes = its payload's first four bytes, the first in bits 7-0 */
+enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
 #define FM1BLE_CTR_NAMES \
     "radio_regs_ok", "radio_regs_bad", "variant", "rf_common", \
     "events", "tx_flips", "rx_packets", "rx_scan_req", \
@@ -65,7 +74,13 @@ enum {
     "pal_resp_late", "pal_stuck", "pal_timer_late_us", "pal_done_37", \
     "pal_done_38", "pal_done_39", "txpwr", "ram_end", \
     "pal_adv_events", "pal_adv_covered", "pal_adv_ended", "pal_adv_conn_ind", \
-    "pal_conn_ended", "pal_conn_rx", "pal_refused", "evtcount"
+    "pal_conn_ended", "pal_conn_rx", "pal_refused", "evtcount", \
+    "rxt0_counts", "rxt0_stat", "rxt0_pkt", "rxt0_bytes", \
+    "rxt1_counts", "rxt1_stat", "rxt1_pkt", "rxt1_bytes", \
+    "rxt2_counts", "rxt2_stat", "rxt2_pkt", "rxt2_bytes", \
+    "rxt3_counts", "rxt3_stat", "rxt3_pkt", "rxt3_bytes", \
+    "rx_stack_trial", "rx_agc_table", "rx_win", "agc_ctl", \
+    "agc_rssi", "conn_win", "pal_conn_timeout_us", "rx_stat1"
 
 /* The air trials (adv_air): the driver's own ADV_IND, each trial from its own static random address, so a central's
  * scan (tools/ble_central.py) says which one reached the air. Trial 0: without the shared radio's init (variant 0), at
@@ -74,6 +89,20 @@ enum {
 #define FM1BLE_TRIALS       3
 #define FM1BLE_TRIAL_MS     3000u
 #define FM1BLE_TRIAL_ADDR0  0x10u
+
+/* The RX trials, after the air trials and before the stack: the same ADV_IND on variant 1 at FM1BLE_TXPWR_LEVEL, each from
+ * C2:46:4D:31:00:<FM1BLE_RX_ADDR0 + k> with its own receive setup (fm1ble_rx_setup), so a central's active scan (its
+ * SCAN_REQs) shows in each trial's counters which setup lets the radio receive after its own TX. Up to 3b39ab4 the driver
+ * wrote neither the AGC block's gain table nor WINCNTL2, and the air trials received nothing (the trials above still run
+ * that way, to compare):
+ *   0 (:13): no gain table, WINCNTL2 = 0x32 (le_hw_advertising's)
+ *   1 (:14): the gain table (the radio powered up again with it), WINCNTL2 = 0
+ *   2 (:15): the gain table, WINCNTL2 = 0x32: JieLi's setup, the driver's default
+ *   3 (:16): the gain table, WINCNTL2 = 0x96 (the direct-test receiver's)
+ * The stack then runs on the window of the first of trials 2, 3, 0, 1 that received a packet (2 when none did), with the
+ * gain table (rx_stack_trial, rx_agc_table and rx_win say which). */
+#define FM1BLE_RX_TRIALS    4
+#define FM1BLE_RX_ADDR0     (FM1BLE_TRIAL_ADDR0 + FM1BLE_TRIALS)
 
 enum { FM1BLE_IDLE, FM1BLE_RUNNING, FM1BLE_DONE };
 

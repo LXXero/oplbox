@@ -56,7 +56,7 @@ check(r["stack_seen"] and r["connected"] and r["port"] == "128:0" and r["port_na
 check(r["sent"] and sent == "-p 128:0 90 3C 64\n", f"ok: aseqsend got the Note On for that port: {sent!r}")
 check(len(r["received"]) == 1 and "Note on" in r["received"][0] and "note 60, velocity 100" in r["received"][0],
       f"ok: the FM-1's Note On heard: {r['received']}")
-check(r["errors"] == [], f"ok: no errors: {r['errors']}")
+check(r["errors"] == [] and r["services"] and r["dropped"] is None, f"ok: no errors, services resolved: {r}")
 check(cmds[:4] == ["scan le", "scan off", "connect C2:46:4D:31:00:01", "disconnect C2:46:4D:31:00:01"] and "quit" in cmds,
       f"ok: the commands in order: {cmds}")
 check("heard C2:46:4D:31:00:10" in err and "connected" in err, "ok: progress on stderr")
@@ -71,8 +71,23 @@ check(r["stack_seen"] and not r["connected"] and r["errors"][0].startswith("conn
 check("disconnect C2:46:4D:31:00:01" not in cmds, "noconnect: no disconnect")
 
 rc, r, cmds, sent, err = central("nomidi")
-check(r["connected"] and r["port"] is None and "no ALSA sequencer port" in r["errors"][0] and not sent, f"nomidi: {r}")
+check(r["connected"] and r["services"] and r["port"] is None and "services resolved, but no ALSA sequencer port" in r["errors"][0]
+      and not sent, f"nomidi: {r}")
 check("disconnect C2:46:4D:31:00:01" in cmds, "nomidi: disconnected anyway")
+
+# connected as bluetoothctl says it (CONNECT_IND sent), but the FM-1 never came up in the connection
+rc, r, cmds, sent, err = central("noservices")
+check(r["connected"] and not r["services"] and r["port"] is None and len(r["errors"]) == 1 and
+      r["errors"][0].startswith("the connection never came up on the FM-1's side: no GATT services resolved") and
+      "MIDI" not in r["errors"][0], f"noservices: the connection, not BlueZ's MIDI, named: {r}")
+rc, r, cmds, sent, err = central("dropped")
+check(r["connected"] and r["dropped"] is not None and r["port"] is None and len(r["errors"]) == 1 and
+      "never came up on the FM-1's side: BlueZ dropped it" in r["errors"][0] and "before resolving" in r["errors"][0],
+      f"dropped: {r}")
+check("dropped the connection" in err, "dropped: said on stderr")
+out = io.StringIO()
+br.show_central(r, out)
+check("GATT services resolved: no; dropped: after" in out.getvalue(), f"show_central, a drop:\n{out.getvalue()}")
 
 out = io.StringIO()
 with redirect_stdout(out), redirect_stderr(io.StringIO()):

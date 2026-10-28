@@ -23,6 +23,8 @@
 #define FM1BLE_ANA_PLLTAB       0x2FC88u   /* the PLL table's address (F.2) */
 #define FM1BLE_AGC_0            0x2FD80u   /* C.3 */
 #define FM1BLE_AGC_RSSI         0x2FD8C
+#define FM1BLE_AGC_TAB_AT       0x2FD98u   /* C.3 btagc_ram_init: 0 first, then the gain table's words go to ... */
+#define FM1BLE_AGC_TAB          0x2FD9Cu   /* ... this register one after another (fm1ble_agc.h) */
 
 /* D: the baseband control block */
 #define FM1BLE_BB_CON0          0x28000u
@@ -111,6 +113,8 @@
 #define FM1BLE_E_CHTAB1         0x090u
 #define FM1BLE_E_CHTAB2         0x0B8u
 #define FM1BLE_E_CHTAB3         0x0E0u
+#define FM1BLE_E_WINCNTL2       0x112u     /* the receive window, us from use (E.2): 0x32 advertising, the scan window
+                                              scanning, a connection's first transmit window */
 #define FM1BLE_E_TXPWR0         0x120u     /* u32: 0x10 + level (E.7) */
 #define FM1BLE_E_TXPWR1         0x128u
 #define FM1BLE_E_PLLCOMP        0x130u     /* i32 */

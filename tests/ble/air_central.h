@@ -20,6 +20,8 @@ extern const uint8_t CENTRAL[6];
 
 typedef struct {
     int want_scan, want_conn;           /* answer the next advertising packet with a SCAN_REQ / CONNECT_IND */
+    int scan_all;                       /* an active scan (BlueZ's scan le): a SCAN_REQ to every ADV_IND heard */
+    uint32_t scan_req_to[256];          /* SCAN_REQs sent, by the first byte of the advertiser address */
     uint32_t adv_seen[3];               /* ADV_IND heard on 37, 38, 39 */
     uint32_t adv_from[256];             /* ADV_IND heard, by the first (least significant) byte of the advertiser address */
     uint32_t adv_short;                 /* ADV_IND too short for its address, or its length byte not the PDU's */

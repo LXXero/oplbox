@@ -65,6 +65,14 @@ MUTANTS = (
      "for (s = 0; s < 2u; s++) {", "for (s = 0; s < 1u; s++) {"),
     ("the received data header's SN and NESN dropped", DRV,
      "ahdr & 0xFFu : dhdr & 0x1Fu", "ahdr & 0xFFu : dhdr & 0x03u"),
+    ("the advertising events' receive window (WINCNTL2) left at 0, as up to 3b39ab4", DRV,
+     "    e16(b, FM1BLE_E_WINCNTL2, adv_win(b));\n    e16(b, FM1BLE_E_FILTERCNTL, 0);\n", "    e16(b, FM1BLE_E_FILTERCNTL, 0);\n"),
+    ("the AGC gain table not written at power-up, as up to 3b39ab4", DRV,
+     "    b->d.agc_table = (uint8_t)rx_agc(b);\n", "    b->d.agc_table = 0;\n"),
+    ("the gain table written one word out of step", DRV,
+     "wr(FM1BLE_AGC_TAB, FM1BLE_AGC_TABLE[i]);", "wr(FM1BLE_AGC_TAB, FM1BLE_AGC_TABLE[(i + 1u) % FM1BLE_AGC_WORDS]);"),
+    ("a connection event's window not the one Cordio asks for (WINCNTL2 = WINCNTL0's 0x32)", DRV,
+     "e16(b, FM1BLE_E_WINCNTL2, window_us > 0xFFFFu ? 0xFFFFu : window_us);", "e16(b, FM1BLE_E_WINCNTL2, FM1BLE_WIN0);"),
 )
 
 

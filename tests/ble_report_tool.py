@@ -105,6 +105,11 @@ addr = [int(x, 16) for x in re.search(r"g_addr\[6\] = \{([^}]*)\}", src).group(1
 mac = lambda b: ":".join(f"{x:02X}" for x in reversed(b))  # noqa: E731
 check(br.STACK_ADDR == mac(addr) and [a for a, _ in br.TRIALS] == [mac([first + k] + addr[1:]) for k in range(ntr)],
       f"the tool's addresses are not the run's: {br.STACK_ADDR} {br.TRIALS}")
+nrx = int(re.search(r"#define FM1BLE_RX_TRIALS\s+(\d+)", hdr).group(1))
+check([a for a, _ in br.RX_TRIALS] == [mac([first + ntr + k] + addr[1:]) for k in range(nrx)],
+      f"the tool's RX trial addresses are not the run's: {br.RX_TRIALS}")
+nctr = int(re.search(r"#define FM1BLE_N_CTR\s+(\d+)", hdr).group(1))
+check(len(br.COUNTERS) == nctr and nctr % 8 == 0, f"{len(br.COUNTERS)} counters, the firmware sends {nctr} (8 to a page)")
 
 # the first FM-1 run's report, from the device: the 24 counters of that firmware, by their own names
 old = br.decode(open(os.path.join(ROOT, "tests/ble/report_48ea034.bin"), "rb").read())
@@ -125,7 +130,8 @@ for line in open(PAGES):
         n, text = line.split(" ble page ", 1)[1].rstrip("\n").split(": ", 1)
         if not text.startswith("PLAY: PAGE") and text:
             drawn.append(text)
-start = drawn.index("BLUETOOTH TEST (STAGE 5)   1/14")              # the run's page 1, then PLAY through to page 14
+npages = 1 + len(br.STEPS) + nctr // 8
+start = drawn.index(f"BLUETOOTH TEST (STAGE 5)   1/{npages}")      # the run's page 1, then PLAY through to the last
 text = [t for t in rep["text"].split("\n") if t]
 first = text[:text.index("STEPS IN FULL: NAME, RESULT, MS, NOTE")]
 check(drawn[start:start + len(first)] == first, "the report's text is not the pages' text:\n" +
@@ -144,6 +150,27 @@ check(st["hci"]["had"] == 41 and st["hci"]["data"][:6].hex() == "0e0401030c00" a
       "hci evidence: the four events' bytes")
 check(st["radio"]["data"].hex() == "0700000098000000" and st["adv_set"]["data"] == b"", "radio evidence, adv_set has none")
 check(not rep["cut_text"] and not rep["cut_steps"], "the simulator's report was cut short")
+check(f"COUNTERS {nctr // 8}/{nctr // 8}   {npages}/{npages}" in text and "RX_STAT1" in rep["text"],
+      "the report holds every counter page, the last counter included")
+
+# the RX trials from their counters: a trial that received, one that did not, the stack's setup
+rx = {"counters": dict(rep["counters"]), "steps": rep["steps"]}
+rx["counters"].update({f"rxt{k}_{w}": 0 for k in range(4) for w in ("counts", "stat", "pkt", "bytes")})
+rx["counters"].update(rxt0_counts=0x1D, rxt0_stat=0x00009800, rxt0_pkt=0x27FF0000, rxt2_counts=0x07071D1D, rxt2_stat=0x00030001,
+                      rxt2_pkt=0x25000C00, rxt2_bytes=0xA4A3A2A1, rx_stack_trial=2, rx_win=0x32, rx_agc_table=1)
+r2 = br.rx_trials(rx)
+check(r2[2]["rx"] == 7 and r2[2]["scan_req"] == 7 and r2[2]["rxdhdr"] >> 8 == 12 and r2[2]["buf"] == 0 and r2[2]["chan"] == 0x25 and
+      r2[0]["buf"] == 0xFF and r2[0]["rxstat"] == 0x9800, f"rx_trials: {r2}")
+out = io.StringIO()
+br.show_rx(rx, out)
+o = out.getvalue()
+check("C2:46:4D:31:00:15  RX 2: the gain table, WINCNTL2 0x32 (JieLi's): 29 events, 29 TXTOG changes, 7 received, 7 SCAN_REQ; "
+      "first: RXSTAT 0001, type 3 (RXAHDR 0003), length 12, buffer 0, bytes a1 a2 a3 a4" in o and
+      "C2:46:4D:31:00:13  RX 0: no gain table, WINCNTL2 0x32: 29 events, 0 TXTOG changes, 0 received, 0 SCAN_REQ; nothing received: "
+      "RXSTAT0 9800" in o and "the stack ran on RX trial 2's window: WINCNTL2 32, gain table written" in o, f"show_rx:\n{o}")
+out = io.StringIO()
+br.show(old, out)
+check("RX TRIALS" not in out.getvalue(), "the 48ea034 report has no RX trials")
 
 # the tool against the fake FM-1: nothing run yet, then --run, then --read
 wait_out = os.path.join(OUT, "ble_wait.txt")

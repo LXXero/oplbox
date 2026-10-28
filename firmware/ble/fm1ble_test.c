@@ -7,7 +7,8 @@
  * with it at the highest level. A central scanning meanwhile (tools/ble_central.py) says which reached the air; the
  * firmware's own evidence is per trial: the event flags, the changes of TXTOG (the hardware's record of a buffer sent)
  * and the packets received. adv_air passes only with events and one of the other two: an event timer that runs with
- * nothing sent (the first FM-1 run, 48ea034) fails it. Then the stack comes up on the radio of the trial that sent
+ * nothing sent (the first FM-1 run, 48ea034) fails it. Four RX trials follow, each with its own receive setup
+ * (fm1ble_test.h): what a central's SCAN_REQs did in each is in the rxtN counters. Then the stack comes up on the radio of the trial that sent
  * (fm1ble_stack.h: Cordio's PAL, Cordio, NimBLE): hci passes when NimBLE's start-up through Cordio ends with advertising
  * on; connect when a central connects within the wait; midi_in when a BLE-MIDI write from it reaches the MIDI input;
  * midi_out when OPLBOX's notification of a Note On is acknowledged (Cordio's Number Of Completed Packets). A connection
@@ -16,6 +17,7 @@
  */
 #include <string.h>
 #include "fm1ble.h"
+#include "fm1ble_port.h"
 #include "fm1ble_regs.h"
 #include "fm1ble_test.h"
 #include "ble_midi.h"
@@ -38,10 +40,17 @@ static uint32_t g_blk[FM1BLE_BLOCK_SIZE / 4u];
 
 enum { P_RADIO, P_BLOCK, P_ADV, P_SETTLE, P_WINDOW, P_TRIAL_END, P_STACK, P_HCI, P_WAIT_CONN, P_MIDI_IN, P_MIDI_OUT,
        P_LEAVE, P_END };
-static uint8_t g_phase, g_variant, g_sent, g_left, g_trial, g_trial_bits, g_adv_err, g_rearm_used;
+#define ALL_TRIALS (FM1BLE_TRIALS + FM1BLE_RX_TRIALS)
+static uint8_t g_phase, g_variant, g_sent, g_left, g_trial, g_trial_bits, g_adv_err, g_rearm_used, g_stack_rx;
 static uint32_t g_phase_t, g_wait_ms, g_nocp0;
-static struct { uint32_t events, flips, rx; } g_tr[FM1BLE_TRIALS], g_at;   /* each trial's counts; the counts at its start */
-static uint16_t g_hw[8];                         /* the entity's hardware-written words after the last trial */
+static struct { uint32_t events, flips, rx, scan_req; } g_tr[ALL_TRIALS], g_at;   /* each trial's counts; the counts at its start */
+static uint16_t g_hw[8];                         /* the entity's hardware-written words after the last air trial */
+/* the RX trials' setups (fm1ble_test.h): the gain table, WINCNTL2 */
+static const struct { uint8_t agc; uint16_t win; } RXT[FM1BLE_RX_TRIALS] = { { 0, 0x32 }, { 1, 0 }, { 1, 0x32 }, { 1, 0x96 } };
+/* what each RX trial saw: its first packet's words and bytes (fm1ble_test.h FM1BLE_RXT_*), or the words it left */
+static struct { uint8_t got; uint32_t stat, pkt, bytes; } g_rx[FM1BLE_RX_TRIALS];
+static uint32_t g_agc_ctl, g_agc_rssi, g_rx_stat1;
+static int g_rf_common;                          /* what the shared radio's init returned the first time (trial 1) */
 
 static void note(fm1ble_step *s, const char *t)
 {
@@ -88,14 +97,31 @@ static void skip_rest(fm1ble_run *r, int from, const char *why)
             finish(r, k, FM1BLE_SKIP, why);
 }
 
+static uint32_t sat8(uint32_t v) { return v > 0xFFu ? 0xFFu : v; }
+static uint32_t ew(uint32_t off) { return (uint32_t)(g_b.blk[g_b.entity + off] | g_b.blk[g_b.entity + off + 1u] << 8); }
+
+/* an RX trial's first packet (fm1ble_test.h FM1BLE_RXT_*), from the driver's record of the last one */
+static void rx_seen(uint32_t k)
+{
+    const fm1ble_diag *d = &g_b.d;
+    uint32_t i;
+    g_rx[k].got = 1;
+    g_rx[k].stat = (uint32_t)d->rx_stat[d->rx_last_buf & 1u] | (uint32_t)d->rx_last_ahdr << 16;
+    g_rx[k].pkt = (uint32_t)d->rx_last_dhdr | (uint32_t)d->rx_last_buf << 16 | (ew(FM1BLE_E_LASTCHMAP) & 0xFFu) << 24;
+    g_rx[k].bytes = 0;
+    for (i = 0; i < 4u && i < d->rx_last_n; i++)
+        g_rx[k].bytes |= (uint32_t)d->rx_last[i] << (8u * i);
+}
+
 static void counters(fm1ble_run *r)
 {
     const fm1ble_diag *d = &g_b.d;
     const pal_fm1_stats *p = pal_fm1_state();
+    uint32_t k;
     r->ctr[FM1BLE_C_RADIO_REGS_OK] = d->rb_ok;
     r->ctr[FM1BLE_C_RADIO_REGS_BAD] = d->rb_bad;
     r->ctr[FM1BLE_C_VARIANT] = g_variant;
-    r->ctr[FM1BLE_C_RF_COMMON] = (uint32_t)d->rf_common;
+    r->ctr[FM1BLE_C_RF_COMMON] = (uint32_t)g_rf_common;
     r->ctr[FM1BLE_C_EVENTS] = d->events;
     r->ctr[FM1BLE_C_TX_FLIPS] = d->tx_flips;
     r->ctr[FM1BLE_C_RX_PACKETS] = d->rx_packets;
@@ -137,7 +163,26 @@ static void counters(fm1ble_run *r)
     r->ctr[FM1BLE_C_PAL_CONN_RX] = p->conn_rx;
     r->ctr[FM1BLE_C_PAL_REFUSED] = p->refused;
     if (g_b.blk)
-        r->ctr[FM1BLE_C_EVTCOUNT] = (uint32_t)(g_b.blk[g_b.entity + FM1BLE_E_EVTCOUNT] | g_b.blk[g_b.entity + FM1BLE_E_EVTCOUNT + 1u] << 8);
+        r->ctr[FM1BLE_C_EVTCOUNT] = ew(FM1BLE_E_EVTCOUNT);
+    for (k = 0; k < FM1BLE_RX_TRIALS; k++) {
+        uint32_t *c = &r->ctr[FM1BLE_C_RXT + 4u * k], j = FM1BLE_TRIALS + k;
+        c[FM1BLE_RXT_COUNTS] = sat8(g_tr[j].events) | sat8(g_tr[j].flips) << 8 | sat8(g_tr[j].rx) << 16 | sat8(g_tr[j].scan_req) << 24;
+        c[FM1BLE_RXT_STAT] = g_rx[k].stat;
+        c[FM1BLE_RXT_PKT] = g_rx[k].pkt;
+        c[FM1BLE_RXT_BYTES] = g_rx[k].bytes;
+    }
+    /* the receive setup the stack runs on (0xFF before it starts), what the AGC block read after the last RX trial, the
+     * windows the last operation left (WINCNTL0 low, WINCNTL2 high), Cordio's last connection receive timeout, RXSTAT1
+     * after the last RX trial */
+    r->ctr[FM1BLE_C_RX_STACK_TRIAL] = g_stack_rx;
+    r->ctr[FM1BLE_C_RX_AGC_TABLE] = d->agc_table;
+    r->ctr[FM1BLE_C_RX_WIN] = g_b.rx_set ? g_b.rx_win : FM1BLE_ADV_WIN_US;
+    r->ctr[FM1BLE_C_AGC_CTL] = g_agc_ctl;
+    r->ctr[FM1BLE_C_AGC_RSSI] = g_agc_rssi;
+    if (g_b.blk)
+        r->ctr[FM1BLE_C_CONN_WIN] = ew(FM1BLE_E_WINCNTL0) | ew(FM1BLE_E_WINCNTL2) << 16;
+    r->ctr[FM1BLE_C_PAL_CONN_TIMEOUT_US] = p->conn_timeout_us;
+    r->ctr[FM1BLE_C_RX_STAT1] = g_rx_stat1;
 }
 
 /* the addresses: made-up static random ones (the FM-1 has no device address: docs/BLUETOOTH_RADIO.md PalCfgLoadData),
@@ -164,6 +209,11 @@ void fm1ble_test_begin(fm1ble_run *r, uint32_t now_ms, uint32_t wait_ms)
     memset(&g_b, 0, sizeof g_b);
     memset(g_tr, 0, sizeof g_tr);
     memset(g_hw, 0, sizeof g_hw);
+    memset(g_rx, 0, sizeof g_rx);
+    g_agc_ctl = g_agc_rssi = g_rx_stat1 = 0;
+    g_stack_rx = 0xFFu;
+    g_rf_common = 0;
+    fm1ble_rx_setup(&g_b, 0, 0);                     /* the air trials: the receive setup up to 3b39ab4 (fm1ble_test.h) */
     r->state = FM1BLE_RUNNING;
     r->t0 = r->now = now_ms;
     g_phase = P_RADIO;
@@ -183,6 +233,8 @@ static void start_radio(fm1ble_run *r)
     int i;
 
     fm1ble_radio_up(&g_b, g_variant, 0);
+    if (g_variant && g_trial == 1)                   /* later power-ups find it done: on the FM-1 WiFi is up, it returns 0 */
+        g_rf_common = d->rf_common;
     if (s->result != FM1BLE_NOT_RUN)                 /* a later power-up (another variant): its readbacks are in the counters */
         return;
     for (i = 0; i < 8; i++)
@@ -307,6 +359,7 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
         g_at.events = d->events;
         g_at.flips = d->tx_flips;
         g_at.rx = d->rx_packets;
+        g_at.scan_req = d->rx_scan_req;
         g_phase = i == 0 ? P_SETTLE : P_TRIAL_END;
         g_phase_t = now_ms;
         break;
@@ -319,6 +372,8 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
         break;
     case P_WINDOW:                                   /* FM1BLE_TRIAL_MS of advertising for a central to see */
         fm1ble_poll(&g_b);
+        if (g_trial >= FM1BLE_TRIALS && !g_rx[g_trial - FM1BLE_TRIALS].got && d->rx_packets != g_at.rx)
+            rx_seen(g_trial - FM1BLE_TRIALS);
         if (!g_b.rearm && now_ms - g_phase_t >= 400u && d->events - g_at.events < 3u) {
             fm1ble_set_rearm(&g_b, 1);              /* D.4: JieLi's handler does per-event bookkeeping: arm the next ourselves */
             g_rearm_used = 1;
@@ -339,10 +394,22 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
         g_tr[g_trial].events = d->events - g_at.events;
         g_tr[g_trial].flips = d->tx_flips - g_at.flips;
         g_tr[g_trial].rx = d->rx_packets - g_at.rx;
-        if (g_tr[g_trial].events >= 3u && (g_tr[g_trial].flips || g_tr[g_trial].rx))
-            g_trial_bits |= (uint8_t)(1u << g_trial);
-        for (i = 0; i < 8; i++)
-            g_hw[i] = (uint16_t)(e[hw[i]] | e[hw[i] + 1u] << 8);
+        g_tr[g_trial].scan_req = d->rx_scan_req - g_at.scan_req;
+        if (g_trial < FM1BLE_TRIALS) {
+            if (g_tr[g_trial].events >= 3u && (g_tr[g_trial].flips || g_tr[g_trial].rx))
+                g_trial_bits |= (uint8_t)(1u << g_trial);
+            for (i = 0; i < 8; i++)
+                g_hw[i] = (uint16_t)(e[hw[i]] | e[hw[i] + 1u] << 8);
+        } else {                                     /* an RX trial: with no packet, the words it left; the AGC block */
+            uint32_t k = g_trial - FM1BLE_TRIALS;
+            if (!g_rx[k].got) {
+                g_rx[k].stat = ew(FM1BLE_E_RXSTAT0) | ew(FM1BLE_E_RXAHDR0) << 16;
+                g_rx[k].pkt = ew(FM1BLE_E_RXDHDR0) | 0xFFu << 16 | (ew(FM1BLE_E_LASTCHMAP) & 0xFFu) << 24;
+            }
+            g_agc_ctl = fm1ble_port_rd32(FM1BLE_AGC_0);
+            g_agc_rssi = fm1ble_port_rd32(FM1BLE_AGC_RSSI);
+            g_rx_stat1 = ew(FM1BLE_E_RXSTAT1);
+        }
         if (g_b.adv_on)
             fm1ble_adv_stop(&g_b);
         g_trial++;
@@ -352,6 +419,17 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
             g_phase = P_RADIO;
         } else if (g_trial < FM1BLE_TRIALS) {        /* trial 2: the same radio, the highest level */
             g_phase = P_ADV;
+        } else if (g_trial < ALL_TRIALS && (g_tr[0].events || g_tr[1].events || g_tr[2].events)) {
+            /* an RX trial (none when no air trial had an event): its setup; the gain table needs a power-up */
+            uint32_t k = g_trial - FM1BLE_TRIALS;
+            fm1ble_rx_setup(&g_b, RXT[k].agc, RXT[k].win);
+            if (RXT[k].agc && !d->agc_table) {
+                fm1ble_radio_down(&g_b);
+                g_variant = 1;
+                g_phase = P_RADIO;
+            } else {
+                g_phase = P_ADV;
+            }
         } else {
             g_phase = P_STACK;
         }
@@ -363,6 +441,16 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
             skip_rest(r, FM1BLE_STEP_HCI, "advertising never ran");
             g_phase = P_END;
             break;
+        }
+        {   /* the window of the first RX trial that received, in the order 2, 3, 0, 1; trial 2's (JieLi's) when none did */
+            static const uint8_t pick[FM1BLE_RX_TRIALS] = { 2, 3, 0, 1 };
+            g_stack_rx = 2;
+            for (i = 0; i < FM1BLE_RX_TRIALS; i++)
+                if (g_tr[FM1BLE_TRIALS + pick[i]].rx) {
+                    g_stack_rx = pick[i];
+                    break;
+                }
+            fm1ble_rx_setup(&g_b, 1, RXT[g_stack_rx].win);
         }
         if ((g_trial_bits & 1u) && !(g_trial_bits & 6u)) {   /* only variant 0 sent: the radio again without the shared init */
             fm1ble_radio_down(&g_b);

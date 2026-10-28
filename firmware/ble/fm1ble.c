@@ -5,6 +5,7 @@
 #include "fm1ble.h"
 #include "fm1ble_port.h"
 #include "fm1ble_regs.h"
+#include "fm1ble_agc.h"
 
 #define HW_ID           0u      /* one link: hardware id 0 */
 #define BIT(n)          (1u << (n))
@@ -58,9 +59,25 @@ static int wait_idle(void)
 
 /* ---- B and C: power-up */
 
-static void agc_init(fm1ble *b)                  /* C.3 btagc_init, without btagc_ram_init (0x2FD98 and 0x2FD9C: not read) */
+void fm1ble_rx_setup(fm1ble *b, int agc_table, uint32_t adv_win_us)
 {
-    (void)b;
+    b->rx_set = 1;
+    b->rx_agc = (uint8_t)(agc_table != 0);
+    b->rx_win = (uint16_t)(adv_win_us > 0xFFFFu ? 0xFFFFu : adv_win_us);
+}
+
+static int rx_agc(const fm1ble *b) { return !b->rx_set || b->rx_agc; }
+static uint32_t adv_win(const fm1ble *b) { return b->rx_set ? b->rx_win : FM1BLE_ADV_WIN_US; }
+
+static void agc_init(fm1ble *b)                  /* C.3 btagc_init: btagc_ram_init (the gain table) first, then the block */
+{
+    uint32_t i;
+    b->d.agc_table = (uint8_t)rx_agc(b);
+    if (b->d.agc_table) {
+        wr(FM1BLE_AGC_TAB_AT, 0);
+        for (i = 0; i < FM1BLE_AGC_WORDS; i++)
+            wr(FM1BLE_AGC_TAB, FM1BLE_AGC_TABLE[i]);
+    }
     clr(FM1BLE_ANA(0x20), 0xC0000000u);
     wr(FM1BLE_AGC_0, 0x000F0000u);
     wr(FM1BLE_AGC_0 + 4u, 0x1872BF14u);
@@ -388,11 +405,13 @@ int fm1ble_adv_start(fm1ble *b, const fm1ble_adv *a)
     for (i = 0; i < 3; i++)                          /* __set_local_addr (E.2: LOCALADR, FORMAT bit 3) */
         e16(b, FM1BLE_E_LOCALADR + 2u * i, (uint32_t)(a->addr[2u * i] | a->addr[2u * i + 1u] << 8));
     e16(b, FM1BLE_E_FORMAT, g16(b, FM1BLE_E_FORMAT) | BIT(3));
-    /* G 2: the CRC init and the window (0x32 = 50) */
+    /* G 2: the CRC init and the windows (WINCNTL0 0x32; WINCNTL2, the time the receiver listens: le_hw_advertising's 0x32
+     * unless fm1ble_rx_setup says otherwise) */
     e16(b, FM1BLE_E_CRCWORD0, 0x5555u);
     e16(b, FM1BLE_E_CRCWORD1, 0x55u);
-    e16(b, FM1BLE_E_WINCNTL0, 0x32u);
+    e16(b, FM1BLE_E_WINCNTL0, FM1BLE_WIN0);
     e16(b, FM1BLE_E_WINCNTL1, 0);
+    e16(b, FM1BLE_E_WINCNTL2, adv_win(b));
     /* G 5: the filter policy */
     e16(b, FM1BLE_E_FILTERCNTL, (a->filter & 1u ? BIT(3) : 0u) | (a->filter & 2u ? BIT(4) : 0u));
     /* G 8: the receive buffers */
@@ -441,8 +460,11 @@ static void rx_capture(fm1ble *b)
     d->rx_stat[0] = (uint16_t)g16(b, FM1BLE_E_RXSTAT0);
     d->rx_stat[1] = (uint16_t)g16(b, FM1BLE_E_RXSTAT1);
     k = g16(b, FM1BLE_E_RXSTAT0) ? 0u : 1u;          /* the buffer the hardware used: [unchecked how it chooses] */
-    type = g16(b, k ? FM1BLE_E_RXAHDR1 : FM1BLE_E_RXAHDR0) & 0xFu;
-    len = (g16(b, k ? FM1BLE_E_RXDHDR1 : FM1BLE_E_RXDHDR0) >> 8) & 0xFFu;
+    d->rx_last_ahdr = (uint16_t)g16(b, k ? FM1BLE_E_RXAHDR1 : FM1BLE_E_RXAHDR0);
+    type = d->rx_last_ahdr & 0xFu;
+    d->rx_last_dhdr = (uint16_t)g16(b, k ? FM1BLE_E_RXDHDR1 : FM1BLE_E_RXDHDR0);
+    d->rx_last_buf = (uint8_t)k;
+    len = (d->rx_last_dhdr >> 8) & 0xFFu;
     d->rx_last_type = (uint8_t)type;
     d->rx_last_len = (uint8_t)len;
     d->rx_last_n = (uint8_t)(len < sizeof d->rx_last ? len : sizeof d->rx_last);
@@ -612,8 +634,9 @@ int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n)
     for (i = 0; i < 3; i++)
         e16(b, FM1BLE_E_LOCALADR + 2u * i, (uint32_t)(pdu[2u + 2u * i] | pdu[3u + 2u * i] << 8));
     e16(b, FM1BLE_E_FORMAT, g16(b, FM1BLE_E_FORMAT) | BIT(3));
-    e16(b, FM1BLE_E_WINCNTL0, 0x32u);
+    e16(b, FM1BLE_E_WINCNTL0, FM1BLE_WIN0);
     e16(b, FM1BLE_E_WINCNTL1, 0);
+    e16(b, FM1BLE_E_WINCNTL2, adv_win(b));
     e16(b, FM1BLE_E_FILTERCNTL, 0);
     e16(b, FM1BLE_E_RXPTR0, (uint32_t)b->rx[0] + FM1BLE_RX_HDR);
     e16(b, FM1BLE_E_RXPTR1, (uint32_t)b->rx[1] + FM1BLE_RX_HDR);
@@ -642,8 +665,11 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
         return FM1BLE_EARG;
     if (!b->op_on || b->op_state != 7u)              /* an empty PDU until the PAL puts the response in (LLID 1, length 0) */
         op_buf(b, 0, (const uint8_t *)"\x01\x00", 2, 0, 0);
-    e16(b, FM1BLE_E_WINCNTL0, window_us & 0xFFFFu);  /* the window, taken as us [measure on FM-1] */
-    e16(b, FM1BLE_E_WINCNTL1, window_us >> 16);
+    /* the windows as le_hw_ioctrl's __set_winsize writes them: WINCNTL0 0x32, the time the receiver listens in WINCNTL2
+     * (taken as us from its uses; up to 3b39ab4 the window went into WINCNTL0 and WINCNTL2 stayed 0) */
+    e16(b, FM1BLE_E_WINCNTL0, FM1BLE_WIN0);
+    e16(b, FM1BLE_E_WINCNTL1, 0);
+    e16(b, FM1BLE_E_WINCNTL2, window_us > 0xFFFFu ? 0xFFFFu : window_us);
     op_arm(b, 7u, delay_us);
     return FM1BLE_OK;
 }
@@ -698,6 +724,9 @@ uint32_t fm1ble_op_service(fm1ble *b, fm1ble_pkt *p)
         p->payload = b->blk + b->rx[k] + FM1BLE_RX_HDR;
         d->rx_hdr[0] = (uint16_t)ahdr;                   /* the report's evidence, as rx_capture keeps it */
         d->rx_hdr[1] = (uint16_t)dhdr;
+        d->rx_last_ahdr = (uint16_t)ahdr;
+        d->rx_last_dhdr = (uint16_t)dhdr;
+        d->rx_last_buf = (uint8_t)k;
         d->rx_stat[k] = p->stat;
         d->rx_last_type = (uint8_t)(p->hdr[0] & 0xFu);
         d->rx_last_len = p->hdr[1];

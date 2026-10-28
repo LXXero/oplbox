@@ -184,8 +184,11 @@ static int c_conn_done(void) { return R.step[FM1BLE_STEP_CONNECT].result != FM1B
 static int c_run_done(void) { return R.state == FM1BLE_DONE; }
 
 /* The Bluetooth test run as the FM-1 runs it (firmware/ble/fm1ble_test.c), here on the model's air with the central: the
- * driver's own advertising first (adv_set, adv_air), then the stack (hci), the central connects (connect), plays a note
- * (midi_in) and is sent one (midi_out). */
+ * driver's own advertising first (adv_set, adv_air) and the RX trials, the central scanning actively (a SCAN_REQ to every
+ * ADV_IND, as BlueZ's scan le does), then the stack (hci), the central connects (connect), plays a note (midi_in) and is
+ * sent one (midi_out). */
+static uint32_t rxt(int k, int w) { return R.ctr[FM1BLE_C_RXT + 4 * k + w]; }
+
 static int test_run(void)
 {
     uint16_t val;
@@ -194,8 +197,10 @@ static int test_run(void)
     bb_model_reset();
     bbm.air = &AIR;
     g_run = 1;
+    C.scan_all = 1;
     fm1ble_test_begin(&R, 0, 4000);
-    check(run_until(c_hci_done, 15000) && R.step[FM1BLE_STEP_HCI].result == FM1BLE_PASS, "the run: hci PASS (the stack on the radio)");
+    check(run_until(c_hci_done, 30000) && R.step[FM1BLE_STEP_HCI].result == FM1BLE_PASS, "the run: hci PASS (the stack on the radio)");
+    C.scan_all = 0;
     for (k = 0; k < FM1BLE_STEP_HCI; k++)
         check(R.step[k].result == FM1BLE_PASS, fm1ble_step_name(k));
     check(R.step[FM1BLE_STEP_ADV_SET].result == FM1BLE_PASS && R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS &&
@@ -203,6 +208,26 @@ static int test_run(void)
           "the driver's own advertising first: adv_set and adv_air PASS on the air (one event per arming: it re-arms)");
     for (k = 0; k < FM1BLE_TRIALS; k++)
         check(C.adv_from[FM1BLE_TRIAL_ADDR0 + k] >= 20, "the central heard each trial's ADV_IND, from its own address");
+    for (k = 0; k < FM1BLE_TRIALS; k++)
+        check(C.scan_req_to[FM1BLE_TRIAL_ADDR0 + k] >= 20 && R.step[FM1BLE_STEP_ADV_AIR].raw[6 * k + 4] == 0 &&
+              R.step[FM1BLE_STEP_ADV_AIR].raw[6 * k + 5] == 0,
+              "the air trials (the receive setup up to 3b39ab4) were sent SCAN_REQs and received none");
+    for (k = 0; k < FM1BLE_RX_TRIALS; k++)
+        check(C.adv_from[FM1BLE_RX_ADDR0 + k] >= 20 && C.scan_req_to[FM1BLE_RX_ADDR0 + k] >= 20 && (rxt(k, FM1BLE_RXT_COUNTS) & 0xFFu) >= 20,
+              "each RX trial advertised from its own address (:13-:16) and was sent SCAN_REQs");
+    check(((rxt(0, FM1BLE_RXT_COUNTS) | rxt(1, FM1BLE_RXT_COUNTS)) >> 16) == 0 && bbm.rx_deaf > 0,
+          "RX trials 0 (no gain table) and 1 (WINCNTL2 0) receive nothing in the model, which needs both");
+    for (k = 2; k < FM1BLE_RX_TRIALS; k++) {
+        uint32_t c = rxt(k, FM1BLE_RXT_COUNTS);
+        check(((c >> 16) & 0xFFu) >= 20 && (c >> 24) == ((c >> 16) & 0xFFu), "RX trials 2 and 3: every SCAN_REQ received and counted");
+        check((rxt(k, FM1BLE_RXT_STAT) & 0xFu) == 1u && ((rxt(k, FM1BLE_RXT_STAT) >> 16) & 0xFu) == 3u &&
+              (rxt(k, FM1BLE_RXT_PKT) & 0xFFFFFFu) == 12u << 8 &&
+              rxt(k, FM1BLE_RXT_BYTES) == (uint32_t)(CENTRAL[0] | CENTRAL[1] << 8 | CENTRAL[2] << 16 | (uint32_t)CENTRAL[3] << 24),
+              "an RX trial's first packet: status 1, type 3 (SCAN_REQ), length 12 in buffer 0, ScanA's first bytes");
+    }
+    check(C.scan_rsp > 0, "and the SCAN_RSP went back from the other TX slot");
+    check(R.ctr[FM1BLE_C_RX_STACK_TRIAL] == 2 && R.ctr[FM1BLE_C_RX_AGC_TABLE] == 1 && R.ctr[FM1BLE_C_RX_WIN] == 0x32,
+          "the stack runs on RX trial 2's setup (the gain table, WINCNTL2 0x32)");
     check(C.adv_short == 0, "and every one whole: header ADV_IND, the address and the data (no zero-length PDU)");
     C.want_conn = 1;
     check(run_until(c_conn_done, 3000) && R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_PASS, "the run: connect PASS");
@@ -216,6 +241,8 @@ static int test_run(void)
     check(R.step[FM1BLE_STEP_MIDI_OUT].result == FM1BLE_PASS, "the run: midi_out PASS, the notification acknowledged");
     check(g_notes == 1 && g_note_n == 8 && g_note[5] == 0x90 && g_note[6] == 0x3C, "the central got the run's Note On");
     check(R.ctr[FM1BLE_C_PAL_RESP_LATE] == 0 && R.ctr[FM1BLE_C_PAL_STUCK] == 0, "pal counters: no response late, nothing stuck");
+    check(R.ctr[FM1BLE_C_PAL_CONN_TIMEOUT_US] > 0 && R.ctr[FM1BLE_C_PAL_CONN_RX] > 0 && (R.ctr[FM1BLE_C_CONN_WIN] & 0xFFFFu) == FM1BLE_WIN0,
+          "connection events: Cordio's window passed on, packets received, WINCNTL0 0x32");
     check(ble_nimble_state()->disconnects == 1, "the run closed the connection before turning the radio off");
     printf("ble_stack run: %d checks, %s (steps' ms: hci %u, connect %u, midi_in %u, midi_out %u)\n", checks, bad ? "FAILED" : "all passed",
            (unsigned)R.step[FM1BLE_STEP_HCI].ms, (unsigned)R.step[FM1BLE_STEP_CONNECT].ms, (unsigned)R.step[FM1BLE_STEP_MIDI_IN].ms,
