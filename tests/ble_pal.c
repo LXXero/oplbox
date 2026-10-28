@@ -426,10 +426,13 @@ int main(void)
               st->good == PAL_FM1_NO_SETUP && st->conn_rx == 0,
               "each connection runs one setup for all its events, the next connection the next one");
         /* on that chip the counter as JieLi writes it (padj) receives; the next connection keeps it, not the next setup */
+        bbm.conn_in = 0;
         polled_conn(&B, 1, 1u << FM1BLE_CONN_PADJ | 1u << FM1BLE_CONN_KEEP, 1, &h, &data_ok);
         st = pal_fm1_state();
         check(h != 0xFFFF && data_ok && (st->conn_sum[0][0] & 0xFu) == FM1BLE_CONN_PADJ && st->set_rx[FM1BLE_CONN_PADJ] >= 15 &&
-              st->set_arr_min[FM1BLE_CONN_PADJ] >= (int32_t)FM1BLE_CONN_PAD_US,
+              st->set_arr_min[FM1BLE_CONN_PADJ] >= (int32_t)FM1BLE_CONN_PAD_US && bbm.conn_off_min >= FM1BLE_CONN_PAD_US &&
+              st->set_arr_min[FM1BLE_CONN_PADJ] <= bbm.conn_off_min + 20 && st->set_arr_max[FM1BLE_CONN_PADJ] >= bbm.conn_off_max - 20 &&
+              st->set_arr_max[FM1BLE_CONN_PADJ] <= bbm.conn_off_max + 20,
               "a chip that counts as JieLi writes: padj receives every event, its window open the pad before dueUsec");
         run_us(2500000);
         polled_again(&B, 1, 1u << FM1BLE_CONN_PADJ | 1u << FM1BLE_CONN_KEEP, 1, &h, &data_ok);
@@ -439,9 +442,12 @@ int main(void)
         run_us(2500000);
         /* and a chip that takes the offset only with bit 15 and the window from WINCNTL0 as well: padw receives */
         bbm.bit15 = bbm.win0 = 1;
+        bbm.conn_in = 0;
         polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
         st = pal_fm1_state();
-        check(h != 0xFFFF && data_ok && st->set_rx[FM1BLE_CONN_PADW] >= 15 && st->set_rx[FM1BLE_CONN_PADW] == st->conn_rx,
+        check(h != 0xFFFF && data_ok && st->set_rx[FM1BLE_CONN_PADW] >= 15 && st->set_rx[FM1BLE_CONN_PADW] == st->conn_rx &&
+              st->set_arr_min[FM1BLE_CONN_PADW] >= bbm.conn_off_min - 20 && st->set_arr_min[FM1BLE_CONN_PADW] <= bbm.conn_off_min + 20 &&
+              st->set_arr_max[FM1BLE_CONN_PADW] >= bbm.conn_off_max - 20 && st->set_arr_max[FM1BLE_CONN_PADW] <= bbm.conn_off_max + 20,
               "a chip as JieLi's code writes it in all three: padw receives every event");
         run_us(2500000);
         polled_conn(&B, 1, 1u << FM1BLE_CONN_PADJ, 1, &h, &data_ok);
