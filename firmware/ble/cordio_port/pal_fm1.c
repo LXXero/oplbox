@@ -122,6 +122,11 @@ static uint32_t g_cev, g_cpk;           /* the connection's events and packets s
 static uint32_t g_flips0;               /* the driver's conn_flips when the event was armed */
 static uint32_t g_last_poll;            /* when pal_fm1_service last read the baseband */
 static const uint8_t g_order[FM1BLE_CONN_SETUPS] = PAL_FM1_SETUP_ORDER;
+/* the connection's TX mode (fm1ble.h FM1BLE_TX_*), the TX words at the arm, the connection's events in which TXTOG
+ * changed, stale packets dropped and events halted */
+static const uint8_t g_order_tx[FM1BLE_TX_MODES] = PAL_FM1_TX_ORDER;
+static uint8_t g_tx;
+static uint32_t g_txs0, g_csent, g_cstale, g_chalt;
 
 enum { END_FLAG, END_DEADLINE, END_CORDIO };
 
@@ -129,6 +134,24 @@ static uint32_t now(void) { return fm1ble_port_now_us(); }
 static uint32_t air_us(uint32_t pdu_len) { return (1u + 4u + pdu_len + 3u) * 8u; }   /* 1M PHY: preamble, AA, PDU, CRC */
 static uint32_t sat16(uint32_t v) { return v > 0xFFFFu ? 0xFFFFu : v; }
 static uint32_t s16(int32_t v) { return (uint32_t)(v < -32767 ? -32767 : v > 32767 ? 32767 : v) & 0xFFFFu; }
+
+/* the n-th enabled TX mode of g_order_tx, counting round */
+static uint8_t tx_nth(uint32_t n)
+{
+    uint8_t k, on = 0, x;
+    for (k = 0; k < FM1BLE_TX_MODES; k++)
+        if (g_cfg.tx_modes & (1u << g_order_tx[k]))
+            on++;
+    if (!on)
+        return FM1BLE_TX_AIR;
+    n %= on;
+    for (k = 0; k < FM1BLE_TX_MODES; k++) {
+        x = g_order_tx[k];
+        if ((g_cfg.tx_modes & (1u << x)) && !n--)
+            return x;
+    }
+    return FM1BLE_TX_AIR;
+}
 
 /* the n-th enabled setup of g_order, counting round */
 static uint8_t setup_nth(uint32_t n)
@@ -167,12 +190,19 @@ void pal_fm1_attach(const pal_fm1_cfg *cfg)
     g_cfg.conn_setups &= (1u << FM1BLE_CONN_SETUPS) - 1u;
     if (!g_cfg.conn_setups)
         g_cfg.conn_setups = (1u << FM1BLE_CONN_SETUPS) - 1u;
+    g_cfg.tx_modes &= (1u << FM1BLE_TX_MODES) - 1u;
+    if (!g_cfg.tx_modes)
+        g_cfg.tx_modes = (1u << FM1BLE_TX_MODES) - 1u;
     memset(&g_st, 0, sizeof g_st);
     g_log = g_sum = NULL;
     g_cev = g_cpk = 0;
+    g_csent = g_cstale = g_chalt = 0;
     g_set = setup_nth(0);
+    g_tx = tx_nth(0);
     g_st.conn_setup = g_set;
-    g_st.good = PAL_FM1_NO_SETUP;
+    g_st.conn_tx = g_tx;
+    g_st.good = g_st.good_tx = PAL_FM1_NO_SETUP;
+    g_st.resp_us_min = 0xFFFFu;
 }
 
 /* min (lo) and max (hi) of a summary word, two signed 16-bit times (PAL_FM1_LOG_NONE: none yet) */
@@ -186,27 +216,45 @@ static void sum_minmax(uint32_t *w, int32_t v)
     *w = lo | hi << 16;
 }
 
-/* A new connection's first event: the setup it runs (the one that received PAL_FM1_GOOD packets, else the next in the
- * order) and its summary */
+/* A new connection's first event: the setup and TX mode it runs (the ones that received PAL_FM1_GOOD packets, else the
+ * next in each order), the driver's CONNECT_IND words for the mode, and its summary */
 static void conn_start(void)
 {
-    uint8_t s;
-    if (g_st.conns && g_cpk >= PAL_FM1_GOOD)            /* the last connection received on its setup: keep it */
+    uint8_t s, x;
+    if (g_st.conns && g_cpk >= PAL_FM1_GOOD) {          /* the last connection received on its setup and mode: keep them */
         g_st.good = g_set;
-    else if (g_st.conns && g_set == g_st.good)          /* the kept one failed a connection: back to the order */
-        g_st.good = PAL_FM1_NO_SETUP;
+        g_st.good_tx = g_tx;
+    } else if (g_st.conns && g_st.good != PAL_FM1_NO_SETUP) {   /* the kept ones failed a connection: back to the orders */
+        g_st.good = g_st.good_tx = PAL_FM1_NO_SETUP;
+    }
     s = g_st.good != PAL_FM1_NO_SETUP ? (uint8_t)g_st.good : setup_nth(g_st.conns);
+    x = g_st.good_tx != PAL_FM1_NO_SETUP ? (uint8_t)g_st.good_tx : tx_nth(g_st.conns);
     if (g_st.conns && s != g_set)
         g_st.setup_moves++;
     g_set = s;
+    g_tx = x;
     g_st.conn_setup = s;
+    g_st.conn_tx = x;
+    fm1ble_op_conn_begin(g_cfg.b, x);
     g_sum = g_st.conns < PAL_FM1_CONNS ? g_st.conn_sum[g_st.conns] : NULL;
     if (g_sum) {
         g_sum[0] = s;
         g_sum[1] = g_sum[2] = PAL_FM1_LOG_NONE | PAL_FM1_LOG_NONE << 16;
+        g_sum[3] = x;
+        g_st.conn_txs |= (uint32_t)x << (4u * g_st.conns);
     }
     g_st.conns++;
     g_cev = g_cpk = 0;
+    g_csent = g_cstale = g_chalt = 0;
+}
+
+static uint32_t sat(uint32_t v, uint32_t max) { return v > max ? max : v; }
+
+/* the connection's summary word d (pal_fm1.h) */
+static void sum_tx(void)
+{
+    if (g_sum)
+        g_sum[3] = g_tx | sat(g_csent, 0xFFFu) << 4 | sat(g_cstale, 0xFFu) << 16 | sat(g_chalt, 0xFFu) << 24;
 }
 
 static void busy_end(uint32_t t)
@@ -227,7 +275,16 @@ static void conn_end(int how)
     g_conn_open = 0;
     if (g_bw_on)
         busy_end(t);
+    if (g_cfg.b->d.conn_flips != g_flips0) {
+        g_st.tx_sent[g_tx]++;
+        g_csent++;
+    }
+    if (how == END_DEADLINE)
+        g_chalt++;
     if (g_log) {
+        uint32_t x = fm1ble_op_txstate(g_cfg.b);
+        g_log[3] |= (x & 0xFFFFu) | (x & FM1BLE_TXS_TXTOG ? 1u << 17 : 0u) | (x & FM1BLE_TXS_RXTOG ? 1u << 19 : 0u) |
+                    (x & FM1BLE_TXS_BUF0 ? 1u << 20 : 0u) | (x & FM1BLE_TXS_BUF1 ? 1u << 21 : 0u);
         if (g_cfg.b->d.conn_flips != g_flips0)
             g_log[0] |= 1u << 10;
         if (how == END_FLAG)
@@ -242,6 +299,7 @@ static void conn_end(int how)
         if (!g_conn_rx && how == END_FLAG)
             sum_minmax(&g_sum[2], (int32_t)(t - g_due));
     }
+    sum_tx();
 }
 
 const pal_fm1_stats *pal_fm1_state(void) { return &g_st; }
@@ -424,6 +482,8 @@ void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
           g_set == FM1BLE_CONN_PAD || g_set >= FM1BLE_CONN_PADJ ? FM1BLE_CONN_PAD_US : 0u;
     g_win_early = delay > pad ? pad : delay;
     g_flips0 = g_cfg.b->d.conn_flips;
+    g_txs0 = fm1ble_op_txstate(g_cfg.b);
+    g_st.tx_events[g_tx]++;
     g_log = NULL;
     if (g_st.log_n < PAL_FM1_LOG && g_cev < PAL_FM1_LOG_PER) {
         g_log = g_st.log[g_st.log_n++];
@@ -431,6 +491,8 @@ void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
                    (first ? 1u << 13 : 0u) | sat16(g_rx_timeout) << 16;
         g_log[1] = PAL_FM1_LOG_NONE | PAL_FM1_LOG_NONE << 16;
         g_log[2] = sat16(delay);
+        g_log[3] = (uint32_t)(g_tx & 3u) << 22 | 0xFFu << 24 | (g_txs0 & FM1BLE_TXS_TXTOG ? 1u << 16 : 0u) |
+                   (g_txs0 & FM1BLE_TXS_RXTOG ? 1u << 18 : 0u);
     }
     g_armed = 1;
     g_kind = K_CONN;
@@ -454,8 +516,22 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
     uint16_t n = gather(descs, cnt, pdu);
 
     g_wait = W_TIFS_TX;
-    if (g_kind == K_CONN && g_conn_rx && now() - g_rx_t > g_st.resp_us_max)
-        g_st.resp_us_max = now() - g_rx_t;
+    if (g_kind == K_CONN && g_conn_rx) {
+        uint32_t lat = now() - g_rx_t, k = lat < 50u ? 0u : lat < 100u ? 1u : lat < 150u ? 2u : 3u;
+        if (lat > g_st.resp_us_max)
+            g_st.resp_us_max = lat;
+        if (lat < g_st.resp_us_min)
+            g_st.resp_us_min = lat;
+        if ((g_st.resp_hist >> (8u * k) & 0xFFu) < 0xFFu)
+            g_st.resp_hist += 1u << (8u * k);
+        if (g_log)
+            g_log[3] = (g_log[3] & 0x00FFFFFFu) | sat(lat / 2u, 0xFFu) << 24;
+        if (g_tx == FM1BLE_TX_INTIME && lat > PAL_FM1_TIFS_US && !g_done) {   /* too late: what is in the slots goes */
+            g_st.resp_skipped++;
+            g_resp_late = 1;
+            return;
+        }
+    }
     if (g_done) {                       /* the event is over: too late for T_IFS */
         g_st.resp_late++;
         g_resp_late = 1;
@@ -535,6 +611,17 @@ void pal_fm1_service(void)
         progress = 0;
         ev = fm1ble_op_service(g_cfg.b, &p);
         t = now();
+        if ((ev & FM1BLE_EV_RX) && g_kind == K_CONN && g_conn_open &&
+            (int32_t)((t - air_us(2u + p.hdr[1])) - (g_due - g_win_early)) < -(int32_t)PAL_FM1_STALE_US) {
+            /* a flag an earlier event raised late, before this window could open: not the central's packet */
+            g_st.stale_rx++;
+            g_cstale++;
+            if (g_log)
+                g_log[0] |= 1u << 15;
+            sum_tx();
+            ev &= ~FM1BLE_EV_RX;
+            progress = 1;
+        }
         if (ev & FM1BLE_EV_RX) {
             if (g_kind == K_ADV && (p.hdr[0] & 0xFu) == 5u)
                 g_st.cind_gap_us = t - g_last_poll;
@@ -549,6 +636,11 @@ void pal_fm1_service(void)
             if (g_kind == K_CONN && g_conn_open) {
                 /* from the window's own start for this setup (g_win_early before g_due) */
                 int32_t arr = (int32_t)(g_held_ts - g_due) + (int32_t)g_win_early;
+                if (!g_st.first_rx_tx)
+                    g_st.first_rx_tx = fm1ble_op_txstate(g_cfg.b) | 1u << 31;
+                g_st.tx_rx[g_tx]++;
+                if (p.stat & 0x100u)
+                    g_st.tx_acks[g_tx]++;
                 g_st.conn_rx++;
                 if (!p.ok)
                     g_st.conn_rx_bad++;
@@ -602,10 +694,15 @@ void pal_fm1_service(void)
             g_done = 1;
             g_armed = 0;
             g_skip_done = 0;
-            fm1ble_op_stop(g_cfg.b);
             g_st.stuck++;
-            if (g_kind == K_CONN)
+            if (g_kind == K_CONN) {                     /* halted: it must not finish into the next event */
+                g_st.halts++;
+                if (fm1ble_op_halt(g_cfg.b) != FM1BLE_OK)
+                    g_st.halt_busy++;
                 conn_end(END_DEADLINE);
+            } else {
+                fm1ble_op_stop(g_cfg.b);
+            }
             progress = 1;
         }
         if (g_tmr_on && (int32_t)(t - g_tmr_due) >= 0) {

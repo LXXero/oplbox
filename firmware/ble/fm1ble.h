@@ -75,6 +75,7 @@ typedef struct {
     uint32_t conn_flips;        /* fm1ble_op_conn events after which TXTOG had changed (a buffer sent, E.4) */
     uint32_t conn_acks;         /* packets received in them with RXSTAT bit 8 ("acknowledges ours", E.5 [unchecked]) */
     uint16_t conn_stat, conn_dhdr;   /* the last one's RXSTAT and RXDHDR (NESN bit 2, SN bit 3, MD bit 4 [unchecked]) */
+    uint32_t halts, halt_busy;  /* fm1ble_op_halt calls; ones whose wait for idle ran out (the baseband stayed busy) */
 } fm1ble_diag;
 
 /* The driver's state. The caller owns it and the RAM block (word aligned, at least FM1BLE_BLOCK_SIZE bytes; the whole
@@ -102,6 +103,8 @@ typedef struct {
     uint8_t adv_type;           /* fm1ble_adv_start's PDU type, for re-pointing the buffers after each event */
     uint16_t slots;             /* the interval in slots, for re-arming */
     uint8_t conn_setup;         /* fm1ble_op_conn_setup: how fm1ble_op_conn places its receive window (FM1BLE_CONN_*) */
+    uint8_t conn_tx;            /* fm1ble_op_conn_begin: how a connection's TX slots are written (FM1BLE_TX_*) */
+    uint8_t tx_sn;              /* the SN of the last data PDU put in (FM1BLE_TX_INTIME's empty PDU repeats it) */
     uint8_t rx_set, rx_agc;     /* fm1ble_rx_setup was called; with it, whether the power-up writes the AGC gain table */
     uint16_t rx_win;            /* with it, WINCNTL2 for advertising */
     uint32_t ana_pll[243];      /* the PLL table (F.2): 81 entries of 3 words, the analog block reads it */
@@ -233,11 +236,51 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
 #define FM1BLE_CONN_PAD_US  625u
 #define FM1BLE_CONN_WIDE_US 1250u
 void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup);
+/* How a connection's TX slots are written. The IR (tools/ble_ir.py --steps RF_ble __hw_rx_buf_process ble_hw_tx
+ * __hw_tx_process, read 2026-10-28) says three things the driver up to f0e6d08 did not do: on a CONNECT_IND JieLi writes
+ * TXAHDR0/1 = 0 (the ChSel bit, 0 for algorithm 1), TXDHDR0 = (TXTOG & 1) << 2 | 1 and TXDHDR1 = ((TXTOG & 1) << 2 ^ 4) | 1
+ * (two empty PDUs whose bit 2 differs, the one sent first with bit 2 clear); ble_hw_tx keeps TXDHDR bit 2 as it is
+ * (`old & 4`) and puts header bit 9 in bit 3, the bit its receive path fills from RXDHDR bit 3 (SN on the air), and a
+ * flag in bit 4; and after every packet received __hw_tx_process reads TXTOG bit 0 and TXBUF0CNTL/TXBUF1CNTL bit 0 and
+ * refills the TX buffers from its queue (ahead of the event: the slot sent at T_IFS is already filled when the packet
+ * comes). So the hardware keeps bit 2 per slot (NESN, or the slot's own sequence bit) and picks the slot by TXTOG, and
+ * up to f0e6d08 the driver wrote Cordio's NESN over bit 2 in both slots, and a response after the packet. At f0e6d08
+ * (oplbox-ble-run-f0e6d08-1) the one connection that received past its first event received its second event's packet,
+ * Cordio's response came (up to 251 us after a packet, T_IFS is 150), and the hardware neither sent (TXTOG unchanged) nor
+ * ended the event. The modes, one per connection (pal_fm1.h PAL_FM1_TX_ORDER):
+ *   FM1BLE_TX_AIR      as up to f0e6d08: the response in both slots with TXDHDR = length << 8 | the header byte's bits
+ *                      4-0 as on the air (LLID, NESN, SN, MD), an empty PDU (LLID 1) in both at every event's arm;
+ *   FM1BLE_TX_JIELI    as JieLi: the connection's first event writes the CONNECT_IND words above; a response goes in
+ *                      both slots as ble_hw_tx writes it: TXDHDR = length << 8 | (TXDHDR & 4) | SN << 3 | MD << 4 | LLID,
+ *                      bit 2 left to the hardware; nothing is written at the arm, so a response too late for T_IFS leaves
+ *                      the last one (the same SN: a central takes it as a repeat);
+ *   FM1BLE_TX_INTIME   as JIELI, an empty PDU (LLID 1, the last SN again) in both slots at every arm, and the PAL puts a
+ *                      response in only while T_IFS can still use it (PAL_FM1_TIFS_US after the packet was seen): no
+ *                      write while the hardware may be turning around or sending. */
+#define FM1BLE_TX_AIR       0u
+#define FM1BLE_TX_JIELI     1u
+#define FM1BLE_TX_INTIME    2u
+#define FM1BLE_TX_MODES     3u
+/* A connection's first event: its TX mode, and for JIELI and INTIME the CONNECT_IND words (above). */
+void fm1ble_op_conn_begin(fm1ble *b, uint8_t tx_mode);
 /* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event (for the rest of this event; the next
- * fm1ble_op_adv puts in the scan response it is given), buffer 0 in both TX slots in a connection event. At most 37 bytes of payload (the buffers' size, E.4). */
+ * fm1ble_op_adv puts in the scan response it is given), buffer 0 in both TX slots in a connection event, written as the
+ * connection's TX mode says. At most 37 bytes of payload (the buffers' size, E.4). */
 int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n);
+/* The TX side's words as they are now, for the PAL's log: TXDHDR0 bits 7-0, TXDHDR1 bits 15-8, TXTOG bit 0 in 16, RXTOG
+ * bit 0 in 17, TXBUF0CNTL bit 0 in 18, TXBUF1CNTL bit 0 in 19. 0 before fm1ble_bb_init. */
+uint32_t fm1ble_op_txstate(fm1ble *b);
+#define FM1BLE_TXS_TXTOG    (1u << 16)
+#define FM1BLE_TXS_RXTOG    (1u << 17)
+#define FM1BLE_TXS_BUF0     (1u << 18)
+#define FM1BLE_TXS_BUF1     (1u << 19)
 /* The event off: anchor counter stopped, the link's interrupts off. No wait (it may run from an interrupt). */
 void fm1ble_op_stop(fm1ble *b);
+/* An event the baseband never ended: fm1ble_op_stop, then the wait for the hardware to go idle that fm1ble_adv_stop
+ * (ble_hw_disable) does, so it cannot finish into the next event (at f0e6d08 such an event's packet flag came 364 us
+ * after the next event was armed, 1192 us before that event's dueUsec, and Cordio took it as the anchor). Main loop only.
+ * FM1BLE_ETIMEOUT when the hardware stayed busy (counted in d.halt_busy). */
+int fm1ble_op_halt(fm1ble *b);
 /* Reads and clears the pending flags of the operation in flight: FM1BLE_EV_DONE and FM1BLE_EV_RX, with the packet in
  * *p for RX. 0 when nothing is pending. Polled, or called from IRQ 29 / 45 (D.4). */
 uint32_t fm1ble_op_service(fm1ble *b, fm1ble_pkt *p);

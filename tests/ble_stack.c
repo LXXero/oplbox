@@ -196,6 +196,7 @@ static int test_run(void)
     int k;
     bb_model_reset();
     bbm.air = &AIR;
+    bbm.hw_nesn = 1;                                 /* the first connection runs FM1BLE_TX_INTIME: bit 2 is the chip's */
     g_run = 1;
     C.scan_all = 1;
     fm1ble_test_begin(&R, 0, 4000);
@@ -247,17 +248,19 @@ static int test_run(void)
     check(R.ctr[FM1BLE_C_PAL_CONNS] == 1 && (R.ctr[FM1BLE_C_CONN_SUM] & 0xFu) == FM1BLE_CONN_PADW &&
           (R.ctr[FM1BLE_C_CONN_SUM] >> 16) == R.ctr[FM1BLE_C_PAL_CONN_RX] && (R.ctr[FM1BLE_C_NIMBLE_CONNS] & 0xFFFFu) == 1 &&
           R.ctr[FM1BLE_C_CONN_SUM + 3] == 0, "the connection's summary: padw, its packets; one connect");
-    {   /* the window probe ran before the stack: every cell has an end; on the model (a window from its counter, WINCNTL2
-         * long) keep's first cell ends its window (60 us) after the delay */
-        uint32_t k, all = 1, v = R.ctr[FM1BLE_C_PROBE];
-        for (k = 0; k < FM1BLE_CONN_SETUPS * 4u; k++)
-            if ((R.ctr[FM1BLE_C_PROBE + k] & 0xFFFFu) == 0x8000u || (R.ctr[FM1BLE_C_PROBE + k] & 0xFFFFu) == 0x7FFFu)
-                all = 0;
-        check(R.ctr[FM1BLE_C_PROBE_N] == FM1BLE_CONN_SETUPS * 4u * FM1BLE_PROBE_REPS && all &&
-              (int16_t)(v & 0xFFFFu) >= (int16_t)FM1BLE_PROBE_W0 - 5 && (int16_t)(v >> 16) <= (int16_t)FM1BLE_PROBE_W0 + 20 &&
-              R.ctr[FM1BLE_C_PROBE_D] == (FM1BLE_PROBE_D0 | FM1BLE_PROBE_D1 << 16),
-              "the window probe: every setup, delay and window ended; keep's first ends its window after the delay");
-    }
+    check(R.ctr[FM1BLE_C_PAL_CONN_TXS] == FM1BLE_TX_INTIME && (R.ctr[FM1BLE_C_CONN_SUM_D] & 0xFu) == FM1BLE_TX_INTIME &&
+          (R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_INTIME] >> 16) == R.ctr[FM1BLE_C_PAL_CONN_RX] &&
+          (R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_INTIME] & 0xFFFFu) == R.ctr[FM1BLE_C_PAL_CONN_OPS] &&
+          R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_JIELI] == 0 && R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_AIR] == 0,
+          "the connection ran the first TX mode of the order (INTIME), its events and packets counted under it");
+    check(R.ctr[FM1BLE_C_PAL_STALE_RX] == 0 && R.ctr[FM1BLE_C_PAL_HALTS] == 0 && R.ctr[FM1BLE_C_PAL_RESP_SKIPPED] == 0 &&
+          (R.ctr[FM1BLE_C_PAL_RESP_HIST] & 0xFFu) > 0 && R.ctr[FM1BLE_C_PAL_RESP_US_MIN] < 50u &&
+          (R.ctr[FM1BLE_C_PAL_FIRST_RX_TX] >> 31) == 1u,
+          "TX side: nothing stale or halted, every response in time (under 50 us on the model), the first packet's TX words");
+    check((R.ctr[FM1BLE_C_PAL_LOG_D] >> 22 & 3u) == FM1BLE_TX_INTIME && (R.ctr[FM1BLE_C_PAL_LOG_D] >> 24) < 25u &&
+          R.ctr[FM1BLE_C_PAL_CFG] == (PAL_FM1_TIFS_US | PAL_FM1_STALE_US << 16) &&
+          R.ctr[FM1BLE_C_PAL_TX_ORDER] == (FM1BLE_TX_INTIME | FM1BLE_TX_JIELI << 4 | FM1BLE_TX_AIR << 8),
+          "the event log's word d: the mode and Cordio's response; the PAL's budgets and order in the counters");
     check(ble_nimble_state()->disconnects == 1, "the run closed the connection before turning the radio off");
     printf("ble_stack run: %d checks, %s (steps' ms: hci %u, connect %u, midi_in %u, midi_out %u)\n", checks, bad ? "FAILED" : "all passed",
            (unsigned)R.step[FM1BLE_STEP_HCI].ms, (unsigned)R.step[FM1BLE_STEP_CONNECT].ms, (unsigned)R.step[FM1BLE_STEP_MIDI_IN].ms,

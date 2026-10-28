@@ -46,16 +46,18 @@ static uint32_t g16(fm1ble *b, uint32_t off) { const uint8_t *p = ent(b) + off; 
 static void e32(fm1ble *b, uint32_t off, uint32_t v) { e16(b, off, v & 0xFFFFu); e16(b, off + 2u, v >> 16); }
 
 /* ---- the bounded wait for the hardware to go idle (D.4: 0x28038 bit 1 is busy) */
-static int wait_idle(void)
+static int wait_idle_for(int loops)
 {
     int i;
-    for (i = 0; i < 2000; i++) {
+    for (i = 0; i < loops; i++) {
         if (!(rd(FM1BLE_BB_BUSY) & BIT(1)))
             return FM1BLE_OK;
         us(10);
     }
     return FM1BLE_ETIMEOUT;
 }
+
+static int wait_idle(void) { return wait_idle_for(2000); }
 
 /* ---- B and C: power-up */
 
@@ -573,6 +575,18 @@ static void op_buf(fm1ble *b, int k, const uint8_t *pdu, uint16_t n, int adv, ui
         memcpy(t + FM1BLE_TX_HDR, pdu + 2, len);
     if (adv) {
         tx_slot(b, slot, k);
+    } else if (b->conn_tx != FM1BLE_TX_AIR) {
+        /* ble_hw_tx's TXDHDR (fm1ble.h FM1BLE_TX_JIELI): bit 2 kept per slot, SN in bit 3, MD in bit 4, LLID in 1-0 */
+        uint32_t s, h = t[0x10], dh;
+        for (s = 0; s < 2u; s++) {
+            uint32_t off = s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0;
+            dh = len << 8 | (g16(b, off) & 4u) | (h & 8u) | (h & 0x10u) | (h & 3u);
+            e16(b, s ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0, (uint32_t)b->tx[k] + FM1BLE_TX_HDR);
+            e16(b, s ? FM1BLE_E_TXAHDR1 : FM1BLE_E_TXAHDR0, 0);
+            e16(b, off, dh);
+        }
+        b->tx_sn = (uint8_t)(h >> 3 & 1u);
+        (void)slot;
     } else {
         /* a data PDU: length in 15-8, LLID/NESN/SN/MD in 4-0, as RXDHDR (E.5) [unchecked]; in both TX slots, so it is the
          * one sent whichever slot TXTOG names (the hardware picks by TXTOG bit 0, "TX and RX toggles"; which way it changes
@@ -684,8 +698,13 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
         return FM1BLE_ESTATE;
     if (b->op_chan > 36)
         return FM1BLE_EARG;
-    if (!b->op_on || b->op_state != 7u)              /* an empty PDU until the PAL puts the response in (LLID 1, length 0) */
-        op_buf(b, 0, (const uint8_t *)"\x01\x00", 2, 0, 0);
+    if (b->conn_tx == FM1BLE_TX_AIR) {               /* an empty PDU until the PAL puts the response in (LLID 1, length 0) */
+        if (!b->op_on || b->op_state != 7u)
+            op_buf(b, 0, (const uint8_t *)"\x01\x00", 2, 0, 0);
+    } else if (b->conn_tx == FM1BLE_TX_INTIME) {     /* an empty PDU with the last SN: a repeat to the central */
+        uint8_t e[2] = { (uint8_t)(1u | (uint32_t)b->tx_sn << 3), 0 };
+        op_buf(b, 0, e, 2, 0, 0);
+    }                                                /* JIELI: the slots keep the last response (the same SN) */
     /* the windows as le_hw_ioctrl's __set_winsize writes them: WINCNTL0 0x32, the time the receiver listens in WINCNTL2
      * (taken as us from its uses; up to 3b39ab4 the window went into WINCNTL0 and WINCNTL2 stayed 0) */
     if (b->conn_setup == FM1BLE_CONN_KEEP) {          /* the open's values (E.3), which 58cadc5 left in place */
@@ -722,6 +741,36 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
 
 void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup) { b->conn_setup = setup < FM1BLE_CONN_SETUPS ? setup : FM1BLE_CONN_KEEP; }
 
+void fm1ble_op_conn_begin(fm1ble *b, uint8_t tx_mode)
+{
+    uint32_t tog;
+    b->conn_tx = tx_mode < FM1BLE_TX_MODES ? tx_mode : FM1BLE_TX_AIR;
+    b->tx_sn = 0;
+    if (!b->link_open || b->conn_tx == FM1BLE_TX_AIR)
+        return;
+    /* __hw_rx_buf_process on a CONNECT_IND (fm1ble.h FM1BLE_TX_JIELI): two empty PDUs, bit 2 clear in the one sent first */
+    tog = (g16(b, FM1BLE_E_TXTOG) & 1u) << 2;
+    memset(b->blk + b->tx[0], 0, FM1BLE_TX_SIZE);
+    e16(b, FM1BLE_E_TXPTR0, (uint32_t)b->tx[0] + FM1BLE_TX_HDR);
+    e16(b, FM1BLE_E_TXPTR1, (uint32_t)b->tx[0] + FM1BLE_TX_HDR);
+    e16(b, FM1BLE_E_TXAHDR0, 0);
+    e16(b, FM1BLE_E_TXAHDR1, 0);
+    e16(b, FM1BLE_E_TXDHDR0, tog | 1u);
+    e16(b, FM1BLE_E_TXDHDR1, (tog ^ 4u) | 1u);
+    fm1ble_port_sync();
+}
+
+uint32_t fm1ble_op_txstate(fm1ble *b)
+{
+    const uint8_t *e;
+    if (!b->blk)
+        return 0;
+    e = ent(b);
+    return (g16(b, FM1BLE_E_TXDHDR0) & 0xFFu) | (g16(b, FM1BLE_E_TXDHDR1) & 0xFFu) << 8 |
+           ((g16(b, FM1BLE_E_TXTOG) & 1u) ? FM1BLE_TXS_TXTOG : 0u) | ((g16(b, FM1BLE_E_RXTOG) & 1u) ? FM1BLE_TXS_RXTOG : 0u) |
+           ((e[FM1BLE_E_TXBUF0CNTL] & 1u) ? FM1BLE_TXS_BUF0 : 0u) | ((e[FM1BLE_E_TXBUF0CNTL + 1u] & 1u) ? FM1BLE_TXS_BUF1 : 0u);
+}
+
 int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n)
 {
     if (!b->link_open)
@@ -752,6 +801,22 @@ void fm1ble_op_stop(fm1ble *b)
     clr(FM1BLE_BB_IRQ_EN, BIT(HW_ID) | BIT(HW_ID + 8u));
     wr(FM1BLE_BB_IRQ_CLR, BIT(HW_ID) | BIT(HW_ID + 8u));
     b->op_on = 0;
+}
+
+int fm1ble_op_halt(fm1ble *b)
+{
+    int rc;
+    if (!b->link_open)
+        return FM1BLE_ESTATE;
+    b->op_on = 1;                                    /* op_stop's writes whether or not an operation was on */
+    fm1ble_op_stop(b);
+    ax_arm(0);                                       /* ble_hw_disable: the counter off, then wait for the hardware */
+    rc = wait_idle_for(200);                         /* at most 2 ms: a connection's next event is an interval away */
+    wr(FM1BLE_BB_IRQ_CLR, BIT(HW_ID) | BIT(HW_ID + 8u));   /* a flag the stopped event raised meanwhile */
+    b->d.halts++;
+    if (rc != FM1BLE_OK)
+        b->d.halt_busy++;
+    return rc;
 }
 
 uint32_t fm1ble_op_service(fm1ble *b, fm1ble_pkt *p)
