@@ -16,7 +16,7 @@ typedef struct {
     uint8_t no_timer_lead;              /* 1: the scheduler's timer fires when Cordio asks (up to a7c1738), not
                                            PAL_FM1_TIMER_LEAD_US earlier */
     uint8_t conn_setups;                /* the driver's window setups to try (bit n: FM1BLE_CONN_* n); 0: all seven */
-    uint8_t tx_modes;                   /* the driver's TX modes to try (bit n: FM1BLE_TX_* n); 0: all three */
+    uint8_t tx_modes;                   /* the driver's TX modes to try (bit n: FM1BLE_TX_* n); 0: all four */
 } pal_fm1_cfg;
 
 /* The order the window setups are tried in: each connection runs one setup for all its events, the next connection the
@@ -31,9 +31,11 @@ typedef struct {
 #define PAL_FM1_NO_SETUP    0xFFu
 
 /* The TX modes (fm1ble.h FM1BLE_TX_*), one per connection in this order, alongside the window setup: the k-th connection
- * since the attach runs the k-th enabled one, and a connection that received PAL_FM1_GOOD packets keeps its mode as it
- * keeps its setup. INTIME first (no write the hardware can meet mid-turnaround), JIELI, then AIR (f0e6d08's) to compare. */
-#define PAL_FM1_TX_ORDER    { FM1BLE_TX_INTIME, FM1BLE_TX_JIELI, FM1BLE_TX_AIR }
+ * since the attach runs the k-th enabled one. A connection in which the central sent an L2CAP PDU (LLID 2: its controller
+ * and host got past the link layer's own procedures, so both directions worked) makes its mode the one every later
+ * connection runs; packets alone do not (at a349877 INTIME received 462 and was kept, and no GATT came). ARQ first (the
+ * IR's reading, fm1ble.h), AIR (the air's layout written as it is) to compare, then INTIME and JIELI. */
+#define PAL_FM1_TX_ORDER    { FM1BLE_TX_ARQ, FM1BLE_TX_AIR, FM1BLE_TX_INTIME, FM1BLE_TX_JIELI }
 
 /* FM1BLE_TX_INTIME: Cordio's response goes in only this many us after the PAL saw the packet. The flag comes at the
  * packet's end [unchecked]; T_IFS is 150 us and the hardware reads the slot before its preamble. Cordio took 42 us at most
@@ -80,6 +82,21 @@ typedef struct {
  * PAL_FM1_LOG_NONE where there is none. */
 #define PAL_FM1_CONNS       8
 
+/* The header trace: for the first PAL_FM1_TRACE_PER connection events with a packet of each of the first
+ * PAL_FM1_TRACE_CONNS connections since pal_fm1_attach, one word:
+ *   bits 4-0 RXDHDR bits 4-0 as the chip wrote them; 5 the packet's CRC was good; 6 RXTOG changed at it; 7 TXTOG had
+ *   changed since Cordio's last response went in; 15-8 the payload's first byte (a control PDU's opcode; 0 when empty);
+ *   20-16 Cordio's response's header bits 4-0 (LLID, NESN, SN, MD as Cordio built them); 21 Cordio handed a response;
+ *   22 it went into a slot; 23 the header Cordio got acknowledged its last PDU (its NESN differs from Cordio's SN);
+ *   24 it was new to Cordio (its SN equals Cordio's NESN); 31-25 the response's first payload byte, low 7 bits.
+ * And for each of the first PAL_FM1_CONNS connections: ll_ops, the control opcodes 0-31 the central sent (bit n: opcode n,
+ * good CRC); ll_cnt, the central's L2CAP PDUs (LLID 2) Cordio took as new (7-0), Cordio's non-empty responses put in
+ * (15-8), the packets Cordio was told did not acknowledge its last PDU (23-16), RXTOG's changes (31-24), each at most 255.
+ * arq_dup and arq_unwritten (ARQ only): packets Cordio was told were repeats (RXTOG unchanged once it had moved), and
+ * responses that did not go in (too late, or after the event), so Cordio was told its PDU was not acknowledged. */
+#define PAL_FM1_TRACE_CONNS 3
+#define PAL_FM1_TRACE_PER   16
+
 typedef struct {
     uint32_t adv_ops, conn_ops;         /* Cordio's operations: advertising packets, connection events */
     uint32_t adv_events;                /* hardware advertising events armed (37, 38 and 39 each) */
@@ -125,6 +142,9 @@ typedef struct {
     uint32_t stale_rx, halts, halt_busy, resp_skipped, resp_hist, resp_us_min;
     uint32_t tx_events[FM1BLE_TX_MODES], tx_rx[FM1BLE_TX_MODES], tx_sent[FM1BLE_TX_MODES], tx_acks[FM1BLE_TX_MODES];
     uint32_t conn_tx, good_tx, conn_txs, first_rx_tx;
+    /* the header trace and each connection's link-layer counts (PAL_FM1_TRACE_CONNS above) */
+    uint32_t trace[PAL_FM1_TRACE_CONNS][PAL_FM1_TRACE_PER];
+    uint32_t ll_ops[PAL_FM1_CONNS], ll_cnt[PAL_FM1_CONNS], arq_dup, arq_unwritten;
 } pal_fm1_stats;
 
 void pal_fm1_attach(const pal_fm1_cfg *cfg);

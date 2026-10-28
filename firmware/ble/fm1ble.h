@@ -256,16 +256,30 @@ void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup);
  *                      the last one (the same SN: a central takes it as a repeat);
  *   FM1BLE_TX_INTIME   as JIELI, an empty PDU (LLID 1, the last SN again) in both slots at every arm, and the PAL puts a
  *                      response in only while T_IFS can still use it (PAL_FM1_TIFS_US after the packet was seen): no
- *                      write while the hardware may be turning around or sending. */
+ *                      write while the hardware may be turning around or sending.
+ * At a349877 (the done-check after round 3) INTIME received 462 packets in two connections that stayed up 6.6 and 10 s,
+ * and the central never resolved GATT. The IR says why the three modes above cannot work: __hw_tx_buf_proess sets header
+ * bit 9 when JieLi's TX queue is not empty (`hw_dma_empty() eq 0`, shifted to 9), that is MD, and ble_hw_tx puts header
+ * bit 9 in TXDHDR bit 3. So TXDHDR is the chip's layout, not the air's: bits 1-0 LLID, bit 2 the slot's own (set apart at
+ * the CONNECT_IND, clear in the slot sent first: its SN), bit 3 MD, bit 4 a per-link flag; and the receive path builds its
+ * header word from RXDHDR the same way (bit 3 to word bit 9, MD). SN and NESN are the hardware's: it sends the slot TXTOG
+ * names until the central acknowledges it, then the other [unchecked: from the slot words, not measured]. AIR, JIELI and
+ * INTIME put Cordio's SN in MD; and the PAL handed Cordio RXDHDR bits 4-2 as NESN, SN, MD, so Cordio read the central's
+ * MD (0) as its SN, took the first packet (LL_FEATURE_REQ) and every later one as a repeat, and dropped them.
+ *   FM1BLE_TX_ARQ      the hardware's ARQ: a response goes only into the slot TXTOG & 1 names (each slot its own buffer),
+ *                      TXDHDR = length << 8 | bit 2 kept | LLID, MD 0 (one exchange per event, as the PAL runs it); at
+ *                      every arm the other slot gets an empty PDU, so an acknowledgement never sends an older PDU again.
+ *                      The PAL gives Cordio SN and NESN of its own making (pal_fm1.c "ARQ"). */
 #define FM1BLE_TX_AIR       0u
 #define FM1BLE_TX_JIELI     1u
 #define FM1BLE_TX_INTIME    2u
-#define FM1BLE_TX_MODES     3u
-/* A connection's first event: its TX mode, and for JIELI and INTIME the CONNECT_IND words (above). */
+#define FM1BLE_TX_ARQ       3u
+#define FM1BLE_TX_MODES     4u
+/* A connection's first event: its TX mode, and for JIELI, INTIME and ARQ the CONNECT_IND words (above). */
 void fm1ble_op_conn_begin(fm1ble *b, uint8_t tx_mode);
 /* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event (for the rest of this event; the next
- * fm1ble_op_adv puts in the scan response it is given), buffer 0 in both TX slots in a connection event, written as the
- * connection's TX mode says. At most 37 bytes of payload (the buffers' size, E.4). */
+ * fm1ble_op_adv puts in the scan response it is given), buffer 0 in both TX slots in a connection event (ARQ: the slot
+ * TXTOG & 1 names, from its own buffer), written as the connection's TX mode says. At most 37 bytes of payload (the buffers' size, E.4). */
 int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n);
 /* The TX side's words as they are now, for the PAL's log: TXDHDR0 bits 7-0, TXDHDR1 bits 15-8, TXTOG bit 0 in 16, RXTOG
  * bit 0 in 17, TXBUF0CNTL bit 0 in 18, TXBUF1CNTL bit 0 in 19. 0 before fm1ble_bb_init. */
