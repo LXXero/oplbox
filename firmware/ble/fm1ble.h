@@ -72,6 +72,9 @@ typedef struct {
     uint32_t ram_end;           /* 0x2FCBC as read back after fm1ble_bb_init (JieLi writes it and never reads it: D.1) */
     uint32_t op_adv_done;       /* fm1ble_op_adv events (37, 38 and 39) the baseband ended */
     uint32_t op_conn_done;      /* fm1ble_op_conn events the baseband ended */
+    uint32_t conn_flips;        /* fm1ble_op_conn events after which TXTOG had changed (a buffer sent, E.4) */
+    uint32_t conn_acks;         /* packets received in them with RXSTAT bit 8 ("acknowledges ours", E.5 [unchecked]) */
+    uint16_t conn_stat, conn_dhdr;   /* the last one's RXSTAT and RXDHDR (NESN bit 2, SN bit 3, MD bit 4 [unchecked]) */
 } fm1ble_diag;
 
 /* The driver's state. The caller owns it and the RAM block (word aligned, at least FM1BLE_BLOCK_SIZE bytes; the whole
@@ -98,6 +101,7 @@ typedef struct {
     uint8_t txpwr;              /* the transmit power level in both TXPWR words */
     uint8_t adv_type;           /* fm1ble_adv_start's PDU type, for re-pointing the buffers after each event */
     uint16_t slots;             /* the interval in slots, for re-arming */
+    uint8_t conn_setup;         /* fm1ble_op_conn_setup: how fm1ble_op_conn places its receive window (FM1BLE_CONN_*) */
     uint8_t rx_set, rx_agc;     /* fm1ble_rx_setup was called; with it, whether the power-up writes the AGC gain table */
     uint16_t rx_win;            /* with it, WINCNTL2 for advertising */
     uint32_t ana_pll[243];      /* the PLL table (F.2): 81 entries of 3 words, the analog block reads it */
@@ -186,8 +190,25 @@ void fm1ble_op_power(fm1ble *b, uint8_t level);
  * under 8 or over 39 bytes. */
 int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n, const uint8_t *rsp, uint16_t nrsp);
 /* A connection event as the peripheral on the channel set (0-36): listen from delay_us from now for window_us
- * (WINCNTL2, at most 65535; WINCNTL0 = FM1BLE_WIN0, as le_hw_ioctrl's __set_winsize writes them). */
+ * (WINCNTL2, at most 65535; WINCNTL0 = FM1BLE_WIN0, as le_hw_ioctrl's __set_winsize writes them), the window placed as
+ * fm1ble_op_conn_setup says. */
 int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
+/* How fm1ble_op_conn places the window. Which one the chip needs is a measurement: the PAL's connection trials
+ * (pal_fm1.h) try them on the FM-1. WIDEN0/WIDEN1 (E.2) are the window widening JieLi's peripheral writes with __set_widen
+ * (le_hw_ioctrl); the open leaves them 0 and 0x51E7 (487 us), which up to 58cadc5 this driver kept in connections.
+ *   FM1BLE_CONN_KEEP   as up to 58cadc5: the counter at delay_us, WINCNTL2 = window_us, WIDEN at the open's values;
+ *   FM1BLE_CONN_PAD    no widening (WIDEN0 0, WIDEN1 0x5000), the counter FM1BLE_CONN_PAD_US earlier and the window
+ *                      2 x FM1BLE_CONN_PAD_US longer: a slot boundary of the baseband's own (op_arm's guess) cannot
+ *                      push the window past the packet;
+ *   FM1BLE_CONN_WIDEN  JieLi's shape: the counter at the window's middle (Cordio's anchor: its window is the anchor
+ *                      minus the widening, twice the widening long), WIDEN = half the window (__set_widen: slots in
+ *                      WIDEN0, the rest | 0x5000 in WIDEN1), WINCNTL2 = window_us. */
+#define FM1BLE_CONN_KEEP    0u
+#define FM1BLE_CONN_PAD     1u
+#define FM1BLE_CONN_WIDEN   2u
+#define FM1BLE_CONN_SETUPS  3u
+#define FM1BLE_CONN_PAD_US  625u
+void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup);
 /* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event (for the rest of this event; the next
  * fm1ble_op_adv puts in the scan response it is given), buffer 0 in both TX slots in a connection event. At most 37 bytes of payload (the buffers' size, E.4). */
 int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n);

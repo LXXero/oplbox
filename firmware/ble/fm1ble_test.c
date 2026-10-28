@@ -98,6 +98,8 @@ static void skip_rest(fm1ble_run *r, int from, const char *why)
 }
 
 static uint32_t sat8(uint32_t v) { return v > 0xFFu ? 0xFFu : v; }
+static uint32_t sat16(uint32_t v) { return v > 0xFFFFu ? 0xFFFFu : v; }
+static uint32_t s16(int32_t v) { return (uint32_t)(uint16_t)(int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v); }
 static uint32_t ew(uint32_t off) { return (uint32_t)(g_b.blk[g_b.entity + off] | g_b.blk[g_b.entity + off + 1u] << 8); }
 
 /* an RX trial's first packet (fm1ble_test.h FM1BLE_RXT_*), from the driver's record of the last one */
@@ -183,6 +185,21 @@ static void counters(fm1ble_run *r)
         r->ctr[FM1BLE_C_CONN_WIN] = ew(FM1BLE_E_WINCNTL0) | ew(FM1BLE_E_WINCNTL2) << 16;
     r->ctr[FM1BLE_C_PAL_CONN_TIMEOUT_US] = p->conn_timeout_us;
     r->ctr[FM1BLE_C_RX_STAT1] = g_rx_stat1;
+    /* the connection events (pal_fm1.c: the busy wait, the window setups tried), the hardware's words in them */
+    r->ctr[FM1BLE_C_PAL_BUSY_WAITS] = p->busy_waits;
+    r->ctr[FM1BLE_C_PAL_BUSY_US_MAX] = p->busy_us_max;
+    r->ctr[FM1BLE_C_PAL_RESP_US_MAX] = p->resp_us_max;
+    r->ctr[FM1BLE_C_PAL_CONN_RX_BAD] = p->conn_rx_bad;
+    r->ctr[FM1BLE_C_PAL_CONN_SETUP] = p->conn_setup;
+    r->ctr[FM1BLE_C_PAL_SETUP_MOVES] = p->setup_moves;
+    r->ctr[FM1BLE_C_PAL_LATE_OPS] = p->late_ops;
+    r->ctr[FM1BLE_C_CONN_FLIPS] = d->conn_flips;
+    for (k = 0; k < 3u; k++) {
+        r->ctr[FM1BLE_C_PAL_SET_COUNTS + k] = sat16(p->set_events[k]) | sat16(p->set_rx[k]) << 16;
+        r->ctr[FM1BLE_C_PAL_SET_ARR + k] = s16(p->set_arr_min[k]) | s16(p->set_arr_max[k]) << 16;
+    }
+    r->ctr[FM1BLE_C_CONN_ACKS] = d->conn_acks;
+    r->ctr[FM1BLE_C_CONN_RX_WORDS] = (uint32_t)d->conn_stat | (uint32_t)d->conn_dhdr << 16;
 }
 
 /* the addresses: made-up static random ones (the FM-1 has no device address: docs/BLUETOOTH_RADIO.md PalCfgLoadData),

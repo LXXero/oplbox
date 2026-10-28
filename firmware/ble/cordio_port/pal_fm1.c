@@ -25,12 +25,26 @@
  * So each advertising event is armed with the scan response already in its buffer: the one in Cordio's advertising
  * operation (the BOD in progress, bb_ble_adv_slave.c sends the same buffer through PalBbBleTxTifsData), read when the
  * event is armed. Cordio puts a scan response the host changed into that operation between events
- * (lctr_isr_adv_slave.c), so the next event answers with the new one; nothing older is kept.
+ * (lctr_isr_adv_slave.c), so the next event answers with the new one; nothing older is kept. And a connection event is
+ * waited through (busy wait, below).
  *
  * Time: PalBbGetCurrentTime is the port's microsecond clock (TIMER4 on the FM-1), not the baseband's slot counter; an
  * operation is armed (due - now) from now. A packet's timestamp (its start, which Cordio uses to place a connection's
  * anchor) is the time pal_fm1_service saw it minus its time on the air: right when the service runs in the interrupt,
  * late by the main loop's latency otherwise. The scheduler's timer is a deadline checked in pal_fm1_service.
+ *
+ * The busy wait. Polled from the main loop, a connection packet is timestamped as late as the loop came back, and Cordio
+ * puts the next anchor that much late: at 58cadc5 the FM-1 received the first packet of a connection (in the transmit
+ * window, which is wide) and 0 of the next 17, whose windows were 286 us (oplbox-ble-run-58cadc5: pal_conn_ops 18,
+ * pal_conn_rx 1, pal_timer_late_us 215). So once a connection event is armed, pal_fm1_service does not return before
+ * its packet or its end: it polls the baseband every BUSY_STEP_US, the timestamp is that close, and Cordio's response
+ * goes in at once (resp_us_max says how long Cordio took against T_IFS). It costs the main loop the scheduler's setup
+ * time and the window, each connection event (busy_us_max). Called from an interrupt (the receive flag), it does not
+ * wait: the packet is there.
+ *
+ * The window setups. Where the driver's window lands against the packet is not settled on the chip (fm1ble.h
+ * FM1BLE_CONN_*): each connection event runs one of them; a missed event (no packet) moves to the next, an event with
+ * its packet keeps it, so the connection stays on one that receives and the counters say which do.
  *
  * What a baseband that never answers does: each operation has a deadline (its start, the window and two packets, plus
  * 5 ms); past it the operation counts as ended, so Cordio is never left waiting (the stub PAL's hang, docs/BLUETOOTH_CORDIO.md).
@@ -56,6 +70,7 @@
 #define ADV_EVENT_US    25000u  /* three channels, each a packet, a request and a response, and the hardware's random delay
                                    on events (index 8, up to 10 ms [unchecked]) */
 #define ADV_SPAN_US     100000u /* a hardware advertising event serves Cordio's packets for this long after it was armed */
+#define BUSY_STEP_US    2u      /* the busy wait's poll period */
 
 enum { W_NONE, W_TX, W_RX, W_TIFS_TX };
 enum { K_NONE, K_ADV, K_CONN };          /* the hardware event in flight: advertising (37-39) or a connection event */
@@ -91,6 +106,10 @@ static uint32_t g_tmr_due;
 
 static uint32_t g_rng;
 
+/* the connection event in flight: armed with setup g_set, its packet seen (and when), the busy wait's start */
+static uint8_t g_set, g_conn_open, g_conn_rx, g_bw_on;
+static uint32_t g_rx_t, g_bw_t0, g_win_early;   /* g_win_early: how much earlier than g_due the window was armed to start */
+
 static uint32_t now(void) { return fm1ble_port_now_us(); }
 static uint32_t air_us(uint32_t pdu_len) { return (1u + 4u + pdu_len + 3u) * 8u; }   /* 1M PHY: preamble, AA, PDU, CRC */
 
@@ -105,11 +124,52 @@ void pal_fm1_attach(const pal_fm1_cfg *cfg)
         g_kind = K_NONE;
         g_tmr_on = 0;
         g_rng = now() ^ 0x9E3779B9u;
+        g_set = 0;
+        g_conn_open = g_bw_on = 0;
     }
     g_cfg = *cfg;
     if (!g_cfg.sch_setup_us)
         g_cfg.sch_setup_us = 2000u;
+    if (!(g_cfg.conn_setups & 7u))
+        g_cfg.conn_setups = 7u;
+    if (!(g_cfg.conn_setups & (1u << g_set)))
+        g_set = 0;
     memset(&g_st, 0, sizeof g_st);
+    while (!(g_cfg.conn_setups & (1u << g_set)))
+        g_set++;
+    g_st.conn_setup = g_set;
+}
+
+static void busy_end(uint32_t t)
+{
+    uint32_t us = t - g_bw_t0;
+    g_bw_on = 0;
+    g_st.busy_waits++;
+    if (us > g_st.busy_us_max)
+        g_st.busy_us_max = us;
+}
+
+/* A connection event ended (its flag, its deadline, or Cordio's cancel): without its packet, the next setup tried */
+static void conn_end(void)
+{
+    uint8_t i, s = g_set;
+    if (!g_conn_open)
+        return;
+    g_conn_open = 0;
+    if (g_bw_on)
+        busy_end(now());
+    if (g_conn_rx)
+        return;
+    for (i = 1; i <= 3u; i++) {
+        s = (uint8_t)((g_set + i) % 3u);
+        if (g_cfg.conn_setups & (1u << s))
+            break;
+    }
+    if (s != g_set) {
+        g_set = s;
+        g_st.setup_moves++;
+        g_st.conn_setup = s;
+    }
 }
 
 const pal_fm1_stats *pal_fm1_state(void) { return &g_st; }
@@ -270,18 +330,28 @@ void PalBbBleTxData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
 
 void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
 {
-    op_begin(g_rx_timeout);
+    uint32_t delay;
+    conn_end();                         /* one still open (Cordio went on without its end): ended here */
+    op_begin(g_rx_timeout + 2u * FM1BLE_CONN_PAD_US);
     g_wait = W_RX;
     g_rxbuf = pBuf;
     g_rxlen = len;
     g_aev = 0;
-    if (g_chan > 36 || fm1ble_op_conn(g_cfg.b, delay_to_due(), g_rx_timeout) != FM1BLE_OK) {
+    if (g_chan <= 36)
+        fm1ble_op_conn_setup(g_cfg.b, g_set);
+    delay = delay_to_due();
+    if (g_chan > 36 || fm1ble_op_conn(g_cfg.b, delay, g_rx_timeout) != FM1BLE_OK) {
         op_refused();
         return;
     }
+    /* PAD arms the counter FM1BLE_CONN_PAD_US earlier, but fm1ble_op_conn clamps the delay at 0 */
+    g_win_early = g_set == FM1BLE_CONN_PAD ? (delay > FM1BLE_CONN_PAD_US ? FM1BLE_CONN_PAD_US : delay) : 0u;
     g_armed = 1;
     g_kind = K_CONN;
+    g_conn_open = 1;
+    g_conn_rx = 0;
     g_st.conn_ops++;
+    g_st.set_events[g_set]++;
     g_st.conn_timeout_us = g_rx_timeout;
 }
 
@@ -298,6 +368,8 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
     uint16_t n = gather(descs, cnt, pdu);
 
     g_wait = W_TIFS_TX;
+    if (g_kind == K_CONN && g_conn_rx && now() - g_rx_t > g_st.resp_us_max)
+        g_st.resp_us_max = now() - g_rx_t;
     if (g_done) {                       /* the event is over: too late for T_IFS */
         g_st.resp_late++;
         g_resp_late = 1;
@@ -313,6 +385,7 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
 
 void PalBbBleCancelData(void)
 {
+    conn_end();
     fm1ble_op_stop(g_cfg.b);
     g_wait = W_NONE;
     g_held = g_done = g_armed = g_skip_done = 0;
@@ -385,8 +458,22 @@ void pal_fm1_service(void)
             g_held_ts = t - air_us(g_held_n);
             g_held = 1;
             progress = 1;
-            if (g_kind == K_CONN)
+            if (g_kind == K_CONN && g_conn_open) {
+                /* from the window's own start for this setup (g_win_early before g_due) */
+                int32_t arr = (int32_t)(g_held_ts - g_due) + (int32_t)g_win_early;
                 g_st.conn_rx++;
+                if (!p.ok)
+                    g_st.conn_rx_bad++;
+                if (!g_conn_rx) {
+                    if (!g_st.set_rx[g_set] || arr < g_st.set_arr_min[g_set])
+                        g_st.set_arr_min[g_set] = arr;
+                    if (!g_st.set_rx[g_set] || arr > g_st.set_arr_max[g_set])
+                        g_st.set_arr_max[g_set] = arr;
+                    g_st.set_rx[g_set]++;
+                }
+                g_conn_rx = 1;
+                g_rx_t = t;
+            }
             if (g_kind == K_ADV && g_armed && (p.hdr[0] & 0xFu) == 5u) {   /* CONNECT_IND: the advertising event ends here */
                 fm1ble_op_stop(g_cfg.b);
                 g_armed = 0;
@@ -403,8 +490,10 @@ void pal_fm1_service(void)
                 fm1ble_op_stop(g_cfg.b);
                 if (g_kind == K_ADV)
                     g_st.adv_ended++;
-                else if (g_kind == K_CONN)
+                else if (g_kind == K_CONN) {
                     g_st.conn_ended++;
+                    conn_end();
+                }
             }
             progress = 1;
         }
@@ -414,6 +503,8 @@ void pal_fm1_service(void)
             g_skip_done = 0;
             fm1ble_op_stop(g_cfg.b);
             g_st.stuck++;
+            if (g_kind == K_CONN)
+                conn_end();
             progress = 1;
         }
         if (g_tmr_on && (int32_t)(t - g_tmr_due) >= 0) {
@@ -428,6 +519,17 @@ void pal_fm1_service(void)
         }
         if (deliver())
             progress = 1;
+        /* the busy wait: a connection event armed and its packet not in yet */
+        if (!progress && !g_cfg.no_busy_wait && g_kind == K_CONN && g_conn_open && g_armed && !g_done && g_wait == W_RX) {
+            if (!g_bw_on) {
+                g_bw_on = 1;
+                g_bw_t0 = t;
+            }
+            fm1ble_port_delay_us(BUSY_STEP_US);
+            progress = 1;
+        } else if (!progress && g_bw_on) {
+            busy_end(t);
+        }
     } while (progress);
     g_busy = 0;
 }

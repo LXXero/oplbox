@@ -23,7 +23,7 @@
  * model needs both). A one-channel event (hop 0) does what the FM-1 did at
  * 122afe3: on 37 it ends having sent nothing, on 38 and 39 it never ends; a connection event (state 7) as: the central's packet received when it starts inside the window
  * (WINCNTL2, us, as le_hw_ioctrl's __set_winsize puts it; the receiver set up as above), then T_IFS after its end the PDU of the TX slot TXTOG & 1 names (header TXDHDR bits 4-0, length bits 15-8), TXTOG
- * changed after it; the event
+ * changed after it: the slot is read at that time, so a response put in after T_IFS is not the one sent; the event
  * flag at the end of either. Times are on the model's clock, in us. */
 typedef struct {
     int (*adv)(void *ctx, uint64_t t, uint8_t chan, const uint8_t *pdu, int n, uint8_t *req);    /* returns the request's length, 0: none */
@@ -63,6 +63,12 @@ typedef struct {
     uint32_t one_chan;                  /* one-channel advertising events (hop 0): the shape the FM-1 never sent (122afe3) */
     int agc_n, agc_bad;                 /* the gain table's words written since 0x2FD98 = 0; how many differ from fm1ble_agc.h */
     uint32_t rx_deaf;                   /* requests the receiver did not hear: no gain table, or WINCNTL2 0 */
+    /* connection events whose packet fell inside the window: how many, how many of them were armed with the counter at
+     * 0 (the window open at the write), and the earliest and latest packet start after the window's start, in us */
+    uint32_t conn_in, conn_at_once;
+    int64_t conn_off_min, conn_off_max;
+    int resp_pending;                   /* a connection event waits for T_IFS to send its response (conn_respond) */
+    uint64_t resp_at;
 } bb_model;
 
 extern bb_model bbm;
