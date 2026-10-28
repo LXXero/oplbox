@@ -234,7 +234,7 @@ check("LINK LAYER (the PAL's header trace" in out and
       "put in 0; told not acknowledged 3; RXTOG changed 38" in out and
       "     0  03 LL_FEATURE_REQ         RT  ack new  09 empty" in out and
       "     1  03 LL_VERSION_IND         RT  ack new  07 LL_FEATURE_RSP" in out and
-      "     2  01 empty                   crc --           05 empty (not put in)" in out and
+      "     2  01 empty                  crc --           05 empty (not put in)" in out and
       "     0  02 L2CAP                  R-  nak new  01 empty" in out,
       f"--run: the link layer:\n{out[out.find('LINK LAYER'):]}")
 check(open(wait_out).read() == "3\n", "--wait 3: the FM-1 was not told 3 s")

@@ -516,9 +516,9 @@ HOST_BLE_REPORT=build/host/ble_usb_report-%u.bin build/host/oplbox build/host/bl
 for want in "   200 ms  USB reply 66: 02 00 00 00 00 00 00 00 00 | 0 bytes" "   250 ms  USB reply 67: 00 01 00 | 0 bytes" \
             "   250 ms  ble page 0: BLUETOOTH TEST (STAGE 5)" "   251 ms  USB reply 66: 03 00 00 00" "   252 ms  USB reply 67: 03 01 00 |" \
             "  3652 ms  ble page 6: CONNECT  FAIL NO CENTRAL CONNECTED" "  3652 ms  ble page 7: MIDI_IN  SKIP SKIPPED: AN EARLIER" \
-            "  5000 ms  USB reply 66: 00 ED 23 00 00 00 00 01 00 | 512 bytes" "  5001 ms  USB reply 66: 00 ED 23 00 00 22 00 01 00 | 493 bytes" \
+            "  5000 ms  USB reply 66: 00 75 2C 00 00 00 00 01 00 | 512 bytes" "  5001 ms  USB reply 66: 00 75 2C 00 00 22 00 01 00 | 512 bytes" \
             "  5100 ms  USB reply 67: 00 02 00 |" "  5101 ms  USB reply 66: 03 " "  6506 ms  ble page 6: CONNECT  SKIP SKIPPED: NO WAIT FOR" \
-            "  7000 ms  USB reply 66: 00 E9 23 00 00 00 00 02 00 | 512 bytes" "  7300 ms  USB reply 66: 00 E9 23 00 00 00 00 02 00 | 512 bytes" \
+            "  7000 ms  USB reply 66: 00 71 2C 00 00 00 00 02 00 | 512 bytes" "  7300 ms  USB reply 66: 00 71 2C 00 00 00 00 02 00 | 512 bytes" \
             "  7500 ms  USB reply 67: 04 00 00 |" "  7800 ms  USB reply 66: 01 " "  7900 ms  USB reply 66: 01 " \
             "  8000 ms  USB reply 67: 01 " "  8100 ms  USB reply 67: 01 "; do
   grep -qF -- "$want" build/host/ble_usb.txt || { echo "FAIL: Bluetooth page over USB: no line '$want'" >&2; exit 1; }
