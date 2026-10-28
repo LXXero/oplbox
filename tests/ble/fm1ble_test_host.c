@@ -130,6 +130,18 @@ static void finish(fm1ble_run *r, int i)
             r->ctr[FM1BLE_C_PAL_ARQ_DUP] = 1u | 4u << 16; r->ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] = 1u | 3u << 16;
             r->ctr[FM1BLE_C_STACK_ACL] = 3u | 2u << 16; r->ctr[FM1BLE_C_STACK_NOCP] = 2u;
             r->ctr[FM1BLE_C_NIMBLE_MTU] = 185u | 1u << 16; r->ctr[FM1BLE_C_PAL_RXTOG] = 1u;
+            /* the PDU capture (made up): two ARQ connections, the first ahead; bit 2 changed once at a first packet;
+             * BlueZ's MTU request, NimBLE's answer written ahead, BlueZ's Read By Group Type request and NimBLE's error */
+            {
+                static const uint8_t cap[] = {
+                    1, 4, 0x14, 2, 1, 0, 0xFF, 3, 1, 0, 0, 0, 0x28, 0, 3, 0,
+                    6, 2, 7, 4, 0, 1, 3, 0, 4, 0, 2, 5, 2, 0, 0, 0, 0, 0, 0, 0,
+                    7, 0x0A, 7, 5, 0, 9, 3, 0, 4, 0, 3, 0x17, 0, 0, 0, 0, 0, 0, 0, 0,
+                    6, 2, 0x0B, 7, 0, 1, 7, 0, 4, 0, 0x10, 1, 0, 0xFF, 0xFF, 0, 0x28, 0, 0, 0,
+                    7, 0x0E, 9, 8, 0, 0x0C, 5, 0, 4, 0, 1, 0x10, 1, 0, 0x0A, 0, 0, 0, 0, 0 };
+                memcpy(r->cap, cap, sizeof cap);
+                r->ncap = sizeof cap;
+            }
         }
         break;
     case FM1BLE_STEP_MIDI_IN: { static const uint8_t m[] = { 0x81, 0x85, 0x90, 0x3C, 0x64 };

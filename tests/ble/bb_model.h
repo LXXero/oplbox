@@ -91,6 +91,17 @@ typedef struct {
      * clock jumps in (jump_us, once) */
     int hw_arq, drop_data, jump_drop, drop_one;
     uint8_t rx_exp;
+    /* own_sn (with hw_arq): the chip judges an acknowledgement by an SN state of its own, arq_sn (it changes with TXTOG at
+     * each one), not by the slot's bit 2, which stays the SN on the air; nothing resets it at a CONNECT_IND, so a test
+     * sets arq_sn to what a last connection left (the second connection at e3d2a74). tx_latch_us (0: at T_IFS): the
+     * hardware reads the TX slot it sends this many us after the packet's end, so a response put in later is not sent */
+    int own_sn;
+    uint8_t arq_sn;
+    uint32_t tx_latch_us;
+    int latch_pending;
+    uint64_t latch_at;
+    uint8_t latched[260];
+    int latched_n;
     uint32_t drop_rsp, rsp_n;
     uint32_t jump_reads, jump_us, jump_left;
     void (*tick)(void);                 /* set: called each time the clock is advanced (a test's hook inside a busy wait) */

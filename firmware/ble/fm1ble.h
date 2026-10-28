@@ -105,6 +105,8 @@ typedef struct {
     uint8_t conn_setup;         /* fm1ble_op_conn_setup: how fm1ble_op_conn places its receive window (FM1BLE_CONN_*) */
     uint8_t conn_tx;            /* fm1ble_op_conn_begin: how a connection's TX slots are written (FM1BLE_TX_*) */
     uint8_t tx_sn;              /* the SN of the last data PDU put in (FM1BLE_TX_INTIME's empty PDU repeats it) */
+    uint8_t arq_ahead;          /* fm1ble_op_arq_ahead: ARQ's response goes into the slot sent next, not the one sent now */
+    uint8_t ahead_pend;         /* with it: the slot (1 + its index, 0: none) a response went into that TXTOG has not named yet */
     uint8_t rx_set, rx_agc;     /* fm1ble_rx_setup was called; with it, whether the power-up writes the AGC gain table */
     uint16_t rx_win;            /* with it, WINCNTL2 for advertising */
     uint32_t ana_pll[243];      /* the PLL table (F.2): 81 entries of 3 words, the analog block reads it */
@@ -275,8 +277,17 @@ void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup);
 #define FM1BLE_TX_INTIME    2u
 #define FM1BLE_TX_ARQ       3u
 #define FM1BLE_TX_MODES     4u
-/* A connection's first event: its TX mode, and for JIELI, INTIME and ARQ the CONNECT_IND words (above). */
+/* A connection's first event: its TX mode, and for JIELI, INTIME and ARQ the CONNECT_IND words (above). ARQ ahead off. */
 void fm1ble_op_conn_begin(fm1ble *b, uint8_t tx_mode);
+/* ARQ written ahead (since round 7 of the FM-1 Bluetooth goal): a response goes into the slot the hardware sends after
+ * the central's next acknowledgement (the one TXTOG & 1 does not name), as JieLi fills its slots after a packet for the
+ * next one, and the arm leaves that slot alone while it holds a response TXTOG has not named yet. Without it (ARQ as up
+ * to e3d2a74) the response goes into the slot TXTOG names, which the hardware sends T_IFS after the packet: a write the
+ * hardware has already read past is not sent, and the next acknowledgement moves TXTOG on as if it had been. */
+void fm1ble_op_arq_ahead(fm1ble *b, int on);
+/* ARQ: bit 2 of TXDHDR0 and TXDHDR1 changed (each slot's SN). For a chip whose own SN state (which an acknowledgement is
+ * judged by) and the slots' bit 2 (the SN on the air) disagree: the central then takes every PDU as a repeat. */
+void fm1ble_op_arq_flip(fm1ble *b);
 /* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event (for the rest of this event; the next
  * fm1ble_op_adv puts in the scan response it is given), buffer 0 in both TX slots in a connection event (ARQ: the slot
  * TXTOG & 1 names, from its own buffer), written as the connection's TX mode says. At most 37 bytes of payload (the buffers' size, E.4). */

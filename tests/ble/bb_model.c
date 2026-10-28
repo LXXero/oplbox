@@ -103,8 +103,11 @@ static void conn_rx(const uint8_t *req, int r, uint64_t at)
     bbm.rx_sn = (uint8_t)(req[0] >> 3 & 1u);
     if (bbm.hw_arq) {                   /* the chip's ARQ (bb_model.h hw_arq) */
         uint32_t s = air16(FM1BLE_E_TXTOG) & 1u, dh = air16(s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
-        if ((req[0] >> 2 & 1u) != (dh >> 2 & 1u))
+        uint32_t mine = bbm.own_sn ? bbm.arq_sn : (dh >> 2 & 1u);     /* own_sn: the chip's state, not the slot's bit */
+        if ((req[0] >> 2 & 1u) != mine) {
             air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
+            bbm.arq_sn ^= 1u;
+        }
         if ((req[0] >> 3 & 1u) == bbm.rx_exp) {
             bbm.rx_exp ^= 1u;
             air16w(FM1BLE_E_RXTOG, air16(FM1BLE_E_RXTOG) ^ 1u);
@@ -114,6 +117,10 @@ static void conn_rx(const uint8_t *req, int r, uint64_t at)
     bbm.jump_left = bbm.jump_reads;
     bbm.resp_at = bbm.now_us + 150u;
     bbm.resp_pending = 1;
+    if (bbm.tx_latch_us) {              /* the slot read before T_IFS (tx_latch_us) */
+        bbm.latch_at = bbm.now_us + bbm.tx_latch_us;
+        bbm.latch_pending = 1;
+    }
     air_irq(1u << 8);
 }
 
@@ -220,7 +227,16 @@ static void conn_respond(void)
     bbm.resp_pending = 0;
     if (bbm.resp_at > bbm.now_us)               /* a clock that jumped (jump_us) stays where it is */
         bbm.now_us = bbm.resp_at;
-    n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, pdu);
+    if (bbm.latch_pending) {                    /* not read yet: it is now */
+        bbm.latched_n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, bbm.latched);
+        bbm.latch_pending = 0;
+    }
+    if (bbm.tx_latch_us) {
+        n = bbm.latched_n;
+        memcpy(pdu, bbm.latched, (size_t)n);
+    } else {
+        n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, pdu);
+    }
     if (n && bbm.hw_arq)                        /* the air's header from the chip's: its SN and NESN, MD from bit 3 */
         pdu[0] = (uint8_t)((pdu[0] & 3u) | bbm.rx_exp << 2 | (pdu[0] >> 2 & 1u) << 3 | (pdu[0] >> 3 & 1u) << 4);
     else if (n && bbm.hw_nesn)
@@ -310,6 +326,10 @@ void fm1ble_port_delay_us(uint32_t us) { bb_model_advance_us(us); }
 uint32_t fm1ble_port_now_us(void)
 {
     if (bbm.jump_left && !--bbm.jump_left) {
+        if (bbm.latch_pending && bbm.latch_at <= bbm.now_us + bbm.jump_us) {   /* the slot is read while the loop is away */
+            bbm.latched_n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, bbm.latched);
+            bbm.latch_pending = 0;
+        }
         bbm.now_us += bbm.jump_us;
         bbm.jump_reads = 0;                     /* once */
         bbm.drop_one = bbm.jump_drop;
@@ -326,8 +346,15 @@ void bb_model_advance_us(uint64_t us)
     uint64_t end = bbm.now_us + us;
     if (bbm.tick)
         bbm.tick();
-    while (bbm.air && !in_event && ((bbm.resp_pending && bbm.resp_at <= end) ||
+    while (bbm.air && !in_event && ((bbm.resp_pending && bbm.resp_at <= end) || (bbm.latch_pending && bbm.latch_at <= end) ||
                                     (bbm.armed && bbm.armed_at_us + bbm.period_us <= end))) {
+        if (bbm.latch_pending && bbm.latch_at <= bbm.resp_at) {   /* the hardware reads the slot it sends (tx_latch_us) */
+            if (bbm.latch_at > bbm.now_us)
+                bbm.now_us = bbm.latch_at;
+            bbm.latched_n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, bbm.latched);
+            bbm.latch_pending = 0;
+            continue;
+        }
         if (bbm.resp_pending && (!bbm.armed || bbm.resp_at <= bbm.armed_at_us + bbm.period_us)) {
             in_event = 1;
             conn_respond();

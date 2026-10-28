@@ -83,6 +83,14 @@
  * 1b251ea the completion waited for the event's end and a later packet was held over Cordio's response. The busy wait
  * does not run through the response (pal_fm1_service may run from the interrupt): a later packet the main loop comes
  * back to too late for T_IFS still reaches Cordio, and in ARQ its answer goes at the next event (not acknowledged).
+ *
+ * ARQ ahead and the chip's SN (since round 7; pal_fm1.h PAL_FM1_L2_GOOD, PAL_FM1_ARQ_STUCK). ARQ connections write
+ * Cordio's response either into the slot the chip sends now (in T_IFS, as up to e3d2a74) or into the one it sends next
+ * (ahead); with ahead Cordio is told its PDU was acknowledged once TXTOG names its slot, the acknowledgement it used is
+ * then spent, and the arm leaves the slot alone. A connection's first packet never acknowledges Cordio's PDU, and when
+ * the chip's own SN state disagrees with the slots' bit 2 (TXTOG moved at the first packet, or the central keeps taking
+ * the chip's NESN and none of its PDUs) bit 2 is changed in both slots. The PDU capture (pal_fm1.h PAL_FM1_CAP) keeps the
+ * bytes that went each way.
  */
 #include <string.h>
 #include "wsf_types.h"
@@ -162,6 +170,11 @@ static uint8_t g_csn, g_cnesn, g_tog_w, g_wrote, g_rxtog, g_rxmoved;
 static uint8_t g_held_later;            /* the held packet is a later one of its event (pal_fm1.h later_rx) */
 static uint32_t g_cl2, g_trn;
 static uint32_t *g_tr;
+/* ARQ (pal_fm1.c top, pal_fm1.h): this connection writes ahead; the slot (1 + its index, 0: none) Cordio's last response
+ * went into ahead; no packet yet in the connection; TXTOG at its start and at its last packet; the packets in a row at
+ * which RXTOG moved and TXTOG did not; Cordio's last PDU captured (header, length, first bytes) */
+static uint8_t g_ahead, g_aw, g_first, g_tog0, g_tog_p, g_stuck;
+static uint8_t g_cap_last[2u + 14u];
 
 enum { END_FLAG, END_DEADLINE, END_CORDIO };
 
@@ -236,8 +249,9 @@ void pal_fm1_attach(const pal_fm1_cfg *cfg)
     g_tx = tx_nth(0);
     g_st.conn_setup = g_set;
     g_st.conn_tx = g_tx;
-    g_st.good = g_st.good_tx = PAL_FM1_NO_SETUP;
+    g_st.good = g_st.good_tx = g_st.good_ahead = PAL_FM1_NO_SETUP;
     g_st.resp_us_min = 0xFFFFu;
+    g_ahead = 0;
 }
 
 /* min (lo) and max (hi) of a summary word, two signed 16-bit times (PAL_FM1_LOG_NONE: none yet) */
@@ -265,6 +279,12 @@ static void conn_start(void)
         g_st.good_tx = g_tx;
     else if (g_st.conns && g_st.good_tx != PAL_FM1_NO_SETUP)
         g_st.good_tx = PAL_FM1_NO_SETUP;
+    if (g_st.conns && g_tx == FM1BLE_TX_ARQ) {           /* ARQ's way: kept once the central's L2CAP got answers */
+        if (g_cl2 >= PAL_FM1_L2_GOOD)
+            g_st.good_ahead = g_ahead;
+        else if (g_st.good_ahead != PAL_FM1_NO_SETUP)
+            g_st.good_ahead = PAL_FM1_NO_SETUP;
+    }
     s = g_st.good != PAL_FM1_NO_SETUP ? (uint8_t)g_st.good : setup_nth(g_st.conns);
     x = g_st.good_tx != PAL_FM1_NO_SETUP ? (uint8_t)g_st.good_tx : tx_nth(g_st.conns);
     if (g_st.conns && s != g_set)
@@ -274,6 +294,18 @@ static void conn_start(void)
     g_st.conn_setup = s;
     g_st.conn_tx = x;
     fm1ble_op_conn_begin(g_cfg.b, x);
+    g_ahead = 0;
+    if (x == FM1BLE_TX_ARQ) {                           /* ahead first, then in T_IFS, in turn, until one is kept */
+        uint32_t ways = g_cfg.arq_ways & 3u ? g_cfg.arq_ways & 3u : 3u;
+        if (ways != 3u)
+            g_ahead = (uint8_t)(ways == PAL_FM1_ARQ_AHEAD);
+        else
+            g_ahead = g_st.good_ahead != PAL_FM1_NO_SETUP ? (uint8_t)g_st.good_ahead : (uint8_t)!(g_st.arq_conns & 1u);
+        g_st.arq_conns++;
+        if (g_ahead && g_st.conns < 16u)
+            g_st.ahead_conns |= 1u << g_st.conns;
+        fm1ble_op_arq_ahead(g_cfg.b, g_ahead);
+    }
     g_sum = g_st.conns < PAL_FM1_CONNS ? g_st.conn_sum[g_st.conns] : NULL;
     if (g_sum) {
         g_sum[0] = s;
@@ -292,6 +324,49 @@ static void conn_start(void)
     g_rxmoved = 0;
     g_cl2 = g_trn = 0;
     g_tr = NULL;
+    g_aw = g_stuck = 0;
+    g_first = 1;
+    g_tog0 = g_tog_p = g_tog_w;
+    memset(g_cap_last, 0, sizeof g_cap_last);
+}
+
+/* One entry of the PDU capture (pal_fm1.h PAL_FM1_CAP): flags (bits 3-0, the connection is added), the header bits, the
+ * PDU's payload, the side byte */
+static void cap_add(uint8_t flags, uint8_t hdr, const uint8_t *payload, uint8_t len, uint8_t side)
+{
+    uint8_t *e, n = len < 14u ? len : 14u;
+    uint32_t c = g_st.conns ? g_st.conns - 1u : 0u;
+    if (g_st.cap_n >= PAL_FM1_CAP)
+        return;
+    e = g_st.cap[g_st.cap_n++];
+    memset(e, 0, PAL_FM1_CAP_BYTES);
+    e[0] = (uint8_t)((flags & 0xFu) | (c < 15u ? c : 15u) << 4);
+    e[1] = (uint8_t)(hdr & 0x1Fu);
+    e[2] = len;
+    e[3] = (uint8_t)g_cev;
+    e[4] = (uint8_t)(g_cev >> 8);
+    e[5] = side;
+    memcpy(e + 6, payload, n);
+}
+
+/* ARQ: the chip's SN against the slots' bit 2 (pal_fm1.h PAL_FM1_ARQ_STUCK): at the first packet, TXTOG moved (it took the
+ * central's NESN 0 as an acknowledgement); later, RXTOG moving and TXTOG not, PAL_FM1_ARQ_STUCK times in a row */
+static void arq_sn(uint8_t first, uint8_t tog, uint8_t rxch)
+{
+    if (first) {
+        if (tog != g_tog0) {
+            fm1ble_op_arq_flip(g_cfg.b);
+            g_st.sn_flips_first++;
+        }
+        return;
+    }
+    if (tog != g_tog_p) {
+        g_stuck = 0;
+    } else if (rxch && ++g_stuck >= PAL_FM1_ARQ_STUCK) {
+        fm1ble_op_arq_flip(g_cfg.b);
+        g_st.sn_flips_stuck++;
+        g_stuck = 0;
+    }
 }
 
 static uint32_t sat_add8(uint32_t w, uint32_t shift)    /* one more in an 8-bit count of w */
@@ -306,17 +381,29 @@ static void conn_packet(const fm1ble_pkt *p)
     uint32_t x = fm1ble_op_txstate(g_cfg.b), k = g_st.conns - 1u, *c = k < PAL_FM1_CONNS ? &g_st.ll_cnt[k] : NULL;
     uint8_t tog = (x & FM1BLE_TXS_TXTOG) ? 1u : 0u, rxt = (x & FM1BLE_TXS_RXTOG) ? 1u : 0u;
     uint8_t moved = tog != g_tog_w, rxch = rxt != g_rxtog, llid = p->hdr[0] & 3u, h = p->hdr[0];
-    uint8_t first = p->hdr[1] ? p->payload[0] : 0u, ack, isnew;
+    uint8_t first = p->hdr[1] ? p->payload[0] : 0u, ack, isnew, first_pkt = g_first, tmoved = tog != g_tog_p;
 
     if (rxch && c)
         *c = sat_add8(*c, 24);
     if (p->ok && g_tx == FM1BLE_TX_ARQ) {
-        ack = (uint8_t)(g_wrote && moved);
+        arq_sn(first_pkt, tog, rxch);
+        if (first_pkt)                  /* the central's first NESN is 0: it acknowledges nothing (Vol 6 Part B 4.5.9) */
+            ack = 0;
+        else if (g_ahead)               /* ahead: TXTOG names the slot Cordio's PDU went into; that one is spent */
+            ack = (uint8_t)(g_aw && tog == g_aw - 1u);
+        else
+            ack = (uint8_t)(g_wrote && moved);
+        if (g_ahead && ack)
+            g_aw = 0;
         isnew = (uint8_t)(rxch || !g_rxmoved);
         if (!isnew)
             g_st.arq_dup++;
         h = (uint8_t)(llid | (ack ? g_csn ^ 1u : g_csn) << 2 | (isnew ? g_cnesn : g_cnesn ^ 1u) << 3 | 1u << 4);
         g_held_pdu[0] = h;
+    }
+    if (p->ok) {
+        g_first = 0;
+        g_tog_p = tog;
     }
     if (rxch)
         g_rxmoved = 1;
@@ -333,6 +420,9 @@ static void conn_packet(const fm1ble_pkt *p)
     }
     if (p->ok && llid == 2u && p->hdr[1] && isnew)
         g_cl2++;
+    if (p->ok && p->hdr[1] && isnew)
+        cap_add((uint8_t)(1u << 1 | 1u << 2 | (g_conn_rx ? 1u << 3 : 0u)), p->hdr[0], p->payload, p->hdr[1],
+                (uint8_t)((rxch ? 1u : 0u) | (tmoved ? 2u : 0u)));
     g_tr = NULL;
     if (k < PAL_FM1_TRACE_CONNS && g_trn < PAL_FM1_TRACE_PER) {
         g_tr = &g_st.trace[k][g_trn++];
@@ -606,7 +696,7 @@ void PalBbBleRxTifsData(uint8_t *pBuf, uint16_t len)
 
 void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
 {
-    uint8_t pdu[PDU_MAX];
+    uint8_t pdu[PDU_MAX], ahead = (uint8_t)(g_kind == K_CONN && g_tx == FM1BLE_TX_ARQ && g_ahead), side = 0xFFu, named = 0;
     uint16_t n = gather(descs, cnt, pdu);
 
     g_wait = W_TIFS_TX;
@@ -616,10 +706,11 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
         if (g_tr)
             *g_tr |= (uint32_t)(pdu[0] & 0x1Fu) << 16 | 1u << 21 | (uint32_t)(pdu[1] ? pdu[2] & 0x7Fu : 0u) << 25;
     }
-    if (g_kind == K_CONN && g_tx == FM1BLE_TX_ARQ)
+    if (g_kind == K_CONN && g_tx == FM1BLE_TX_ARQ && !ahead)
         g_wrote = 0;                            /* until it goes in below */
     if (g_kind == K_CONN && g_conn_rx) {
         uint32_t lat = now() - g_rx_t, k = lat < 50u ? 0u : lat < 100u ? 1u : lat < 150u ? 2u : 3u;
+        side = (uint8_t)sat(lat / 2u, 0xFFu);
         if (lat > g_st.resp_us_max)
             g_st.resp_us_max = lat;
         if (lat < g_st.resp_us_min)
@@ -628,7 +719,7 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
             g_st.resp_hist += 1u << (8u * k);
         if (g_log)
             g_log[3] = (g_log[3] & 0x00FFFFFFu) | sat(lat / 2u, 0xFFu) << 24;
-        if ((g_tx == FM1BLE_TX_INTIME || g_tx == FM1BLE_TX_ARQ) && lat > PAL_FM1_TIFS_US && !g_done) {
+        if ((g_tx == FM1BLE_TX_INTIME || g_tx == FM1BLE_TX_ARQ) && !ahead && lat > PAL_FM1_TIFS_US && !g_done) {
             g_st.resp_skipped++;                /* too late: what is in the slots goes */
             g_resp_late = 1;
             if (g_tx == FM1BLE_TX_ARQ)
@@ -636,13 +727,15 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
             return;
         }
     }
-    if (g_done) {                       /* the event is over: too late for T_IFS */
+    if (g_done && !ahead) {             /* the event is over: too late for T_IFS (ahead: for the next one) */
         g_st.resp_late++;
         g_resp_late = 1;
         if (g_kind == K_CONN && g_tx == FM1BLE_TX_ARQ)
             g_st.arq_unwritten++;
         return;
     }
+    if (ahead)
+        named = (fm1ble_op_txstate(g_cfg.b) & FM1BLE_TXS_TXTOG) ? 1u : 0u;
     if (!n || fm1ble_op_resp(g_cfg.b, pdu, n) != FM1BLE_OK) {
         g_st.refused++;
         g_resp_late = 1;
@@ -654,9 +747,22 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
             *g_tr |= 1u << 22;
         if (pdu[1] && g_st.conns - 1u < PAL_FM1_CONNS)
             g_st.ll_cnt[g_st.conns - 1u] = sat_add8(g_st.ll_cnt[g_st.conns - 1u], 8);
-        if (g_tx == FM1BLE_TX_ARQ) {            /* in the slot TXTOG names: its change says the central took it */
+        if (ahead) {                            /* in the slot sent next: TXTOG naming it says the chip sends it */
+            g_aw = (uint8_t)(1u + (named ^ 1u));
+            g_st.ahead_put++;
+        } else if (g_tx == FM1BLE_TX_ARQ) {     /* in the slot TXTOG names: its change says the central took it */
             g_wrote = 1;
             g_tog_w = (fm1ble_op_txstate(g_cfg.b) & FM1BLE_TXS_TXTOG) ? 1u : 0u;
+        }
+        if (n > 2u) {                           /* the capture: a PDU handed again (its NESN may differ) once */
+            uint8_t key[sizeof g_cap_last], m = (uint8_t)(n < sizeof key ? n : sizeof key);
+            memset(key, 0, sizeof key);
+            memcpy(key, pdu, m);
+            key[0] &= (uint8_t)~4u;
+            if (memcmp(g_cap_last, key, sizeof key)) {
+                memcpy(g_cap_last, key, sizeof key);
+                cap_add((uint8_t)(1u | (ahead ? 1u << 1 : 0u) | 1u << 2), pdu[0], pdu + 2, pdu[1], side);
+            }
         }
     }
 }

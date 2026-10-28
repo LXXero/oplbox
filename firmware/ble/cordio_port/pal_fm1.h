@@ -17,6 +17,7 @@ typedef struct {
                                            PAL_FM1_TIMER_LEAD_US earlier */
     uint8_t conn_setups;                /* the driver's window setups to try (bit n: FM1BLE_CONN_* n); 0: all seven */
     uint8_t tx_modes;                   /* the driver's TX modes to try (bit n: FM1BLE_TX_* n); 0: all four */
+    uint8_t arq_ways;                   /* ARQ's ways to try (PAL_FM1_ARQ_TIFS, PAL_FM1_ARQ_AHEAD); 0: both, in turn */
 } pal_fm1_cfg;
 
 /* The order the window setups are tried in: each connection runs one setup for all its events, the next connection the
@@ -36,6 +37,46 @@ typedef struct {
  * connection runs; packets alone do not (at a349877 INTIME received 462 and was kept, and no GATT came). ARQ first (the
  * IR's reading, fm1ble.h), AIR (the air's layout written as it is) to compare, then INTIME and JIELI. */
 #define PAL_FM1_TX_ORDER    { FM1BLE_TX_ARQ, FM1BLE_TX_AIR, FM1BLE_TX_INTIME, FM1BLE_TX_JIELI }
+
+/* ARQ's two ways of writing Cordio's response (since round 7 of the FM-1 Bluetooth goal), one per ARQ connection, ahead
+ * first, then in T_IFS, in turn; a connection on which the central sent PAL_FM1_L2_GOOD L2CAP PDUs Cordio took (an ATT
+ * request after the MTU exchange and one after that: Cordio's answers got through) makes its way the one every later ARQ
+ * connection runs.
+ *   in T_IFS (as up to e3d2a74): into the slot TXTOG names, which the hardware sends T_IFS after the packet; Cordio is told
+ *            its PDU was acknowledged when TXTOG has moved since. At e3d2a74 (oplbox-ble-runs/e3d2a74-1) NimBLE's first
+ *            L2CAP PDU (its connection parameter request, put in 70 us after the packet) never got an answer from
+ *            BlueZ, nor did the 5-byte ATT answer to BlueZ's second request, though the chip moved TXTOG past both: a
+ *            write after the hardware read the slot does not go, and the next acknowledgement looks like its own.
+ *   ahead:   into the other slot (fm1ble.h fm1ble_op_arq_ahead), which the hardware sends once the central acknowledges
+ *            the one it sends now; Cordio is told its PDU was acknowledged when TXTOG names the slot it went into (the
+ *            chip sends it from then on until the central takes it), so its next one goes in behind it. No write races
+ *            the hardware, and no response is too late: one after the event goes in for the next. */
+#define PAL_FM1_L2_GOOD     3u
+#define PAL_FM1_ARQ_TIFS    1u
+#define PAL_FM1_ARQ_AHEAD   2u
+
+/* The chip's SN (fm1ble.h fm1ble_op_arq_flip). A new connection's first packet has NESN 0 (Vol 6 Part B 4.5.9): it
+ * acknowledges nothing, so Cordio is told so; when TXTOG moved at it anyway, the chip's own SN state was left at 1 by the
+ * last connection (at e3d2a74 the second connection's first packet moved it, and the central took every one of Cordio's
+ * PDUs after it as a repeat: 244 sent again, RXTOG moving at the central's packets, TXTOG never), so bit 2 of both slots
+ * is changed. And PAL_FM1_ARQ_STUCK packets in a row at which RXTOG moved (the central heard the chip's NESN) and TXTOG
+ * did not (it took nothing the chip sent) change it too. */
+#define PAL_FM1_ARQ_STUCK   3u
+
+/* The PDU capture: the first PAL_FM1_CAP data PDUs with a payload since pal_fm1_attach, either way, PAL_FM1_CAP_BYTES
+ * each: the central's as the chip received them (new to Cordio, good CRC) and Cordio's as it handed them over (one entry
+ * for a PDU handed again unchanged). For the bytes of what went each way: at e3d2a74 the header trace showed BlueZ's two
+ * L2CAP PDUs (3 and 7 bytes) and NimBLE's three (12, 3 and 5), and GATT never resolved. An entry:
+ *   0: bit 0 Cordio's (1) or the central's (0); bit 1 the central's with a good CRC, or Cordio's written ahead; bit 2 the
+ *      central's new to Cordio, or Cordio's put in; bit 3 the central's a later packet of its event; bits 7-4 the
+ *      connection since the attach (0-15, 15 and later 15);
+ *   1: the header bits 4-0: RXDHDR's as the chip wrote them, or Cordio's header byte's;
+ *   2: the length; 3-4: the connection's event (u16, the first 0);
+ *   5: Cordio's: its response time after the packet was seen, 2 us units (0xFF: no packet, or 510 us and more); the
+ *      central's: bit 0 RXTOG changed at it, bit 1 TXTOG changed at it;
+ *   6-19: the payload's first 14 bytes (the L2CAP header and 10 bytes of ATT or signalling). */
+#define PAL_FM1_CAP         32
+#define PAL_FM1_CAP_BYTES   20
 
 /* FM1BLE_TX_INTIME: Cordio's response goes in only this many us after the PAL saw the packet. The flag comes at the
  * packet's end [unchecked]; T_IFS is 150 us and the hardware reads the slot before its preamble. Cordio took 42 us at most
@@ -150,6 +191,12 @@ typedef struct {
     uint32_t trace[PAL_FM1_TRACE_CONNS][PAL_FM1_TRACE_PER];
     uint32_t ll_ops[PAL_FM1_CONNS], ll_cnt[PAL_FM1_CONNS], arq_dup, arq_unwritten;
     uint32_t later_rx, later_given;
+    /* ARQ's ways (PAL_FM1_L2_GOOD above): the ARQ connections started, the first 16 connections that ran ahead (bit k:
+     * connection k), the way kept (1 ahead, 0 in T_IFS, PAL_FM1_NO_SETUP before), the responses written ahead; the chip's
+     * SN (PAL_FM1_ARQ_STUCK): bit 2 changed at a connection's first packet, and after PAL_FM1_ARQ_STUCK; the capture */
+    uint32_t arq_conns, ahead_conns, good_ahead, ahead_put, sn_flips_first, sn_flips_stuck;
+    uint32_t cap_n;
+    uint8_t cap[PAL_FM1_CAP][PAL_FM1_CAP_BYTES];
 } pal_fm1_stats;
 
 void pal_fm1_attach(const pal_fm1_cfg *cfg);
