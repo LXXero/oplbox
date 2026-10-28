@@ -241,8 +241,23 @@ static int test_run(void)
     check(R.step[FM1BLE_STEP_MIDI_OUT].result == FM1BLE_PASS, "the run: midi_out PASS, the notification acknowledged");
     check(g_notes == 1 && g_note_n == 8 && g_note[5] == 0x90 && g_note[6] == 0x3C, "the central got the run's Note On");
     check(R.ctr[FM1BLE_C_PAL_RESP_LATE] == 0 && R.ctr[FM1BLE_C_PAL_STUCK] == 0, "pal counters: no response late, nothing stuck");
-    check(R.ctr[FM1BLE_C_PAL_CONN_TIMEOUT_US] > 0 && R.ctr[FM1BLE_C_PAL_CONN_RX] > 0 && (R.ctr[FM1BLE_C_CONN_WIN] & 0xFFFFu) == FM1BLE_WIN0,
-          "connection events: Cordio's window passed on, packets received, WINCNTL0 0x32");
+    check(R.ctr[FM1BLE_C_PAL_CONN_TIMEOUT_US] > 0 && R.ctr[FM1BLE_C_PAL_CONN_RX] > 0 &&
+          (R.ctr[FM1BLE_C_CONN_WIN] & 0xFFFFu) == R.ctr[FM1BLE_C_CONN_WIN] >> 16,
+          "connection events: Cordio's window passed on, packets received, the window in WINCNTL0 too (padw, the first setup)");
+    check(R.ctr[FM1BLE_C_PAL_CONNS] == 1 && (R.ctr[FM1BLE_C_CONN_SUM] & 0xFu) == FM1BLE_CONN_PADW &&
+          (R.ctr[FM1BLE_C_CONN_SUM] >> 16) == R.ctr[FM1BLE_C_PAL_CONN_RX] && (R.ctr[FM1BLE_C_NIMBLE_CONNS] & 0xFFFFu) == 1 &&
+          R.ctr[FM1BLE_C_CONN_SUM + 3] == 0, "the connection's summary: padw, its packets; one connect");
+    {   /* the window probe ran before the stack: every cell has an end; on the model (a window from its counter, WINCNTL2
+         * long) keep's first cell ends its window (60 us) after the delay */
+        uint32_t k, all = 1, v = R.ctr[FM1BLE_C_PROBE];
+        for (k = 0; k < FM1BLE_CONN_SETUPS * 4u; k++)
+            if ((R.ctr[FM1BLE_C_PROBE + k] & 0xFFFFu) == 0x8000u || (R.ctr[FM1BLE_C_PROBE + k] & 0xFFFFu) == 0x7FFFu)
+                all = 0;
+        check(R.ctr[FM1BLE_C_PROBE_N] == FM1BLE_CONN_SETUPS * 4u * FM1BLE_PROBE_REPS && all &&
+              (int16_t)(v & 0xFFFFu) >= (int16_t)FM1BLE_PROBE_W0 - 5 && (int16_t)(v >> 16) <= (int16_t)FM1BLE_PROBE_W0 + 20 &&
+              R.ctr[FM1BLE_C_PROBE_D] == (FM1BLE_PROBE_D0 | FM1BLE_PROBE_D1 << 16),
+              "the window probe: every setup, delay and window ended; keep's first ends its window after the delay");
+    }
     check(ble_nimble_state()->disconnects == 1, "the run closed the connection before turning the radio off");
     printf("ble_stack run: %d checks, %s (steps' ms: hci %u, connect %u, midi_in %u, midi_out %u)\n", checks, bad ? "FAILED" : "all passed",
            (unsigned)R.step[FM1BLE_STEP_HCI].ms, (unsigned)R.step[FM1BLE_STEP_CONNECT].ms, (unsigned)R.step[FM1BLE_STEP_MIDI_IN].ms,

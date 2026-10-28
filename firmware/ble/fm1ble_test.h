@@ -38,14 +38,16 @@ typedef struct {
     uint32_t ms;                /* milliseconds the step took, from the run's start to its end */
 } fm1ble_step;
 
-#define FM1BLE_N_CTR    120     /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
+#define FM1BLE_N_CTR    192     /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
 
 /* The counters, in the report's order. tools/fm1_ble_report.py has the same list (tests/ble_report_tool.py holds it to
  * FM1BLE_CTR_NAMES); the firmware at 48ea034 and before sent 24 others (the tool reads those by their count), up to
  * 122afe3 the first 32 of these, with pal_done_37-39 counting the driver's one-channel events that ended, up to 3b39ab4
- * the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80. The RX trials' four each (rxtN_*) and the receive
+ * the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the first 120 (the event log then
+ * the first 12 events, the setup in bits 7-6 alone). The RX trials' four each (rxtN_*) and the receive
  * setup the stack ran on follow, then the connection events' (pal_fm1.h: the busy wait, the window setups; fm1ble.h's
- * connection words), then the fourth setup's, the CONNECT_IND's poll gap and the PAL's event log (evN_a/b/c). */
+ * connection words), then the fourth setup's, the CONNECT_IND's poll gap and the PAL's event log (evN_a/b/c); then the
+ * fifth to seventh setups', the connections' summaries (connN_a/b/c), NimBLE's connects, and the window probe's. */
 enum {
     FM1BLE_C_RADIO_REGS_OK, FM1BLE_C_RADIO_REGS_BAD, FM1BLE_C_VARIANT, FM1BLE_C_RF_COMMON,
     FM1BLE_C_EVENTS, FM1BLE_C_TX_FLIPS, FM1BLE_C_RX_PACKETS, FM1BLE_C_RX_SCAN_REQ,
@@ -67,8 +69,25 @@ enum {
     FM1BLE_C_PAL_SET_ARR,                           /* setup k's: FM1BLE_C_PAL_SET_ARR + k */
     FM1BLE_C_CONN_RX_WORDS = FM1BLE_C_PAL_SET_ARR + 3,
     FM1BLE_C_PAL_SET3_COUNTS, FM1BLE_C_PAL_SET3_ARR, FM1BLE_C_PAL_CIND_GAP_US, FM1BLE_C_PAL_LOG_N,
-    FM1BLE_C_PAL_LOG                                /* event k's word w (0-2, a-c): FM1BLE_C_PAL_LOG + 3k + w */
+    FM1BLE_C_PAL_LOG,                               /* event k's word w (0-2, a-c): FM1BLE_C_PAL_LOG + 3k + w */
+    FM1BLE_C_PAL_SET4 = FM1BLE_C_PAL_LOG + 36,      /* setup k's (4-6): counts at FM1BLE_C_PAL_SET4 + 2(k - 4), arr + 1 */
+    FM1BLE_C_PAL_CONNS = FM1BLE_C_PAL_SET4 + 6, FM1BLE_C_PAL_GOOD,
+    FM1BLE_C_CONN_SUM,                              /* connection k's word w (0-2, a-c): FM1BLE_C_CONN_SUM + 3k + w */
+    FM1BLE_C_NIMBLE_CONNS = FM1BLE_C_CONN_SUM + 24, FM1BLE_C_PROBE_N,
+    FM1BLE_C_CLK_IDLE,                              /* the anchor file's indices 0, 0xE, 7, 0x10 read back, idle */
+    FM1BLE_C_CLK_ARM = FM1BLE_C_CLK_IDLE + 4,       /* the same, an event armed */
+    FM1BLE_C_PROBE = FM1BLE_C_CLK_ARM + 4,          /* the window probe: setup s, cell c (0-3): FM1BLE_C_PROBE + 4s + c */
+    FM1BLE_C_PROBE_D = FM1BLE_C_PROBE + 28, FM1BLE_C_PROBE_W
 };
+/* the fifth to seventh setups' counters (pal_set4-6_counts/_arr) as the first four's; pal_conns the connections the PAL
+ * started, pal_good the setup a connection received PAL_FM1_GOOD packets on (0xFF: none); connN_a/b/c the PAL's summary
+ * of connection N (pal_fm1.h conn_sum); nimble_conns NimBLE's connects (bits 15-0) and disconnects (31-16).
+ * The window probe (fm1ble_test.h FM1BLE_PROBE_*): probe_n the events it ran; clk_idle_* and clk_arm_* the anchor file's
+ * index 0, 0xE, 7 and 0x10 read back twice (the first read in bits 15-0, the second in 31-16), FM1BLE_PROBE_CLK_US apart,
+ * with no event and after an event was armed; prS_c the probe's setup S at cell c (a: the first delay and window, b: the
+ * first delay and the second window, c and d the same at the second delay): the earliest (15-0) and latest (31-16) the
+ * baseband's end flag came, us after the time asked for (the arm plus the delay), signed 16-bit, 0x7FFF when it never came;
+ * probe_delays and probe_windows the two of each (first in 15-0) */
 /* the connection events' counters: pal_setN_counts = setup N's events (bits 15-0) and packets received (31-16), each at
  * most 65535; pal_setN_arr = the earliest (bits 15-0) and latest (31-16) packet start after the window's start, us, as
  * signed 16-bit (0 with no packet); conn_rx_words = the last connection packet's RXSTAT (15-0, bit 8 "acknowledges ours")
@@ -109,7 +128,25 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
     "ev6_c", "ev7_a", "ev7_b", "ev7_c", \
     "ev8_a", "ev8_b", "ev8_c", "ev9_a", \
     "ev9_b", "ev9_c", "ev10_a", "ev10_b", \
-    "ev10_c", "ev11_a", "ev11_b", "ev11_c"
+    "ev10_c", "ev11_a", "ev11_b", "ev11_c", \
+    "pal_set4_counts", "pal_set4_arr", "pal_set5_counts", "pal_set5_arr", \
+    "pal_set6_counts", "pal_set6_arr", "pal_conns", "pal_good", \
+    "conn0_a", "conn0_b", "conn0_c", "conn1_a", \
+    "conn1_b", "conn1_c", "conn2_a", "conn2_b", \
+    "conn2_c", "conn3_a", "conn3_b", "conn3_c", \
+    "conn4_a", "conn4_b", "conn4_c", "conn5_a", \
+    "conn5_b", "conn5_c", "conn6_a", "conn6_b", \
+    "conn6_c", "conn7_a", "conn7_b", "conn7_c", \
+    "nimble_conns", "probe_n", "clk_idle_0", "clk_idle_e", \
+    "clk_idle_7", "clk_idle_10", "clk_arm_0", "clk_arm_e", \
+    "clk_arm_7", "clk_arm_10", "pr0_a", "pr0_b", \
+    "pr0_c", "pr0_d", "pr1_a", "pr1_b", \
+    "pr1_c", "pr1_d", "pr2_a", "pr2_b", \
+    "pr2_c", "pr2_d", "pr3_a", "pr3_b", \
+    "pr3_c", "pr3_d", "pr4_a", "pr4_b", \
+    "pr4_c", "pr4_d", "pr5_a", "pr5_b", \
+    "pr5_c", "pr5_d", "pr6_a", "pr6_b", \
+    "pr6_c", "pr6_d", "probe_delays", "probe_windows"
 
 /* The air trials (adv_air): the driver's own ADV_IND, each trial from its own static random address, so a central's
  * scan (tools/ble_central.py) says which one reached the air. Trial 0: without the shared radio's init (variant 0), at
@@ -132,6 +169,29 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
  * gain table (rx_stack_trial, rx_agc_table and rx_win say which). */
 #define FM1BLE_RX_TRIALS    4
 #define FM1BLE_RX_ADDR0     (FM1BLE_TRIAL_ADDR0 + FM1BLE_TRIALS)
+
+/* The window probe, after the RX trials and before the stack, no central needed: connection events (state 7) on a data
+ * channel with an access address no central uses, so none receives, each driver window setup (fm1ble.h FM1BLE_CONN_*) at
+ * two delays and two windows, FM1BLE_PROBE_REPS times each, the page waiting for each event's end flag (at most
+ * FM1BLE_PROBE_MAX_US). When the end comes against the delay and the window says what the chip makes of the counter, the
+ * bit offset and the window registers: at 5474159 the connection's missed events ended 262-846 us after dueUsec whatever
+ * the setup asked. The delays have bit offsets 150 and 550 in the slot (the slots 2 and 2 for KEEP), so the chip ignoring
+ * the offset shows as the same end for both; repeats show how much the end moves with when the arm fell. The first event
+ * also reads the anchor file back (fm1ble_anchor_rd), before and after it is armed, FM1BLE_PROBE_CLK_US apart. */
+#define FM1BLE_PROBE_REPS   3
+#define FM1BLE_PROBE_D0     1400u
+#define FM1BLE_PROBE_D1     1800u
+#define FM1BLE_PROBE_W0     60u
+#define FM1BLE_PROBE_W1     2500u
+#define FM1BLE_PROBE_CHAN   10u
+#define FM1BLE_PROBE_AA     0x5A3C96E1u
+#define FM1BLE_PROBE_MAX_US 15000u
+#define FM1BLE_PROBE_CLK_US 600u
+
+/* A central that leaves during MIDI_IN (the connection dropped) may connect again: the step waits on while NimBLE has
+ * seen fewer than FM1BLE_CONN_TRIES connects, within the step's wait. Each connection runs the PAL's next window setup
+ * (pal_fm1.h), so a run whose central connects again (tools/ble_central.py --tries) tries them in turn. */
+#define FM1BLE_CONN_TRIES   6u
 
 enum { FM1BLE_IDLE, FM1BLE_RUNNING, FM1BLE_DONE };
 
