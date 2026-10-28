@@ -141,7 +141,8 @@ with a packet of the first two connections, each the central's header as RXDHDR 
 toggles did, what Cordio was told and Cordio's answer), `connK_ops` and `connK_ll` (the first four connections: the
 central's control opcodes; the L2CAP PDUs Cordio took, Cordio's non-empty responses put in, the packets that did not
 acknowledge Cordio's last PDU, RXTOG's changes), `pal_tx3_counts` and `pal_tx3_sent` (arq's, as `pal_txK_*`),
-`pal_arq_dup` and `pal_arq_unwritten`, `stack_acl` (HCI ACL host to controller and back: did an ATT PDU reach NimBLE),
+`pal_arq_dup` and `pal_arq_unwritten` (bits 15-0; since round 6 bits 31-16 the packets after the first in a
+connection event and the ones given to Cordio), `stack_acl` (HCI ACL host to controller and back: did an ATT PDU reach NimBLE),
 `stack_nocp`, `nimble_mtu` (NimBLE's ATT MTU, the central's writes) and `pal_rxtog`. The tool prints them as LINK LAYER.
 248 is near the most the report holds: its counter count is a byte. `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS, a table of the logged events) and with `--out`
 writes what it printed to summary.txt. `rf_common` is what the shared radio's init returned the first time (trial 1): a later power-up finds WiFi

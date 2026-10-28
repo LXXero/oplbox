@@ -134,6 +134,21 @@ Cordio's PAL"):
   what Cordio was told and answered, so the run says which reading of the bits holds. On the register model with the
   chip's own ARQ (`hw_arq`) arq answers LL_FEATURE_REQ once and passes the ATT write with a lost response, a lost feature
   response and a late one, and intime, jieli and air receive every packet and pass nothing, as a349877 did.
+- **1b251ea, the done-check after round 5 (2026-10-28, `~/oplbox-ble-runs/1b251ea-1` on xryzen):** on padw the
+  connection timing works (869 of 895 events received), but no HCI ACL went from Cordio to NimBLE, so GATT never
+  resolved. The header trace shows why: BlueZ's LL_LENGTH_REQ came with RXDHDR bits 4-0 `1F` and its first L2CAP PDU
+  (`02`) next, in the same connection event (that event ended about 500 us later than the others, one more exchange).
+  The chip's ARQ acknowledged the L2CAP PDU on the air, but the PAL told Cordio MD 0, so Cordio had closed the event and
+  never got the PDU; and since the PAL makes Cordio's SN and NESN from the toggles, the next packet looked new to Cordio
+  and nothing showed the loss. The same trace reads RXDHDR as the air's layout, not the chip's: bits 3 and 2 toggle on the
+  central's alternating empty PDUs (`0D`, `01`), so they are SN and NESN, and the LL_LENGTH_REQ that had a second packet
+  after it has bit 4 (MD) set [one run; the IR reading above says MD is in bit 3]. Round 6: in arq the PAL tells Cordio
+  MD 1 on every packet, so Cordio keeps a receive buffer for a later packet in the event whichever bit is MD (an event
+  with none ends with Cordio's receive timing out at the event's end), and in every mode Cordio's response is complete
+  when the central's next packet comes, not only at the event's end, so each packet of the event reaches Cordio in turn.
+  `pal_arq_dup` and `pal_arq_unwritten` carry, in bits 31-16, the packets after the first in an event and the ones given
+  to Cordio (LINK LAYER in the report). On the model the central can send its queue in one event (`air_central.h` burst,
+  `bb_air` conn_next): with the PAL as at 1b251ea the ATT write after LL_FEATURE_REQ (MD set) is lost, as on the FM-1.
 
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ

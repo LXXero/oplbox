@@ -402,8 +402,11 @@ def show_ll(c, out):
     print("\nLINK LAYER (the PAL's header trace; RXDHDR as the chip wrote it, Cordio's view as the PAL gave it)", file=out)
     print(f"  HCI ACL: host to controller {acl & 0xFFFF}, controller to host {acl >> 16}; Number Of Completed Packets "
           f"{c['stack_nocp']}; NimBLE's ATT MTU {mtu & 0xFFFF}, the central's writes {mtu >> 16}", file=out)
-    print(f"  ARQ: packets Cordio was told were repeats {c['pal_arq_dup']}, responses that did not go in "
-          f"{c['pal_arq_unwritten']}; at the end RXTOG {c['pal_rxtog'] & 0xFFFF:04X}, TXTOG {c['pal_rxtog'] >> 16:04X}", file=out)
+    dup, unw = c["pal_arq_dup"], c["pal_arq_unwritten"]
+    print(f"  ARQ: packets Cordio was told were repeats {dup & 0xFFFF}, responses that did not go in "
+          f"{unw & 0xFFFF}; at the end RXTOG {c['pal_rxtog'] & 0xFFFF:04X}, TXTOG {c['pal_rxtog'] >> 16:04X}", file=out)
+    print(f"  packets after the first in a connection event {dup >> 16}, given to Cordio {unw >> 16} (both 0 in a report "
+          f"from before round 6: not counted)", file=out)
     for k in range(min(c["pal_conns"], 4)):
         ops, n = c[f"conn{k}_ops"], c[f"conn{k}_ll"]
         x = c.get(f"conn{k}_d", 0) & 0xF

@@ -229,6 +229,8 @@ check("LINK LAYER (the PAL's header trace" in out and
       "  HCI ACL: host to controller 3, controller to host 2; Number Of Completed Packets 2; NimBLE's ATT MTU 185, the "
       "central's writes 1" in out and
       "  ARQ: packets Cordio was told were repeats 1, responses that did not go in 1; at the end RXTOG 0001, TXTOG 0000" in out and
+      "  packets after the first in a connection event 4, given to Cordio 3 (both 0 in a report from before round 6: not "
+      "counted)" in out and
       "  connection 1 (intime): the central's control PDUs FEATURE_REQ, VERSION_IND; its L2CAP PDUs Cordio took 0; Cordio's "
       "non-empty responses put in 1; told not acknowledged 0; RXTOG changed 2" in out and
       "  connection 2 (jieli): the central's control PDUs none; its L2CAP PDUs Cordio took 1; Cordio's non-empty responses "

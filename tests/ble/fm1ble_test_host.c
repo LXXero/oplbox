@@ -127,7 +127,7 @@ static void finish(fm1ble_run *r, int i)
             r->ctr[FM1BLE_C_CONN_OPS] = 1u << 8 | 1u << 12; r->ctr[FM1BLE_C_CONN_LL] = 0u | 1u << 8 | 0u << 16 | 2u << 24;
             r->ctr[FM1BLE_C_CONN_LL + 1] = 1u | 0u << 8 | 3u << 16 | 38u << 24;
             r->ctr[FM1BLE_C_PAL_TX3_COUNTS] = 12u | 10u << 16; r->ctr[FM1BLE_C_PAL_TX3_SENT] = 9u;
-            r->ctr[FM1BLE_C_PAL_ARQ_DUP] = 1u; r->ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] = 1u;
+            r->ctr[FM1BLE_C_PAL_ARQ_DUP] = 1u | 4u << 16; r->ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] = 1u | 3u << 16;
             r->ctr[FM1BLE_C_STACK_ACL] = 3u | 2u << 16; r->ctr[FM1BLE_C_STACK_NOCP] = 2u;
             r->ctr[FM1BLE_C_NIMBLE_MTU] = 185u | 1u << 16; r->ctr[FM1BLE_C_PAL_RXTOG] = 1u;
         }

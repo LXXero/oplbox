@@ -95,6 +95,28 @@ static void air_irq(uint32_t bit)
         bbm.air->irq(bbm.air->ctx);
 }
 
+/* the central's packet received at `at` (its start): RX buffer 0, the chip's ARQ, the response T_IFS after its end */
+static void conn_rx(const uint8_t *req, int r, uint64_t at)
+{
+    bbm.now_us = at + bb_model_air_us(r);
+    air_rx(req, r, 0);
+    bbm.rx_sn = (uint8_t)(req[0] >> 3 & 1u);
+    if (bbm.hw_arq) {                   /* the chip's ARQ (bb_model.h hw_arq) */
+        uint32_t s = air16(FM1BLE_E_TXTOG) & 1u, dh = air16(s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
+        if ((req[0] >> 2 & 1u) != (dh >> 2 & 1u))
+            air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
+        if ((req[0] >> 3 & 1u) == bbm.rx_exp) {
+            bbm.rx_exp ^= 1u;
+            air16w(FM1BLE_E_RXTOG, air16(FM1BLE_E_RXTOG) ^ 1u);
+        }
+        air16w(FM1BLE_E_RXDHDR0, (uint32_t)req[1] << 8 | (req[0] & 3u) | (req[0] >> 1 & 8u));
+    }
+    bbm.jump_left = bbm.jump_reads;
+    bbm.resp_at = bbm.now_us + 150u;
+    bbm.resp_pending = 1;
+    air_irq(1u << 8);
+}
+
 static void air_event(void)
 {
     const bb_air *a = bbm.air;
@@ -176,23 +198,7 @@ static void air_event(void)
             if (!bbm.period_us)
                 bbm.conn_at_once++;
             /* the packet, then the response T_IFS after its end (conn_respond): what is in the TX slot then goes */
-            bbm.now_us = at + bb_model_air_us(r);
-            air_rx(req, r, 0);
-            bbm.rx_sn = (uint8_t)(req[0] >> 3 & 1u);
-            if (bbm.hw_arq) {                   /* the chip's ARQ (bb_model.h hw_arq) */
-                uint32_t s = air16(FM1BLE_E_TXTOG) & 1u, dh = air16(s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
-                if ((req[0] >> 2 & 1u) != (dh >> 2 & 1u))
-                    air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
-                if ((req[0] >> 3 & 1u) == bbm.rx_exp) {
-                    bbm.rx_exp ^= 1u;
-                    air16w(FM1BLE_E_RXTOG, air16(FM1BLE_E_RXTOG) ^ 1u);
-                }
-                air16w(FM1BLE_E_RXDHDR0, (uint32_t)req[1] << 8 | (req[0] & 3u) | (req[0] >> 1 & 8u));
-            }
-            bbm.jump_left = bbm.jump_reads;
-            bbm.resp_at = bbm.now_us + 150u;
-            bbm.resp_pending = 1;
-            air_irq(1u << 8);
+            conn_rx(req, r, at);
             return;
         } else {
             if (r > 0)
@@ -204,12 +210,13 @@ static void air_event(void)
 }
 
 /* a connection event's second half, at T_IFS after the central's packet: the PDU of the TX slot TXTOG & 1 names, as for
- * advertising, TXTOG changed after it [unchecked in a connection], the event flag */
+ * advertising, TXTOG changed after it [unchecked in a connection]; then the central's next packet T_IFS after it when it
+ * has one (conn_next), else the event flag */
 static void conn_respond(void)
 {
     const bb_air *a = bbm.air;
     uint8_t pdu[260];
-    int n;
+    int n, r;
     bbm.resp_pending = 0;
     if (bbm.resp_at > bbm.now_us)               /* a clock that jumped (jump_us) stays where it is */
         bbm.now_us = bbm.resp_at;
@@ -228,6 +235,11 @@ static void conn_respond(void)
     bbm.now_us += bb_model_air_us(n);
     if (n && !bbm.hw_arq)
         air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
+    if (n && a->conn_next && (r = a->conn_next(a->ctx, pdu)) > 0) {
+        bbm.later_in++;
+        conn_rx(pdu, r, bbm.now_us + 150u);
+        return;
+    }
     air_irq(1u);
 }
 
