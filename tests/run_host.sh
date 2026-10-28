@@ -516,25 +516,27 @@ HOST_BLE_REPORT=build/host/ble_usb_report-%u.bin build/host/oplbox build/host/bl
 for want in "   200 ms  USB reply 66: 02 00 00 00 00 00 00 00 00 | 0 bytes" "   250 ms  USB reply 67: 00 01 00 | 0 bytes" \
             "   250 ms  ble page 0: BLUETOOTH TEST (STAGE 5)" "   251 ms  USB reply 66: 03 00 00 00" "   252 ms  USB reply 67: 03 01 00 |" \
             "  3652 ms  ble page 6: CONNECT  FAIL NO CENTRAL CONNECTED" "  3652 ms  ble page 7: MIDI_IN  SKIP SKIPPED: AN EARLIER" \
-            "  5000 ms  USB reply 66: 00 DD 12 00 00 00 00 01 00 | 512 bytes" "  5001 ms  USB reply 66: 00 DD 12 00 00 12 00 01 00 | 221 bytes" \
+            "  5000 ms  USB reply 66: 00 F5 18 00 00 00 00 01 00 | 512 bytes" "  5001 ms  USB reply 66: 00 F5 18 00 00 18 00 01 00 | 245 bytes" \
             "  5100 ms  USB reply 67: 00 02 00 |" "  5101 ms  USB reply 66: 03 " "  6506 ms  ble page 6: CONNECT  SKIP SKIPPED: NO WAIT FOR" \
-            "  7000 ms  USB reply 66: 00 D9 12 00 00 00 00 02 00 | 512 bytes" "  7300 ms  USB reply 66: 00 D9 12 00 00 00 00 02 00 | 512 bytes" \
+            "  7000 ms  USB reply 66: 00 F1 18 00 00 00 00 02 00 | 512 bytes" "  7300 ms  USB reply 66: 00 F1 18 00 00 00 00 02 00 | 512 bytes" \
             "  7500 ms  USB reply 67: 04 00 00 |" "  7800 ms  USB reply 66: 01 " "  7900 ms  USB reply 66: 01 " \
             "  8000 ms  USB reply 67: 01 " "  8100 ms  USB reply 67: 01 "; do
   grep -qF -- "$want" build/host/ble_usb.txt || { echo "FAIL: Bluetooth page over USB: no line '$want'" >&2; exit 1; }
 done
-[ "$(grep -c 'ble page 0: BLUETOOTH TEST (STAGE 5)   1/19' build/host/ble_usb.txt)" = 2 ] || { echo "FAIL: Bluetooth page over USB: not two runs" >&2; exit 1; }
-# by the buttons: SAVE (the WiFi page), HOME there (the Bluetooth page), PLAY runs it (a central connects), PLAY turns its nineteen
+[ "$(grep -c 'ble page 0: BLUETOOTH TEST (STAGE 5)   1/24' build/host/ble_usb.txt)" = 2 ] || { echo "FAIL: Bluetooth page over USB: not two runs" >&2; exit 1; }
+# by the buttons: SAVE (the WiFi page), HOME there (the Bluetooth page), PLAY runs it (a central connects), PLAY turns its twenty-four
 # pages, SAVE leaves it (the WiFi page's first screen again), SAVE leaves that; then the same with the hci step failing
 HOST_BLE_CONNECT=1 HOST_BLE_REPORT=build/host/ble_page_report-%u.bin build/host/oplbox build/host/ble_page tests/script_ble_page.txt > build/host/ble_page.txt
 HOST_BLE_FAIL=hci HOST_BLE_REPORT=build/host/ble_fail_report-%u.bin build/host/oplbox build/host/ble_fail tests/script_ble_page.txt > build/host/ble_fail.txt
 for want in "   200 ms  wifi page 0: WIFI TEST (STAGE 9)" "   300 ms  ble page 0: BLUETOOTH TEST (STAGE 5)" "   400 ms  ble page 1: WORKING" \
-            "ble page 6: CONNECT  PASS CONNECTED, INTERVAL" "ble page 0: STEP 3 HCI   4/19" "ble page 4: RAW: 41 BYTES (40 SHOWN)" \
-            "ble page 0: COUNTERS 4/10   13/19" "ble page 8: RAM_END                01C16940" \
-            "ble page 0: COUNTERS 5/10   14/19" "ble page 1: PAL_ADV_EVENTS         0000000C" "ble page 3: PAL_TIMER_LATE_US" \
-            "ble page 0: COUNTERS 8/10   17/19" "ble page 8: RX_STAT1" \
-            "ble page 0: COUNTERS 10/10   19/19" "ble page 1: PAL_SET0_COUNTS" "ble page 8: CONN_RX_WORDS" \
-            "  5000 ms  wifi page 0: WIFI TEST (STAGE 9)"; do
+            "ble page 6: CONNECT  PASS CONNECTED, INTERVAL" "ble page 0: STEP 3 HCI   4/24" "ble page 4: RAW: 41 BYTES (40 SHOWN)" \
+            "ble page 0: COUNTERS 4/15   13/24" "ble page 8: RAM_END                01C16940" \
+            "ble page 0: COUNTERS 5/15   14/24" "ble page 1: PAL_ADV_EVENTS         0000000C" "ble page 3: PAL_TIMER_LATE_US" \
+            "ble page 0: COUNTERS 8/15   17/24" "ble page 8: RX_STAT1" \
+            "ble page 0: COUNTERS 10/15   19/24" "ble page 1: PAL_SET0_COUNTS" "ble page 8: CONN_RX_WORDS" \
+            "ble page 0: COUNTERS 11/15   20/24" "ble page 1: PAL_SET3_COUNTS" "ble page 4: PAL_LOG_N" \
+            "ble page 0: COUNTERS 15/15   24/24" "ble page 8: EV11_C" \
+            "  5500 ms  wifi page 0: WIFI TEST (STAGE 9)"; do
   grep -qF -- "$want" build/host/ble_page.txt || { echo "FAIL: Bluetooth page: no line '$want'" >&2; exit 1; }
 done
 for want in "ble page 3: HCI      FAIL MADE-UP FAILURE (HOS" "ble page 4: ADV_SET  SKIP SKIPPED: AN EARLIER" "ble page 8: MIDI_OUT SKIP SKIPPED: AN EARLIER"; do

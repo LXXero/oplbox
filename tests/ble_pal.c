@@ -98,10 +98,11 @@ static int cmd(uint16_t op, const uint8_t *par, uint8_t n)
 /* A connection polled from a main loop that comes back every 200 us (the FM-1's PAL runs from the loop: at 58cadc5 it
  * received 1 packet in 18 connection events, the scheduler's timer at most 215 us late; much later than 300 us, Cordio's
  * SCH_LOAD_DELAY_US, and Cordio skips events). busy: the PAL waits through each connection event (pal_fm1.c); setups:
- * the window setups it may try (pal_fm1_cfg conn_setups). Returns the
+ * the window setups it may try (pal_fm1_cfg conn_setups); lead: the scheduler's timer fires PAL_FM1_TIMER_LEAD_US
+ * early (pal_fm1_cfg no_timer_lead when 0). Returns the
  * connection events the model ran whose packet fell outside the peripheral's window; the central writes, the host
  * sends, the central ends it. */
-static uint32_t polled_conn(fm1ble *b, int busy, uint8_t setups, uint16_t *handle, int *data_ok)
+static uint32_t polled_conn(fm1ble *b, int busy, uint8_t setups, int lead, uint16_t *handle, int *data_ok)
 {
     static bb_air polled;
     pal_fm1_cfg pc;
@@ -116,6 +117,7 @@ static uint32_t polled_conn(fm1ble *b, int busy, uint8_t setups, uint16_t *handl
     pc.b = b;
     pc.no_busy_wait = (uint8_t)!busy;
     pc.conn_setups = setups;
+    pc.no_timer_lead = (uint8_t)!lead;
     pal_fm1_attach(&pc);
     memset(&C, 0, sizeof C);
     buf[0] = 1;
@@ -142,6 +144,29 @@ static uint32_t polled_conn(fm1ble *b, int busy, uint8_t setups, uint16_t *handl
 }
 
 static const uint8_t PERIPH[6] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 };   /* least significant first */
+
+/* The PAL's event log (pal_fm1.h) holds what each logged connection event did: a setup leaves only after PAL_FM1_MISSES
+ * missed events in a row on it, the first event is marked, a packet's start lies before the event's end. 1 when it does. */
+static int log_ok(const pal_fm1_stats *st)
+{
+    uint32_t k, miss = 0;
+    if (!st->log_n || !(st->log[0][0] & 1u << 13))
+        return 0;
+    for (k = 0; k < st->log_n; k++) {
+        uint32_t a = st->log[k][0], b = st->log[k][1];
+        int got = (a >> 8) & 1u;
+        if (k && ((a >> 6) & 3u) != ((st->log[k - 1][0] >> 6) & 3u) && !(a & 1u << 13) && miss != PAL_FM1_MISSES)
+            return 0;
+        if (k && ((a >> 6) & 3u) != ((st->log[k - 1][0] >> 6) & 3u))
+            miss = 0;
+        miss = got ? 0 : (miss == PAL_FM1_MISSES ? 1 : miss + 1);
+        if (got && (b & 0xFFFFu) == PAL_FM1_LOG_NONE)
+            return 0;
+        if (got && (b >> 16) != PAL_FM1_LOG_NONE && (int16_t)(b >> 16) <= (int16_t)(b & 0xFFFFu))
+            return 0;
+    }
+    return 1;
+}
 
 
 int main(void)
@@ -330,51 +355,89 @@ int main(void)
     {
         uint16_t h;
         int data_ok;
-        uint32_t missed = polled_conn(&B, 1, 0, &h, &data_ok);
+        uint32_t missed = polled_conn(&B, 1, 0, 1, &h, &data_ok);
         const pal_fm1_stats *st = pal_fm1_state();
         check(h != 0xFFFF && missed == 0 && st->conn_rx >= 15 && st->conn_rx + 1u >= st->conn_ops,
               "polled, waited through: a connection, every event's packet in the window");
         check(data_ok, "polled, waited through: the central's write reaches the host");
         check(st->resp_late == 0 && st->busy_waits >= 15 && st->resp_us_max < 150u,
               "polled, waited through: every response in before T_IFS");
-        check(st->setup_moves == 0 && st->set_rx[FM1BLE_CONN_KEEP] == st->conn_rx && st->set_arr_min[0] >= 0 &&
-              st->set_arr_max[0] <= (int32_t)st->conn_timeout_us + 2600,
-              "polled, waited through: the first setup kept, each packet inside its window");
+        check(st->setup_moves == 0 && st->set_rx[FM1BLE_CONN_WIDE] == st->conn_rx && st->set_arr_min[FM1BLE_CONN_WIDE] >= 0 &&
+              st->set_arr_max[FM1BLE_CONN_WIDE] <= (int32_t)(st->conn_timeout_us + 2u * FM1BLE_CONN_WIDE_US + 2600u),
+              "polled, waited through: the first setup of the order (wide) kept, each packet inside its window");
+        check(st->log_n == PAL_FM1_LOG && log_ok(st) && (st->log[0][0] & 1u << 8) && ((st->log[0][0] >> 6) & 3u) == FM1BLE_CONN_WIDE &&
+              (st->log[1][0] & 1u << 10) && (st->log[1][2] & 0xFFFFu) > FM1BLE_CONN_WIDE_US,
+              "the event log: the first events, each with its packet and a response sent, armed more than 1250 us ahead");
+        /* the model runs an advertising event's channels in one step of its clock, so the gap is that step and the
+         * CONNECT_IND's time on the air (848 us here), not the loop's 200 us */
+        check(st->cind_gap_us > 0 && st->cind_gap_us <= 2000u, "the CONNECT_IND's poll gap is measured");
         k = find_ev(0, 0x05, 0);
         check(k >= 0 && (g_ev[k][3] | g_ev[k][4] << 8) == h, "polled: the central ends it");
-        /* not waited through, the window as up to 58cadc5 (one setup): the late timestamps put the anchors late */
-        missed = polled_conn(&B, 0, 1u << FM1BLE_CONN_KEEP, &h, &data_ok);
+        /* not waited through, the window as up to 58cadc5 (one setup, no timer lead): the late timestamps put the anchors
+         * late */
+        missed = polled_conn(&B, 0, 1u << FM1BLE_CONN_KEEP, 0, &h, &data_ok);
         st = pal_fm1_state();
         check(missed >= 3 && st->conn_rx * 2u < st->conn_ops,
               "polled, not waited through (58cadc5): most windows miss the central's packets");
+        {   /* a missed event's end, as the PAL saw the flag: where the model closed the window (KEEP: dueUsec + timeout) */
+            uint32_t j, ends = 0, near = 0;
+            for (j = 0; j < st->log_n; j++) {
+                uint32_t a = st->log[j][0], e = st->log[j][1] >> 16;
+                if ((a & 1u << 8) || e == PAL_FM1_LOG_NONE)
+                    continue;
+                ends++;
+                if ((int16_t)e >= (int32_t)(a >> 16) - 10 && (int16_t)e <= (int32_t)(a >> 16) + 210)
+                    near++;
+            }
+            check(ends >= 2 && near == ends, "the event log: a missed event ends where its window closed");
+        }
         run_us(2500000);                    /* Cordio's supervision timeout ends that one */
-        /* not waited through, all setups: a missed event moves to the padded window, which holds the late anchor */
-        missed = polled_conn(&B, 0, 0, &h, &data_ok);
+        /* not waited through, keep and widen: PAL_FM1_MISSES missed events in a row move to the next setup */
+        missed = polled_conn(&B, 0, 1u << FM1BLE_CONN_KEEP | 1u << FM1BLE_CONN_WIDEN, 0, &h, &data_ok);
         st = pal_fm1_state();
-        check(st->setup_moves >= 1 && st->set_events[FM1BLE_CONN_PAD] >= 6 && st->set_rx[FM1BLE_CONN_PAD] >= 6,
-              "a missed event moves to the next window setup; the padded one receives");
-        /* the padded window alone, waited through: Cordio arms each event SCH_LOAD_DELAY_US (300 us) before dueUsec, less
-         * than FM1BLE_CONN_PAD_US, so fm1ble_op_conn opens the window at once (the counter at 0), not 625 us before
-         * dueUsec. The arrival positions the PAL reports count from where the window really opened, as the model saw it. */
+        check(st->setup_moves >= 1 && log_ok(st) && st->set_events[FM1BLE_CONN_WIDEN] >= 1,
+              "missed events in a row move to the next window setup, not each one");
         run_us(2500000);
-        bbm.conn_in = bbm.conn_at_once = 0;
-        missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PAD, &h, &data_ok);
+        /* not waited through, all setups: the wide window, first, holds the late anchors */
+        missed = polled_conn(&B, 0, 0, 1, &h, &data_ok);
         st = pal_fm1_state();
-        check(h != 0xFFFF && missed == 0 && data_ok && st->set_rx[FM1BLE_CONN_PAD] >= 15 &&
-              st->set_rx[FM1BLE_CONN_PAD] == st->conn_rx,
-              "the padded window alone: a connection, every event's packet in the window");
-        check(bbm.conn_in >= 15 && bbm.conn_at_once == bbm.conn_in,
-              "the padded window alone: each event armed less than 625 us before its due time, the window open at once");
-        check(st->set_arr_min[FM1BLE_CONN_PAD] >= bbm.conn_off_min - 20 &&
-              st->set_arr_min[FM1BLE_CONN_PAD] <= bbm.conn_off_min + 20 &&
-              st->set_arr_max[FM1BLE_CONN_PAD] >= bbm.conn_off_max - 20 &&
-              st->set_arr_max[FM1BLE_CONN_PAD] <= bbm.conn_off_max + 20,
-              "the padded window armed late: the packets' positions counted from where the window opened");
-        if (bad)
-            fprintf(stderr, "  padded: PAL %d..%d us, model %lld..%lld us, %u of %u events opened at once\n",
-                    (int)st->set_arr_min[FM1BLE_CONN_PAD], (int)st->set_arr_max[FM1BLE_CONN_PAD],
-                    (long long)bbm.conn_off_min, (long long)bbm.conn_off_max, (unsigned)bbm.conn_at_once,
-                    (unsigned)bbm.conn_in);
+        check(st->set_events[FM1BLE_CONN_WIDE] >= 6 && st->set_rx[FM1BLE_CONN_WIDE] * 4u >= st->set_events[FM1BLE_CONN_WIDE] * 3u,
+              "not waited through: the wide window receives most events");
+        /* the padded and the wide window alone, waited through: with the timer lead each event is armed more than the pad
+         * ahead, so the window opens the pad before dueUsec. Without it Cordio arms an event SCH_LOAD_DELAY_US (300 us)
+         * before dueUsec, less than FM1BLE_CONN_PAD_US, and fm1ble_op_conn opens the window at once (the counter at 0).
+         * The arrival positions the PAL reports count from where the window really opened, as the model saw it. */
+        {
+            static const struct { uint8_t setup; int lead; const char *what; } W[3] = {
+                { FM1BLE_CONN_PAD, 0, "the padded window, no timer lead" },
+                { FM1BLE_CONN_PAD, 1, "the padded window" },
+                { FM1BLE_CONN_WIDE, 1, "the wide window" },
+            };
+            char what[120];
+            for (i = 0; i < 3; i++) {
+                uint8_t su = W[i].setup;
+                run_us(2500000);
+                bbm.conn_in = bbm.conn_at_once = 0;
+                missed = polled_conn(&B, 1, (uint8_t)(1u << su), W[i].lead, &h, &data_ok);
+                st = pal_fm1_state();
+                snprintf(what, sizeof what, "%s alone: a connection, every event's packet in the window", W[i].what);
+                check(h != 0xFFFF && missed == 0 && data_ok && st->set_rx[su] >= 15 && st->set_rx[su] == st->conn_rx, what);
+                snprintf(what, sizeof what, "%s alone: %s", W[i].what,
+                         W[i].lead ? "each event armed before its window, none open at once" : "each window open at once");
+                check(bbm.conn_in >= 15 && bbm.conn_at_once == (W[i].lead ? 0u : bbm.conn_in), what);
+                snprintf(what, sizeof what, "%s: the packets' positions counted from where the window opened", W[i].what);
+                check(st->set_arr_min[su] >= bbm.conn_off_min - 20 && st->set_arr_min[su] <= bbm.conn_off_min + 20 &&
+                      st->set_arr_max[su] >= bbm.conn_off_max - 20 && st->set_arr_max[su] <= bbm.conn_off_max + 20, what);
+                if (W[i].lead) {
+                    snprintf(what, sizeof what, "%s: opened the whole pad before dueUsec", W[i].what);
+                    check(st->set_arr_min[su] >= (int32_t)(su == FM1BLE_CONN_WIDE ? FM1BLE_CONN_WIDE_US : FM1BLE_CONN_PAD_US), what);
+                }
+                if (bad)
+                    fprintf(stderr, "  %s: PAL %d..%d us, model %lld..%lld us, %u of %u events opened at once\n", W[i].what,
+                            (int)st->set_arr_min[su], (int)st->set_arr_max[su], (long long)bbm.conn_off_min,
+                            (long long)bbm.conn_off_max, (unsigned)bbm.conn_at_once, (unsigned)bbm.conn_in);
+            }
+        }
         buf[0] = 0;
         cmd(0x200A, buf, 1);
         {
