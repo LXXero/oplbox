@@ -41,6 +41,8 @@ static void arm(void)
     bbm.period_us = bbm.air ? (slots - (bbm.cnt_jieli ? 0u : 1u)) * 625u + bo : slots * 625u;
 }
 
+void bb_model_pend(uint32_t bits) { pend(bits); }
+
 uint32_t bb_model_air_us(int pdu_len) { return (uint32_t)(1 + 4 + pdu_len + 3) * 8u; }
 
 /* ---- the air (bb_air) */
@@ -174,6 +176,8 @@ static void air_event(void)
             /* the packet, then the response T_IFS after its end (conn_respond): what is in the TX slot then goes */
             bbm.now_us = at + bb_model_air_us(r);
             air_rx(req, r, 0);
+            bbm.rx_sn = (uint8_t)(req[0] >> 3 & 1u);
+            bbm.jump_left = bbm.jump_reads;
             bbm.resp_at = bbm.now_us + 150u;
             bbm.resp_pending = 1;
             air_irq(1u << 8);
@@ -195,8 +199,11 @@ static void conn_respond(void)
     uint8_t pdu[260];
     int n;
     bbm.resp_pending = 0;
-    bbm.now_us = bbm.resp_at;
+    if (bbm.resp_at > bbm.now_us)               /* a clock that jumped (jump_us) stays where it is */
+        bbm.now_us = bbm.resp_at;
     n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, pdu);
+    if (n && bbm.hw_nesn)
+        pdu[0] = (uint8_t)((pdu[0] & ~4u) | (bbm.rx_sn ^ 1u) << 2);
     if (n && a->conn_rsp)
         a->conn_rsp(a->ctx, bbm.now_us, pdu, n);
     bbm.now_us += bb_model_air_us(n);
@@ -269,7 +276,14 @@ void fm1ble_port_sync(void) { bbm.sync_calls++; }
 uint32_t fm1ble_port_clk(uint32_t bits) { uint32_t o = bbm.clk_bits; bbm.clk_bits = bits & 0xC000u; bbm.clk_calls++; return o; }
 
 void fm1ble_port_delay_us(uint32_t us) { bb_model_advance_us(us); }
-uint32_t fm1ble_port_now_us(void) { return (uint32_t)bbm.now_us; }
+uint32_t fm1ble_port_now_us(void)
+{
+    if (bbm.jump_left && !--bbm.jump_left) {
+        bbm.now_us += bbm.jump_us;
+        bbm.jump_reads = 0;                     /* once */
+    }
+    return (uint32_t)bbm.now_us;
+}
 
 int fm1ble_port_rf_common(void) { bbm.rf_common_calls++; bbm.common_ran = 1; return 1; }
 
@@ -277,6 +291,8 @@ void bb_model_advance_us(uint64_t us)
 {
     static int in_event;                        /* a delay inside the handler moves the clock, never starts an event */
     uint64_t end = bbm.now_us + us;
+    if (bbm.tick)
+        bbm.tick();
     while (bbm.air && !in_event && ((bbm.resp_pending && bbm.resp_at <= end) ||
                                     (bbm.armed && bbm.armed_at_us + bbm.period_us <= end))) {
         if (bbm.resp_pending && (!bbm.armed || bbm.resp_at <= bbm.armed_at_us + bbm.period_us)) {

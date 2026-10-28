@@ -67,11 +67,17 @@ COUNTERS = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common",
             *[f"ev{k}_{w}" for k in range(12) for w in "abc"],
             *[f"pal_set{k}_{w}" for k in range(4, 7) for w in ("counts", "arr")], "pal_conns", "pal_good",
             *[f"conn{k}_{w}" for k in range(8) for w in "abc"],
-            "nimble_conns", "probe_n", *[f"clk_{w}_{i}" for w in ("idle", "arm") for i in ("0", "e", "7", "10")],
-            *[f"pr{s}_{c}" for s in range(7) for c in "abcd"], "probe_delays", "probe_windows"]
+            "nimble_conns", "pal_stale_rx", "pal_halts", "pal_resp_skipped",
+            "pal_resp_hist", *[f"pal_tx{k}_counts" for k in range(3)], *[f"pal_tx{k}_sent" for k in range(3)],
+            "pal_good_tx", "pal_conn_txs", "pal_first_rx_tx", "conn_txtog", "conn_txdhdr", "conn_txbuf",
+            *[f"ev{k}_d" for k in range(12)], *[f"conn{k}_d" for k in range(8)], "pal_cfg", "pal_tx_order", "pal_resp_us_min"]
 # up to 122afe3 the firmware sent the first 32 of these (pal_done_37-39 then counted the driver's one-channel events
 # that ended), up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the
-# first 120; a shorter report reads with the first names
+# first 120; a shorter report reads with the first names. f0e6d08 sent 192 with the window probe's 39 where the TX
+# side's are now (COUNTERS_F0E6D08): its probe_delays word is always PROBE_DELAYS_F0E6D08, which tells the two apart
+COUNTERS_F0E6D08 = COUNTERS[:153] + ["probe_n", *[f"clk_{w}_{i}" for w in ("idle", "arm") for i in ("0", "e", "7", "10")],
+                                     *[f"pr{s}_{c}" for s in range(7) for c in "abcd"], "probe_delays", "probe_windows"]
+PROBE_DELAYS_F0E6D08 = 1400 | 1800 << 16
 # the 24 counters of the firmware at 48ea034 and before (the first FM-1 run); a pair is two 16-bit counts in one word, low
 # then high, which the tool splits
 COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "events", "rearms", "rx_packets", "rx_scan_req",
@@ -83,7 +89,10 @@ HEX_COUNTERS = {"pending_last", "rx_hdr", "rx_stat", "air_trials", "txtog", "ram
                 *[f"pal_set{k}_{w}" for k in range(7) for w in ("counts", "arr")], "conn_rx_words",
                 *[f"ev{k}_{w}" for k in range(12) for w in "abc"], *[f"conn{k}_{w}" for k in range(8) for w in "abc"],
                 "nimble_conns", *[f"clk_{w}_{i}" for w in ("idle", "arm") for i in ("0", "e", "7", "10")],
-                *[f"pr{s}_{c}" for s in range(7) for c in "abcd"], "probe_delays", "probe_windows"}
+                *[f"pr{s}_{c}" for s in range(7) for c in "abcd"], "probe_delays", "probe_windows",
+                "pal_halts", "pal_resp_hist", *[f"pal_tx{k}_{w}" for k in range(3) for w in ("counts", "sent")],
+                "pal_conn_txs", "pal_first_rx_tx", "conn_txtog", "conn_txdhdr", "conn_txbuf",
+                *[f"ev{k}_d" for k in range(12)], *[f"conn{k}_d" for k in range(8)], "pal_cfg", "pal_tx_order"}
 # the air trials (fm1ble_test.h): the driver's own ADV_IND from these addresses, then the stack's
 STACK_ADDR = "C2:46:4D:31:00:01"
 TRIALS = [("C2:46:4D:31:00:10", "variant 0 (no shared radio init), level 6"),
@@ -98,6 +107,11 @@ CONN_SETUPS = ["keep: as up to 58cadc5 (WIDEN at the open's 487 us)", "pad: no w
                "padj: as pad, the counter as JieLi writes it (slots - 1)", "padb: as padj, the bit offset with bit 15",
                "padw: as padb, the window in WINCNTL0 too"]
 SETUP_NAMES = ["keep", "pad", "widen", "wide", "padj", "padb", "padw"]
+# the connections' TX modes (firmware/ble/fm1ble.h FM1BLE_TX_*), since f0e6d08 one per connection alongside the setup
+TX_NAMES = ["air", "jieli", "intime"]
+TX_MODES = ["air: as up to f0e6d08 (the response's bits 4-0 as on the air, an empty PDU at each arm)",
+            "jieli: the IR's slot words (bit 2 the slot's, SN in bit 3), nothing written at the arm",
+            "intime: as jieli, an empty PDU repeating the last SN at each arm, a response only in time"]
 LOG_NONE = 0x8000                        # pal_fm1.h PAL_FM1_LOG_NONE
 RX_TRIALS = [("C2:46:4D:31:00:13", "RX 0: no gain table, WINCNTL2 0x32"),
              ("C2:46:4D:31:00:14", "RX 1: the gain table, WINCNTL2 0"),
@@ -134,6 +148,8 @@ def decode(rep):
     vals = [int.from_bytes(rep[at + 4 * i:at + 4 * i + 4], "little") for i in range(k)]
     counters = {}
     names = COUNTERS_24 if k == len(COUNTERS_24) else COUNTERS
+    if k == len(COUNTERS_F0E6D08) and vals[COUNTERS_F0E6D08.index("probe_delays")] == PROBE_DELAYS_F0E6D08:
+        names = COUNTERS_F0E6D08
     for i, v in enumerate(vals):
         name = names[i] if i < len(names) else f"counter_{i}"
         if isinstance(name, tuple):
@@ -323,8 +339,33 @@ def show_conn(rep, out):
     print(f"  the hardware: TXTOG changed after {c['conn_flips']} connection events; {c['conn_acks']} packets with RXSTAT "
           f"bit 8; the last packet RXSTAT {w & 0xFFFF:04X}, RXDHDR {w >> 16:04X} (length {w >> 24}, NESN {w >> 18 & 1}, "
           f"SN {w >> 19 & 1}, MD {w >> 20 & 1})", file=out)
+    if "pal_tx_order" in c:
+        show_tx(c, out)
     if log:
         show_log(c, out)
+
+
+def show_tx(c, out):
+    """the TX side (pal_fm1.h, fm1ble.h FM1BLE_TX_*), for a report that has it"""
+    order = [c["pal_tx_order"] >> (4 * k) & 0xF for k in range(3)]
+    print(f"  TX modes, one per connection in the order {', '.join(TX_NAMES[m] if m < 3 else str(m) for m in order)}:", file=out)
+    for k, what in enumerate(TX_MODES):
+        n, s_ = c[f"pal_tx{k}_counts"], c[f"pal_tx{k}_sent"]
+        print(f"    {what}: {n & 0xFFFF} events, {n >> 16} received, TXTOG changed in {s_ & 0xFFFF}, {s_ >> 16} packets with "
+              f"RXSTAT bit 8", file=out)
+    h, hist, mn = c["pal_halts"], c["pal_resp_hist"], c["pal_resp_us_min"]
+    tifs, stale = c["pal_cfg"] & 0xFFFF, c["pal_cfg"] >> 16
+    print(f"  Cordio's response after the packet was seen: under 50 us {hist & 0xFF}, 50-99 {hist >> 8 & 0xFF}, 100-149 "
+          f"{hist >> 16 & 0xFF}, 150 and more {hist >> 24} (least {'-' if mn == 0xFFFF else mn} us); intime left out "
+          f"{c['pal_resp_skipped']} (over {tifs} us)", file=out)
+    print(f"  stale packet flags dropped {c['pal_stale_rx']} (starting {stale} us or more before the window); events halted at "
+          f"their deadline {h & 0xFFFF}, the hardware busy through {h >> 16}", file=out)
+    f, t, dh, tb = c["pal_first_rx_tx"], c["conn_txtog"], c["conn_txdhdr"], c["conn_txbuf"]
+    if f >> 31:
+        print(f"  at the first connection packet (before Cordio's response): TXDHDR0 {f & 0xFF:02X}, TXDHDR1 {f >> 8 & 0xFF:02X}, "
+              f"TXTOG {f >> 16 & 1}, RXTOG {f >> 17 & 1}, TXBUF0CNTL {f >> 18 & 1}, TXBUF1CNTL {f >> 19 & 1}", file=out)
+    print(f"  at the end: TXTOG {t & 0xFFFF:04X}, RXTOG {t >> 16:04X}, TXDHDR0 {dh & 0xFFFF:04X}, TXDHDR1 {dh >> 16:04X}, "
+          f"TXBUF0CNTL {tb & 0xFF:02X}, TXBUF1CNTL {tb >> 8 & 0xFF:02X}, IFSCNT {tb >> 16:04X}", file=out)
 
 
 def t16(v):
@@ -337,18 +378,27 @@ def show_conns(c, out):
     n = c["pal_conns"]
     nc = c.get("nimble_conns", 0)
     good = c.get("pal_good", 0xFF)
+    gt = c.get("pal_good_tx", 0xFF)
     print(f"  connections: {n} started on the PAL, NimBLE {nc & 0xFFFF} connects and {nc >> 16} disconnects; kept setup: "
-          f"{SETUP_NAMES[good] if good < len(SETUP_NAMES) else 'none'}", file=out)
+          f"{SETUP_NAMES[good] if good < len(SETUP_NAMES) else 'none'}" +
+          (f", kept TX mode: {TX_NAMES[gt] if gt < len(TX_NAMES) else 'none'}" if "pal_good_tx" in c else ""), file=out)
     for k in range(min(n, 8)):
         a, b, d = c[f"conn{k}_a"], c[f"conn{k}_b"], c[f"conn{k}_c"]
         st = a & 0xF
-        line = f"  connection {k + 1}: {SETUP_NAMES[st] if st < len(SETUP_NAMES) else st}, {a >> 4 & 0xFFF} events, {a >> 16} received"
+        line = f"  connection {k + 1}: {SETUP_NAMES[st] if st < len(SETUP_NAMES) else st}"
+        if f"conn{k}_d" in c:
+            x = c[f"conn{k}_d"]
+            line += f" {TX_NAMES[x & 0xF] if (x & 0xF) < len(TX_NAMES) else x & 0xF}"
+        line += f", {a >> 4 & 0xFFF} events, {a >> 16} received"
         f0, f1 = t16(b & 0xFFFF), t16(b >> 16)
         if f0 is not None:
             line += f"; packets {f0} (first) and {f1} (last) us after dueUsec"
         e0, e1 = t16(d & 0xFFFF), t16(d >> 16)
         if e0 is not None:
             line += f"; missed events ended {e0}..{e1} us after dueUsec"
+        if f"conn{k}_d" in c:
+            x = c[f"conn{k}_d"]
+            line += f"; TXTOG changed in {x >> 4 & 0xFFF}, stale {x >> 16 & 0xFF}, halted {x >> 24}"
         print(line, file=out)
 
 
@@ -388,7 +438,13 @@ def log_events(c):
         evs.append({"chan": a & 0x3F, "setup": (a >> 6 & 3) | (a >> 14 & 1) << 2, "got": bool(a >> 8 & 1), "crc_ok": bool(a >> 9 & 1),
                     "sent": bool(a >> 10 & 1), "deadline": bool(a >> 11 & 1), "cordio_went_on": bool(a >> 12 & 1),
                     "first": bool(a >> 13 & 1), "timeout_us": a >> 16, "delay_us": d & 0xFFFF, "rxdhdr": d >> 16,
-                    "rx_us": None if rx == LOG_NONE else s16(rx), "end_us": None if end == LOG_NONE else s16(end)})
+                    "rx_us": None if rx == LOG_NONE else s16(rx), "end_us": None if end == LOG_NONE else s16(end),
+                    "stale": bool(a >> 15 & 1)})
+        if f"ev{k}_d" in c:
+            x = c[f"ev{k}_d"]
+            evs[-1].update({"tx": x >> 22 & 3, "txdhdr0": x & 0xFF, "txdhdr1": x >> 8 & 0xFF, "txtog": (x >> 16 & 1, x >> 17 & 1),
+                            "rxtog": (x >> 18 & 1, x >> 19 & 1), "txbuf": (x >> 20 & 1, x >> 21 & 1),
+                            "resp_us": None if x >> 24 == 0xFF else 2 * (x >> 24)})
     return evs
 
 
@@ -401,15 +457,26 @@ def show_log(c, out):
         return
     print(f"  the first {len(evs)} connection events" + (" (the first 4 of each connection)" if "conn0_a" in c else "") +
           " (times in us from Cordio's dueUsec; end: when the hardware's flag came):", file=out)
-    print("     # ch setup  armed timeout  packet     end  sent RXDHDR", file=out)
+    txw = "tx" in evs[0]
+    print("     # ch setup  armed timeout  packet     end  sent RXDHDR" +
+          ("  mode   resp  TXDHDR0/1 TXTOG RXTOG BUF" if txw else ""), file=out)
     for k, e in enumerate(evs):
         pkt = "-" if e["rx_us"] is None else f"{e['rx_us']}{'' if e['crc_ok'] else ' crc'}"
+        if e["stale"]:
+            pkt += " st"
         end = "deadline" if e["deadline"] else "cordio" if e["cordio_went_on"] else "-" if e["end_us"] is None else e["end_us"]
         hdr = f"{e['rxdhdr']:04X}" if e["got"] else "-"
-        print(f"  {k:2d}{'*' if e['first'] else ' '} {e['chan']:2d} {SETUP_NAMES[e['setup']]:5s} {e['delay_us']:6d} {e['timeout_us']:7d}"
-              f" {pkt:>7s} {end!s:>7s}  {'yes' if e['sent'] else 'no ':3s}  {hdr}", file=out)
+        line = (f"  {k:2d}{'*' if e['first'] else ' '} {e['chan']:2d} {SETUP_NAMES[e['setup']]:5s} {e['delay_us']:6d} {e['timeout_us']:7d}"
+                f" {pkt:>7s} {end!s:>7s}  {'yes' if e['sent'] else 'no ':3s}  {hdr:6s}")
+        if txw:
+            resp = "-" if e["resp_us"] is None else str(e["resp_us"])
+            line += (f"  {TX_NAMES[e['tx']] if e['tx'] < 3 else e['tx']:6s} {resp:>5s}  {e['txdhdr0']:02X}/{e['txdhdr1']:02X}"
+                     f"     {e['txtog'][0]}>{e['txtog'][1]}   {e['rxtog'][0]}>{e['rxtog'][1]}   {e['txbuf'][0]}{e['txbuf'][1]}")
+        print(line.rstrip(), file=out)
     print("  (* a connection's first event; the window a setup opens: keep at dueUsec, pad (padj, padb, padw) 625 us and "
-          "wide 1250 us before it, each that much longer on both sides; widen at dueUsec + half the timeout)", file=out)
+          "wide 1250 us before it, each that much longer on both sides; widen at dueUsec + half the timeout" +
+          ("; st: a stale packet flag dropped; resp: Cordio's response, us after the packet was seen; TXDHDR0/1 at the end, "
+           "TXTOG and RXTOG bit 0 at the arm > at the end, TXBUF0CNTL and TXBUF1CNTL bit 0 at the end)" if txw else ")"), file=out)
 
 
 def show(rep, out):

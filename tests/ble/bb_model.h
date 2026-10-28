@@ -73,11 +73,21 @@ typedef struct {
     int64_t conn_off_min, conn_off_max;
     int resp_pending;                   /* a connection event waits for T_IFS to send its response (conn_respond) */
     uint64_t resp_at;
+    /* hw_nesn: a data PDU's NESN (header bit 2) is the hardware's, not TXDHDR bit 2: the received packet's SN plus one
+     * (fm1ble.h FM1BLE_TX_JIELI: ble_hw_tx keeps TXDHDR bit 2 as it is, so the chip writes it [unchecked what it holds]);
+     * rx_sn the last received data packet's SN. jump_reads, jump_us: after a connection packet's flag, the clock jumps
+     * jump_us forward at the jump_reads-th read of fm1ble_port_now_us (once; 0: never), a main loop that comes back late */
+    int hw_nesn;
+    uint8_t rx_sn;
+    uint32_t jump_reads, jump_us, jump_left;
+    void (*tick)(void);                 /* set: called each time the clock is advanced (a test's hook inside a busy wait) */
 } bb_model;
 
 extern bb_model bbm;
 
 void bb_model_reset(void);
+/* Raise pending flags (bit id: the event's end, id + 8: a packet), as the hardware would. */
+void bb_model_pend(uint32_t bits);
 /* Advance the baseband's clock; raises pending flags as the armed counter says. */
 void bb_model_advance_us(uint64_t us);
 /* A packet arrives in receive buffer k: PDU type, payload; sets RXAHDR/RXDHDR/RXSTAT as E.5 says and the receive flag. */

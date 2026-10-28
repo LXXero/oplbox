@@ -445,6 +445,23 @@ event the advertising PDU must be at TXPTR[TXTOG & 1], or the next event sends t
 buffer holds) as its advertisement; (2) a change of TXTOG is the hardware's own record that it sent a buffer, the only
 transmit evidence in the IR (there is no transmit interrupt: D.4 has the event-done and packet-received bits only).
 
+**The TX slots in a connection** (from IR, read 2026-10-28: `tools/ble_ir.py --steps RF_ble __hw_rx_buf_process ble_hw_tx
+__hw_tx_process ble_event_irq_handler`). On a CONNECT_IND the receive path writes TXAHDR0 and TXAHDR1 = `(rx word >> 2) &
+0x10` (the ChSel bit; 0 for channel selection algorithm 1), **TXDHDR0 = `((TXTOG << 2) & 4) | 1` and TXDHDR1 =
+`((TXTOG << 2) & 4) ^ 5`**: two empty PDUs (LLID 1) whose bit 2 differs, clear in the slot TXTOG & 1 names (the one sent
+first), and frees the advertising buffers. `ble_hw_tx` keeps TXDHDR bit 2 when it fills a slot (`old & 4`, E.4), puts the
+buffer header's bit 9 in bit 3 (the bit the receive path fills from RXDHDR bit 3, the SN on the air: E.5) and, in a last
+store, a per-link software flag in bit 4. So bit 2 is the slot's own and the hardware's [unchecked: NESN put in by the
+hardware, or a sequence bit per slot]; software does not write it after the CONNECT_IND. After every packet received the
+receive handler calls `__hw_tx_process`, which reads TXTOG bit 0, TXBUF0CNTL bit 0 and TXBUF1CNTL bit 0 (+0x064, +0x065)
+and calls `__hw_tx_buf_proess` for the slot TXTOG & 1 names and for the other: JieLi refills the TX slots from its queue
+after a packet, ahead of the next one, not between a packet and T_IFS. In a connection the event handler
+(`ble_window_autozoom`) writes the window for the next event into WINCNTL0/1 (+0x22, +0x24), or through
+`__hw_set_widen_drift` (window + 2 × (widening + 100 us), the widening growing by 100 us per missed event; 5 us with
+`config_vendor_le_bb` set), which also writes index 7 (the bit offset | 0x8000) and index 0x10. OPLBOX's driver up to
+f0e6d08 wrote a response into both slots with TXDHDR = length << 8 | the header's bits 4-0 (Cordio's NESN over bit 2)
+after the packet came; fm1ble.h FM1BLE_TX_JIELI and FM1BLE_TX_INTIME write the IR's words.
+
 **The TX power level** (`cpu/wl82/liba/btctrler.a` `RF.c.o` `bt_max_pwr_set`, from IR; `apps/common/config/user_cfg.c`, SDK
 source): `bt_max_pwr_set(pwr, pg_pwr, iq_pwr, ble_pwr)` stores `ble_pwr << 12 | (iq_pwr & 0xF) << 8 | pg_pwr << 4 | (pwr & 0xF)`
 as `rf` field 0, so `rf.field0 >> 12` in E.7 is the BLE level the application set. The SDK's applications call it with

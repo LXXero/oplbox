@@ -90,7 +90,32 @@ Cordio's PAL"):
   connection received 8 packets on is kept for every later connection. Up to a7c1738 a missed event moved to the next
   setup, up to 5474159 three in a row did; at 5474159 that left pad, which had received, before the anchor settled.
   `pal_setN_counts` and `pal_setN_arr` say what each received and where in its window the packets started, `connN_*`
-  what each connection did, and the test run's window probe where the chip ends each setup's window with no central.
+  what each connection did. f0e6d08's window probe (connection events with no central) showed that only padw's window
+  follows the register (its end moved with WINCNTL0: 449..811 us at 60 us, 3019..3709 at 2500), so the stack runs padw
+  alone since then (fm1ble_stack.c), and the probe is gone.
+- **The TX side** (fm1ble.h FM1BLE_TX_*, since f0e6d08). At f0e6d08 (oplbox-ble-run-f0e6d08-1) padw's first connection
+  received its first three events: the second's packet came, Cordio's response went in (up to 251 us after a packet:
+  T_IFS is 150), and the hardware neither sent (TXTOG unchanged) nor ended the event; the PAL ended it by its deadline and
+  armed the next, and 364 us after that arm a packet flag came, 1192 us before that event's dueUsec and 567 us before
+  its window could open. Cordio took it as the anchor and every later window of the connection was 1.2 ms early. The IR
+  (docs/BLUETOOTH_RADIO.md E.4, "the TX slots in a connection") says the hardware keeps per-slot state in TXDHDR bit 2 and
+  that JieLi fills the slots ahead of the event, where the driver wrote Cordio's NESN over bit 2 in both slots after the
+  packet. Three guards since then, on every connection: a packet flag that starts `PAL_FM1_STALE_US` (400 us) or more
+  before the window could open is dropped (`pal_stale_rx`), not given to Cordio; an event ended by its deadline is halted
+  (fm1ble_op_halt: the counter off and the wait for idle that ble_hw_disable does, at most 2 ms; `pal_halts`); and the
+  event log and the summaries carry the TX words (TXDHDR0/1, TXTOG, RXTOG, TXBUF0/1CNTL) and Cordio's response time.
+  Three TX modes, one per connection in the order intime, jieli, air (`PAL_FM1_TX_ORDER`, kept like the setup once a
+  connection receives 8 packets): air as up to f0e6d08; jieli as the IR (the CONNECT_IND's slot words, a response in both
+  slots with bit 2 kept, the SN in bit 3, the MD in bit 4); intime as jieli, an empty PDU repeating the last SN in both
+  slots at each arm, and Cordio's response put in only within `PAL_FM1_TIFS_US` (100 us) of the packet, so nothing is
+  written while the hardware may be turning around (Cordio is told the transmit failed; it sends the PDU again in the next
+  event, since the central does not acknowledge a repeated SN). On the register model (which puts in NESN itself in these
+  tests, `hw_nesn`) every mode carries data both ways, a stale flag leaves the anchor where it was, a late response is left
+  out and data still flows, and a hung event is halted with the connection going on.
+  **Open:** on the model, a connection that follows one whose event ended by its deadline, or one with a left-out late
+  response, receives and acknowledges the central's packets but does not pass its first ATT write to the host; it happens
+  with fm1ble_op_stop as up to f0e6d08 too, and with the left-out response reported as sent [unexplained]. A run whose
+  later connections stay up and resolve GATT but never get MIDI in may be this.
 
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ
