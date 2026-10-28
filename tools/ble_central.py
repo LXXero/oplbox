@@ -31,8 +31,11 @@ connects in all (default 6): the FM-1's PAL runs its next window setup in each n
 pal_fm1.h), so one bench run tries them in turn. attempts in the JSON lists each: at (seconds from the start), connected,
 services, dropped, error; the other fields are the last attempt's.
 
-tools/fm1_ble_report.py --run --central HOST starts this on HOST over ssh (`ssh HOST python3 - ARGS` with this file on
-stdin), so the run on the FM-1 and the central's side come back as one report. Exit code 0 when it finished (whatever
+tools/fm1_ble_report.py --run --central HOST starts this on HOST over ssh (`ssh HOST exec python3 - ARGS` with this file
+on stdin), so the run on the FM-1 and the central's side come back as one report. An ssh session without a terminal sends
+no SIGHUP when the ssh on the other end goes (killed when the run fails to start, or the link dropped), so it watches the
+process that started it: when that ends (its parent changes), it stops scanning, disconnects, quits bluetoothctl, kills
+aseqdump and exits 1, instead of holding the controller until --timeout and getting in the next run's way. Exit code 0 when it finished (whatever
 it found), 2 for bad arguments, 3 when bluetoothctl is missing.
 """
 import argparse
@@ -49,6 +52,7 @@ import time
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x01|\x02|\r")
 DEVICE = re.compile(r"\[(NEW|CHG|DEL)\]\s+Device\s+([0-9A-Fa-f:]{17})\s*(.*)")
 PORT = re.compile(r"^\s*(\d+):(\d+)\s+(.*?)\s{2,}(.*)$")
+KIDS = []    # aseqdump while it runs: the watch on the parent kills it
 STEP = {"connect": 25.0, "port": 10.0, "notify": 15.0, "settle": 0.5, "quit": 3.0, "again": 1.0, "services": 10.0}   # seconds; the tests shorten them
 
 
@@ -161,6 +165,25 @@ def connect_once(a, ctl, res, stack, end, ports0, device, at, log):
     return True
 
 
+def watch_parent(ctl, stack, res, done, every=0.5):
+    """a thread that ends this process when the one that started it ends (see the docstring): until `done` is set"""
+    ppid = os.getppid()
+
+    def loop():
+        while not done.wait(every):
+            if os.getppid() == ppid:
+                continue
+            ctl.send("scan off")
+            if res["connected"]:
+                ctl.send(f"disconnect {stack}")
+            ctl.close()
+            for p in [*KIDS, ctl.p]:
+                if p.poll() is None:
+                    p.kill()
+            os._exit(1)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def run(a, log):
     t0 = time.monotonic()
     end = t0 + a.timeout
@@ -209,6 +232,8 @@ def run(a, log):
         att["services"], att["dropped"] = res["services"], res["dropped"]
 
     ctl = Ctl(a.bluetoothctl)
+    done = threading.Event()
+    watch_parent(ctl, stack, res, done)
     try:
         ports0 = seq_ports()
         ctl.send("scan le")
@@ -267,6 +292,7 @@ def run(a, log):
         log(f"{at(time.monotonic()):6.2f} MIDI port {res['port']} ({res['port_name']})")
         dump = subprocess.Popen(["aseqdump", "-p", res["port"]], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, bufsize=1)
+        KIDS.append(dump)
         got = queue.Queue()
         threading.Thread(target=lambda: [got.put(x.rstrip("\n")) for x in dump.stdout], daemon=True).start()
         try:
@@ -294,9 +320,11 @@ def run(a, log):
         finally:
             dump.kill()
             dump.wait()
+            KIDS.remove(dump)
         follow(min(end, time.monotonic() + STEP["services"]))
         return res
     finally:
+        done.set()
         if res["connected"]:
             ctl.send(f"disconnect {stack}")
             for _, line in ctl.lines(time.monotonic() + STEP["quit"]):

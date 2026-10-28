@@ -324,6 +324,51 @@ check(rc == 0 and "  btmon did not run: sudo: a password is required" in out and
       f"--btmon where sudo asks for a password: the run goes on without it\n{out}")
 dev.stop()
 
+# If starting the FM-1 run fails, stop the central that was started for it.
+# Keep a fake process here: the important contract is that the --run failure
+# path terminates the central before returning the error to the caller.
+class LiveProcess:
+    def __init__(self):
+        self.returncode, self.killed, self.waited = None, False, False
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed, self.returncode = True, -9
+
+    def wait(self):
+        self.waited = True
+        return self.returncode
+
+
+central_process = LiveProcess()
+
+
+class TrackedCentral:
+    def __init__(self, host, timeout):
+        self.host, self.p = host, central_process
+
+
+old_central, old_start = br.Central, br.start
+failed_dev = PipeBackend("--serve-ble", REPORT)
+
+
+def fail_start(*args):
+    raise br.ReportError("refused", "simulated start failure")
+
+
+try:
+    br.Central = TrackedCentral
+    br.start = fail_start
+    rc, out, err = tool(failed_dev, "--run", "--central", "local")
+finally:
+    failed_dev.stop()
+    br.Central, br.start = old_central, old_start
+check(rc == 1 and "simulated start failure" in err and central_process.killed and central_process.waited,
+      f"--run start failure leaves the central alive: exit {rc}, killed={central_process.killed}, "
+      f"waited={central_process.waited}, error={err}")
+
 dev = PipeBackend("--serve-ble", REPORT, "edit")
 rc, out, err = tool(dev, "--run")
 check(rc == 1 and "EDIT" in err, f"--run in EDIT: exit {rc} {err}")
