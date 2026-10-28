@@ -31,13 +31,13 @@ unchanged; SAVE on the Bluetooth page returns to the WiFi page's first screen, S
 
 ## The page
 
-Twenty-four pages, PLAY turns them, the last one back to the first:
+Thirty-three pages, PLAY turns them, the last one back to the first:
 
 | Page | Shows |
 | --- | --- |
 | 1 | the eight steps, one line each: name, PASS / FAIL / SKIP (`--` before it ran), the first 20 characters of the note |
 | 2-9 | one step each: the result and its time in ms, the note (two lines of 32 characters), how many bytes of evidence it kept and the first 40 of them, 10 to a line |
-| 10-24 | the 120 counters, 8 to a page, as 32-bit hex |
+| 10-33 | the 192 counters, 8 to a page, as 32-bit hex |
 
 A step that cannot run because an earlier one failed is SKIP, with the note `skipped: an earlier step failed`; with a
 wait of 0 the connect and MIDI steps are SKIP with `skipped: no wait for a central`. SAVE during a run leaves at once and
@@ -107,19 +107,30 @@ them), `pal_conn_timeout_us` (Cordio's receive timeout for the last connection e
 last RX trial). The last 16 are the connection events' (docs/BLUETOOTH_CORDIO.md, `pal_fm1.h`): `pal_busy_waits` and
 `pal_busy_us_max` (events waited through, the longest wait), `pal_resp_us_max` (the most us from a packet seen to Cordio's
 response put in; T_IFS is 150), `pal_conn_rx_bad` (packets with a bad CRC), `pal_conn_setup` and `pal_setup_moves` (the
-window setup in use at the end, how often a missed event moved to the next), `pal_late_ops` (operations armed after their
+window setup in use at the end, how often a connection started on another setup than the last one did; up to 5474159 how
+often missed events moved to the next), `pal_late_ops` (operations armed after their
 due time), `conn_flips` (connection events after which TXTOG had changed), `pal_setN_counts` (setup N's events in 15-0,
 packets received in 31-16), `conn_acks` (connection packets with RXSTAT bit 8), `pal_setN_arr` (the earliest and latest
 packet start after the window's start, us, signed 16-bit in 15-0 and 31-16) and `conn_rx_words` (the last connection
 packet's RXSTAT in 15-0, RXDHDR in 31-16). After them: `pal_set3_counts` and `pal_set3_arr` (the fourth setup, wide),
 `pal_cind_gap_us` (how long before the CONNECT_IND was seen the PAL had last looked: its timestamp, which places the
 connection's first window, can be that late), `pal_log_n` (connection events logged) and the PAL's event log, `evN_a`,
-`evN_b`, `evN_c` for the first 12 connection events (pal_fm1.h PAL_FM1_LOG: channel, setup, flags and Cordio's receive
-timeout; the packet's start and the hardware's end flag in us from Cordio's dueUsec; the arm delay and the packet's
-RXDHDR). `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS, a table of the logged events) and with `--out`
+`evN_b`, `evN_c` for the first 4 events of each connection, 12 in all (pal_fm1.h PAL_FM1_LOG: channel, setup, flags
+and Cordio's receive timeout; the packet's start and the hardware's end flag in us from Cordio's dueUsec; the arm delay
+and the packet's RXDHDR; up to 5474159 the first 12 events, the setup in bits 7-6 alone). Then (fm1ble_test.h says each
+word's layout): `pal_set4..6_counts` and `_arr` (padj, padb, padw: fm1ble.h FM1BLE_CONN_*), `pal_conns` and `pal_good`
+(connections the PAL started; the setup a connection received 8 packets on, which every later connection runs, 0xFF for
+none), `connN_a/b/c` (the first 8 connections: setup, events, packets; the first and last packet's start; the earliest
+and latest end of a missed event, us from dueUsec), `nimble_conns` (NimBLE's connects and disconnects), and the window
+probe's (`probe_n`, `clk_idle_*` and `clk_arm_*` the anchor file read back, `prS_a..d` each setup's end times at two
+delays and two windows, `probe_delays`, `probe_windows`). The window probe runs after the RX trials, before the stack,
+without a central: connection events on a data channel nobody sends on, so each ends where the chip closes its window;
+`fm1_ble_report.py` prints it as WINDOW PROBE. Each connection runs one window setup, the next connection the next one
+(pal_fm1.h PAL_FM1_SETUP_ORDER), and MIDI_IN waits through a central leaving while NimBLE has seen fewer than 6 connects,
+so a central that connects again tries the setups in turn. `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS, a table of the logged events) and with `--out`
 writes what it printed to summary.txt. `rf_common` is what the shared radio's init returned the first time (trial 1): a later power-up finds WiFi
 up and it returns 0 there. `fm1_ble_report.py` prints the RX trials decoded (RX TRIALS). Up to 122afe3 the firmware sent
-the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80. The PAL runs from the main loop in this build and waits
+the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the first 120. The PAL runs from the main loop in this build and waits
 through each connection event (docs/BLUETOOTH_CORDIO.md). The firmware at
 48ea034 and before sent 24 counters, the PAL's two to a word; the tool reads such a report by its count, with those names.
 
@@ -134,8 +145,9 @@ the MIDI part BlueZ built with MIDI support, which makes an ALSA sequencer port 
 or later for `aseqdump` and `aseqsend`). It scans (LE) and logs every advertisement from the trials' addresses and the
 stack's with the time and RSSI (its active scan sends the SCAN_REQs the RX trials count), then connects to the stack,
 finds the new sequencer port, captures it with `aseqdump`,
-sends a Note On (90 3C 64) with `aseqsend`, waits for the FM-1's Note On (the run's midi_out) and disconnects. From the
-computer the FM-1 is plugged into:
+sends a Note On (90 3C 64) with `aseqsend`, waits for the FM-1's Note On (the run's midi_out) and disconnects. A
+connection that drops, fails or resolves no GATT services before the port comes is tried again, up to `--tries` connects
+(default 6), one second apart: each runs the FM-1's next window setup. From the computer the FM-1 is plugged into:
 
 ```
 python3 tools/fm1_ble_report.py --run --wait 30 --central xlap --out ble-run

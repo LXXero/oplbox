@@ -82,9 +82,15 @@ Cordio's PAL"):
 - where the window lands against the packet is not settled on the chip: the driver has three setups
   (`fm1ble.h` `FM1BLE_CONN_*`): keep (as up to 58cadc5: WIDEN0/WIDEN1 at the open's values, 487 us of widening the chip may
   or may not apply), pad (no widening, 625 us earlier and 1250 us longer: covers a slot boundary of the baseband's own) and
-  widen (JieLi's `le_hw_ioctrl` shape: the counter at Cordio's anchor, WIDEN half the window). Each connection event runs
-  one; a missed event moves to the next, an event with its packet keeps it. `pal_setN_counts` and `pal_setN_arr` say what
-  each received and where in its window the packets started.
+  widen (JieLi's `le_hw_ioctrl` shape: the counter at Cordio's anchor, WIDEN half the window), wide (as pad, 1250 us each
+  side), and since 5474159 three on pad's shape that each add one fact of the IR: padj (the counter as `__set_anchor_cnt`
+  writes it, the slots minus one), padb (and the bit offset with bit 15, as `__hw_set_widen_drift` writes it), padw (and
+  the window in WINCNTL0/1, where `__hw_set_widen_drift` puts a connection event's). Each connection runs one for all its
+  events, the next connection the next one (`PAL_FM1_SETUP_ORDER`: padw, padb, padj, pad, wide, keep, widen); a setup a
+  connection received 8 packets on is kept for every later connection. Up to a7c1738 a missed event moved to the next
+  setup, up to 5474159 three in a row did; at 5474159 that left pad, which had received, before the anchor settled.
+  `pal_setN_counts` and `pal_setN_arr` say what each received and where in its window the packets started, `connN_*`
+  what each connection did, and the test run's window probe where the chip ends each setup's window with no central.
 
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ
@@ -96,8 +102,9 @@ at once, as an interrupt within T_IFS would. Also unchecked: where the hardware'
 write (the model takes one at the write), state 7 with a fixed channel, how TXTOG changes in a connection, the data PDU header
 words, the receive window's unit, the RSSI (not read: Cordio is told 127, not available).
 
-**Tests.** `tests/ble_pal.c` (60 checks; `tests/ble_pal_mutants.py` catches 37 deliberate bugs in the PAL and the driver's
-operations; the model sends a connection response from the TX slot as it is T_IFS after the packet, and a connection polled
+**Tests.** `tests/ble_pal.c` (78 checks; `tests/ble_pal_mutants.py` catches 53 deliberate bugs in the PAL and the driver's
+operations; the model can count a slot more than op_arm writes, take the bit offset only with bit 15, and take the
+window from WINCNTL0 (`bb_model.h` cnt_jieli, bit15, win0), so each new setup is shown to receive on the chip it is for; the model sends a connection response from the TX slot as it is T_IFS after the packet, and a connection polled
 every 200 us, as on the FM-1, misses most events without the busy wait and none with it; with the padded window alone,
 each event armed under 625 us before its due time opens the window at once, and the PAL's arrival positions must match
 where the model opened it) and `tests/ble_stack.c` (22 checks): NimBLE over Cordio over the PAL with a central doing L2CAP and ATT; with
