@@ -867,6 +867,7 @@ def run(a, backend, out):
     if not dev:
         raise ReportError("notfound", str(fi.not_found(up)))
     central = btmon = None
+    read_ok = False
     try:
         if a.run and a.central and (a.btmon or (a.central != "local" and a.btmon is None)):
             if a.out:
@@ -878,12 +879,17 @@ def run(a, backend, out):
             time.sleep(DELAY["central"])             # scanning before the first trial's advertisements
         want = start(dev.link, a.wait, a.timeout) if a.run else None
         raw = read(dev.link)
+        read_ok = True
     finally:
         dev.link.close()
+        if btmon and not read_ok:                    # start() or read() failed: do not leave the capture running
+            btmon.stop()
         if central and central.p.poll() is None and not a.run:
             central.p.kill()
     rep = decode(raw)
     if want is not None and rep["run"] != want:
+        if btmon:
+            btmon.stop()
         raise ReportError("refused", f"run {want} did not start (EDIT pressed on the FM-1?): the FM-1 holds run "
                                      f"{rep['run']}'s report")
     shown = io.StringIO()
