@@ -22,8 +22,9 @@ static int c_adv(void *ctx, uint64_t t, uint8_t chan, const uint8_t *pdu, int n,
             C.chan_order[C.nchan++] = chan;
         }
     }
-    if (C.want_scan) {                  /* SCAN_REQ: ScanA, AdvA (Vol 6 Part B 2.3.2.1); TxAdd 0, RxAdd 0 */
+    if (C.want_scan || (C.scan_all && n >= 8 && (pdu[0] & 0xF) == 0)) {   /* SCAN_REQ: ScanA, AdvA (Vol 6 Part B 2.3.2.1) */
         C.want_scan = 0;
+        C.scan_req_to[pdu[2]]++;
         req[0] = 3;
         req[1] = 12;
         memcpy(req + 2, CENTRAL, 6);

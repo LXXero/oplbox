@@ -112,7 +112,7 @@ so the WiFi driver and a BLE driver do not write the same register under two nam
 | 0x2FC00-0x2FCA0 | analog and modem block | `analog.c` (C) | **no** |
 | 0x2FC40, 0x2FC50, 0x2FC6C, 0x2FC78, 0x2FC7C | BT clock, power and control words | `bt_rf_init`, `bt_process_before_init`, `le_low_power`, `btagc_init` | **no** |
 | 0x2FC80, 0x2FC84, 0x2FC88, 0x2FCBC | the baseband's RAM window (E.1, F.2) | `le_hw_init`, `bta_pll_config_init` | **no** |
-| 0x2FD80-0x2FD98 | AGC block | `btagc_init`, `btagc_ram_init`, `analog_rx_control` | **no** |
+| 0x2FD80-0x2FD9C | AGC block | `btagc_init`, `btagc_ram_init`, `analog_rx_control` | **no** |
 | 0x50048 | `JL_IOMAP` | `bt_process_before_init` writes 0x101 | **yes**, listed in docs/WIFI.md (IO mapping); the WiFi driver does not write it [unchecked] |
 
 No address above overlaps the WiFi core window (0x30000-0x3FFFC, `FM1_WIFI_CORE`) or the internal SDIO host (0x30F00).
@@ -222,10 +222,18 @@ the IR does not show [unchecked which]; `wlc_pti_wreg` is two `wlc_wreg` calls (
   difference is [unchecked]).
 - `bt_dut_reset_mdm`: 0x2FC08 clear bits 31-24, then write back what it read.
 
-**C.3 AGC block** (`btagc.c`, `btagc_init`): `btagc_ram_init()` (writes 0x2FD98 and 0x2FD9C, not read in detail); 0x2FC20 clear
+**C.3 AGC block** (`btagc.c`, `btagc_init`): `btagc_ram_init()` first (below); 0x2FC20 clear
 bits 31-30; 0x2FD80 = 0x000F0000; 0x2FD84 = 0x1872BF14; 0x2FD88 = 0x1872BF55; 0x2FD8C = 0x1872BF00; 0x2FD90 = 0;
 0x2FD94 = 0; `delay(100)`; 0x2FD80 set bit 0, clear bit 20; 0x2FC7C set bit 0. `analog_rx_control` reads 0x2FD8C (the
 receive strength, `(0x3F ^ (reg | 0xFFC0)) - table[...]`, accumulated over 20 packets: a software RSSI average).
+
+**`btagc_ram_init`, the gain table** (from IR, read 2026-10-27): 0x2FD98 = 0, then 128 writes to 0x2FD9C: a constant table
+of 64 eight-byte entries (`agc_tlb`, in `.bt_rf_const`) walked from entry 63 down to entry 0, each entry's low word then
+its high word. The 128 words, in the order written, are `firmware/ble/fm1ble_agc.h` (`tools/ble_ir.py --agc` prints them;
+`--check` fails when the header differs). From use 0x2FD98 resets a write position and 0x2FD9C takes the next word
+[unchecked]; what each word holds is [unchecked] (a receive gain table by its member and its place before the block's
+enable). The driver left it out up to 3b39ab4, and the FM-1 received no packet in any advertising event (SCAN_REQs and a
+CONNECT_IND from xlap; oplbox-ble-run-3b39ab4); the run's RX trials (docs/BLUETOOTH_PAGE.md) tell whether it is needed.
 
 ### D. The baseband control block, 0x28000-0x28054
 
@@ -370,7 +378,8 @@ this block, and **the whole block must fit in 64 KB**. `BLE_TO_PHY` is the inver
 | 0x064, 0x065 | TXBUF0CNTL, TXBUF1CNTL | u8 | |
 | 0x066, 0x067 | RXBUF0CNTL, RXBUF1CNTL | u8 | bit 0 cleared at open |
 | 0x068, 0x090, 0x0B8, 0x0E0 | four tables of 40 bytes | u8 ×40 | the channel tables (F.1) |
-| 0x108-0x118 | EXTPHYDRF0/1, EXTIFSDRF0/1, EXTPKTDRF, WINCNTL2, EXTCTL0/1, … | u16 | LE 5 extended and coded-PHY fields: not used by advertising on 1M |
+| 0x108-0x110, 0x114-0x118 | EXTPHYDRF0/1, EXTIFSDRF0/1, EXTPKTDRF, EXTCTL0/1, … | u16 | LE 5 extended and coded-PHY fields: not used by advertising on 1M |
+| 0x112 | WINCNTL2 | u16 | **the receive window, written on every path** (from IR, read 2026-10-27): `le_hw_advertising` writes 0x32 here as well as WINCNTL0 (G step 2); `__set_winsize(hw, nwinsize, winsize)` writes WINCNTL0/1 = `nwinsize` and WINCNTL2 = `winsize`, and every caller passes `nwinsize` = 0x32 (50): scanning (`__set_scan_window`) with `winsize` = the scan window in slots × 625, a connection (`le_hw_ioctrl`) with the transmit window `(WinSize + 1) × 1250` and later windows; the direct-test receiver writes 0x96. So WINCNTL2 is the time the receiver listens, in µs from those uses [unchecked unit]; WINCNTL0 stays 0x32. 0 up to 3b39ab4 in OPLBOX's driver (see C.3's last paragraph) |
 | 0x120, 0x128 | (no IR name) | u32 ×2 | **TX power for buffer 0 and 1**: `0x10 + level` (E.7) |
 | 0x130 | PLL_COMP | i32 | `(−rf.field13 << 20) / 24000`; `rf.field13` is the crystal offset (0 at reset) |
 | 0x13C | RSSI2 | u16 | |
@@ -464,7 +473,7 @@ tunes the right channel; if not, the table is calibration data like B's.
 `le_hw_advertising(link, parameters)` after `le_hw_open` and `__set_local_addr` (E.3). All from IR:
 
 1. `__set_le_prio(link, 0x1A)` (0x13 when classic Bluetooth is in sniff mode): the priority goes to RFPRIOCNTL/RFPRIOSTAT (E.2).
-2. CRCWORD0 = 0x5555, CRCWORD1 = 0x55; WINCNTL0 = 0x32, WINCNTL1 = 0 (and a software copy).
+2. CRCWORD0 = 0x5555, CRCWORD1 = 0x55; WINCNTL0 = 0x32, WINCNTL1 = 0, **WINCNTL2 = 0x32** (and a software copy at +0x14C).
 3. `__set_interval(link, interval_slots × 625, 1)`: index 1 = slots, index 0xF = `0x8000 | slots >> 16` (D.2).
 4. `__set_hw_state(link, 2, 0, 0)`: state 2 (advertising), no latency (D.2/D.3).
 5. `__set_adv_device_filter_param`: FILTERCNTL bits 3 and 4 (E.6). ADVIDX = `(byte 4 of the advertising parameters << 14) | (word 2 of
@@ -497,7 +506,8 @@ are then written by `le_hw_ioctrl` through `__set_local_addr`, `__set_peer_addr`
 `__set_channel_map` (CHMAP and the channel tables), `__set_conn_dead_times`, `__set_winoffset`, `__set_widen`, `__set_interval` (slots × 625 → index 1/0xF),
 `__set_ble_anchor_con(hw, 6, hop/first channel)`, `__set_hw_state(7, latency_en, latency)` for a peripheral and the same for a central with state 6
 (`tools/ble_ir.py --steps RF_ble le_hw_ioctrl`). The hop increment sits in index 6 bits 12-8 and the next channel is computed by the hardware.
-The 150 µs turnaround, retransmission and acknowledgement bits (`TXTOG`/`RXTOG`) are hardware [unchecked bit table].
+The 150 µs turnaround, retransmission and acknowledgement bits (`TXTOG`/`RXTOG`) are hardware [unchecked bit table]. The receive window of a
+connection event is WINCNTL2 (E.2), with WINCNTL0 = 0x32.
 
 ### J. The operation table `ble_ops` (the interface the baseband port exposes)
 
@@ -544,7 +554,7 @@ from the Core Specification and these facts.
 | `PalBbBleSetDataParams` | connection parameters: hop, interval, window, latency | D.2, H | |
 | `PalBbBleSetOpParams` | advertising/scan/connection kind and timing | D.3 state codes | scan states (state codes for scanning) |
 | `PalBbBleTxData`, `PalBbBleTxTifsData` | transmit a packet now / 150 µs after the last receive | E.4, G steps 8-12, K | "now" means: choose slot count and bit offset for the target time; TIFS is the hardware's own turnaround, so a TIFS transmit would be the second TX buffer of the same event (our design from G step 9, not a fact of the IR) |
-| `PalBbBleRxData`, `PalBbBleRxTifsData` | receive a packet | E.5, RXPTR/RXMAXBUF, H | the receive window length (WINCNTL) vs Cordio's timeout |
+| `PalBbBleRxData`, `PalBbBleRxTifsData` | receive a packet | E.5, RXPTR/RXMAXBUF, H, WINCNTL2 (E.2) | whether Cordio's timeout in WINCNTL2 is the window the chip opens (µs taken from use) |
 | `PalBbBleCancelData`, `PalBbBleCancelTifs` | abort | G stop sequence | |
 | `PalBbBleEnableDataWhitening`, `PalBbBleEnablePrbs15` | test modes | `FORMAT` bits in K (bit 13) | bit table [measure on FM-1] |
 | `PalBbBleInlineEncryptDecryptSetDirection`, `…SetPacketCount` | hardware CCM | not read (`ble_hw_encrpty` uses `ccm_memory_v2`) | only for connections with encryption; none for MIDI without pairing |
@@ -559,12 +569,14 @@ from the Core Specification and these facts.
 
 Counted by a script over sections B to K of this file: 109 table rows (a row is one register, one field, one state code or one
 region) and 38 numbered steps, 147 in all. The memory-map table above adds its own rows and is not counted. `tools/ble_ir.py --check`
-re-derives 21 constants and 14 layout offsets (35 facts), the ones the advertising path depends on.
+re-derives 30 constants, 15 layout offsets and the AGC gain table against `firmware/ble/fm1ble_agc.h` (46 facts), the ones the
+advertising and receive paths depend on.
 
 ## Reproducing
 
 ```sh
-python3 -I tools/ble_ir.py --check                       # 35 facts reproduce; fails on another archive
+python3 -I tools/ble_ir.py --check                       # 46 facts reproduce; fails on another archive
+python3 -I tools/ble_ir.py --agc                         # the AGC gain table, 128 words in the order written
 python3 -I tools/ble_ir.py --layout                      # E.2: field, offset, size, IR name
 python3 -I tools/ble_ir.py                               # B, C, D, G, K step views (about 1300 lines)
 python3 -I tools/ble_ir.py --registers                   # every address above 0x10000 by member and function

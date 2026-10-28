@@ -31,13 +31,13 @@ unchanged; SAVE on the Bluetooth page returns to the WiFi page's first screen, S
 
 ## The page
 
-Fourteen pages, PLAY turns them, the last one back to the first:
+Seventeen pages, PLAY turns them, the last one back to the first:
 
 | Page | Shows |
 | --- | --- |
 | 1 | the eight steps, one line each: name, PASS / FAIL / SKIP (`--` before it ran), the first 20 characters of the note |
 | 2-9 | one step each: the result and its time in ms, the note (two lines of 32 characters), how many bytes of evidence it kept and the first 40 of them, 10 to a line |
-| 10-14 | the 40 counters, 8 to a page, as 32-bit hex |
+| 10-17 | the 64 counters, 8 to a page, as 32-bit hex |
 
 A step that cannot run because an earlier one failed is SKIP, with the note `skipped: an earlier step failed`; with a
 wait of 0 the connect and MIDI steps are SKIP with `skipped: no wait for a central`. SAVE during a run leaves at once and
@@ -46,13 +46,30 @@ the report holds what the steps had by then (the others NOT RUN).
 ## The steps and their evidence
 
 In the order the firmware's run (`firmware/ble/fm1ble_test.c`) runs them, which is not the table's: radio, block, then the
-driver's own advertising in three air trials (adv_set, adv_air), then the stack on the radio of the trial that sent (hci,
-connect, midi_in, midi_out). A failed step says in its note what the next fix needs.
+driver's own advertising in three air trials (adv_set, adv_air), four RX trials (counters only), then the stack on the
+radio of the trial that sent (hci, connect, midi_in, midi_out). A failed step says in its note what the next fix needs.
 
 The air trials, 3 s each, ADV_IND every 100 ms on 37-39 with the name in the scan response, each from its own static
 random address so a central can say which reached the air: trial 0 C2:46:4D:31:00:10 (variant 0: without the shared
 radio's init, TX level 6), trial 1 C2:46:4D:31:00:11 (variant 1: `fm1wifi_radio_up` first, level 6), trial 2
-C2:46:4D:31:00:12 (variant 1, level 11, the highest). The stack advertises from C2:46:4D:31:00:01.
+C2:46:4D:31:00:12 (variant 1, level 11, the highest). The stack advertises from C2:46:4D:31:00:01. The air trials keep
+the receive setup the driver had up to 3b39ab4 (no AGC gain table, WINCNTL2 0), so they compare with the runs before.
+
+The RX trials, 3 s each, after the air trials (none when no air trial had an event): the same ADV_IND on variant 1 at
+level 6, each with its own receive setup (`fm1ble_rx_setup`, docs/BLUETOOTH_RADIO.md C.3 and E.2 WINCNTL2). A central
+scanning actively (BlueZ's `scan le`) sends each a SCAN_REQ; what came in is in the trial's four counters. Up to 3b39ab4
+the FM-1 received nothing at all (rx_packets 0, pal_rx_timeout every operation); these say which setup changes that:
+
+| Trial | Address | AGC gain table | WINCNTL2 |
+| --- | --- | --- | --- |
+| 0 | C2:46:4D:31:00:13 | not written | 0x32 (le_hw_advertising's) |
+| 1 | C2:46:4D:31:00:14 | written (the radio powered up again with it) | 0 (as up to 3b39ab4) |
+| 2 | C2:46:4D:31:00:15 | written | 0x32: JieLi's setup, the driver's default |
+| 3 | C2:46:4D:31:00:16 | written | 0x96 (the direct-test receiver's) |
+
+The stack then runs with the gain table and the window of the first of trials 2, 3, 0, 1 that received a packet (trial
+2's when none did): `rx_stack_trial`, `rx_agc_table` and `rx_win` say which. The PAL's connection events write WINCNTL0
+0x32 and Cordio's window into WINCNTL2, as JieLi's `le_hw_ioctrl` does (up to 3b39ab4 the window went into WINCNTL0).
 
 | Step | Passes when | Evidence (raw bytes in the report) |
 | --- | --- | --- |
@@ -78,8 +95,18 @@ completed, per channel); then `txpwr` (the stack's TX level) and `ram_end` (0x2F
 event already armed: two per event when all is well), `pal_adv_ended` (advertising events the baseband's flag ended),
 `pal_adv_conn_ind` (advertising events a CONNECT_IND ended), `pal_conn_ended` and `pal_conn_rx` (connection events the
 baseband ended, packets received in them), `pal_refused` (operations the driver refused), and `evtcount` (the entity's
-EVTCOUNT word, which the hardware writes). Up to 122afe3 the firmware sent the first 32, and `pal_done_37..39` counted the
-driver's one-channel events that ended. The PAL runs from the main loop in this build: a
+EVTCOUNT word, which the hardware writes). Then four per RX trial, `rxtN_counts` (events in bits 7-0, TXTOG changes 15-8,
+packets received 23-16, SCAN_REQs 31-24, each at most 255), `rxtN_stat` (the trial's first packet's RXSTAT in 15-0 and
+RXAHDR in 31-16; with no packet, RXSTAT0 and RXAHDR0 as the trial left them), `rxtN_pkt` (that packet's RXDHDR in 15-0,
+the RX buffer it was in, 0 or 1, in 23-16, 0xFF with no packet, LASTCHMAP's low byte in 31-24) and `rxtN_bytes` (its
+payload's first four bytes: for a SCAN_REQ, the central's address); then `rx_stack_trial` (the RX trial whose setup the
+stack runs on, 0xFF before it starts), `rx_agc_table` (1 when its radio was powered up with the gain table), `rx_win`
+(its WINCNTL2 for advertising), `agc_ctl` and `agc_rssi` (0x2FD80 and 0x2FD8C, the AGC block's control word and receive
+strength, read after the last RX trial), `conn_win` (WINCNTL0 in 15-0 and WINCNTL2 in 31-16 as the last operation left
+them), `pal_conn_timeout_us` (Cordio's receive timeout for the last connection event) and `rx_stat1` (RXSTAT1 after the
+last RX trial). `rf_common` is what the shared radio's init returned the first time (trial 1): a later power-up finds WiFi
+up and it returns 0 there. `fm1_ble_report.py` prints the RX trials decoded (RX TRIALS). Up to 122afe3 the firmware sent
+the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40. The PAL runs from the main loop in this build: a
 connection that fails with `pal_resp_late` above 0 needs the receive interrupt (docs/BLUETOOTH_CORDIO.md). The firmware at
 48ea034 and before sent 24 counters, the PAL's two to a word; the tool reads such a report by its count, with those names.
 
@@ -92,7 +119,8 @@ its air with a central (`tests/ble_stack.c run`).
 `tools/ble_central.py` is the other end of the run: a BlueZ central on a Linux computer near the FM-1 (`bluetoothctl`; for
 the MIDI part BlueZ built with MIDI support, which makes an ALSA sequencer port for a BLE-MIDI device, and alsa-utils 1.2.11
 or later for `aseqdump` and `aseqsend`). It scans (LE) and logs every advertisement from the trials' addresses and the
-stack's with the time and RSSI, then connects to the stack, finds the new sequencer port, captures it with `aseqdump`,
+stack's with the time and RSSI (its active scan sends the SCAN_REQs the RX trials count), then connects to the stack,
+finds the new sequencer port, captures it with `aseqdump`,
 sends a Note On (90 3C 64) with `aseqsend`, waits for the FM-1's Note On (the run's midi_out) and disconnects. From the
 computer the FM-1 is plugged into:
 
@@ -102,7 +130,12 @@ python3 tools/fm1_ble_report.py --run --wait 30 --central xlap --out ble-run
 
 starts it on xlap over ssh (the script goes on ssh's stdin; nothing to install there but BlueZ and alsa-utils), two
 seconds before the run, and prints its findings after the report (CENTRAL: each address seen or not, connect, the port, the
-Note On both ways), with `ble-run/central.json`. `--central local` runs it on the same computer. It is tested on stand-ins
+Note On both ways), with `ble-run/central.json`. `--central local` runs it on the same computer. bluetoothctl says
+"Connection successful" on LE once its controller has sent the CONNECT_IND, whether the FM-1 got it or not; so with no
+MIDI port the central first says whether the connection came up on the FM-1's side: no GATT services resolved
+(`ServicesResolved: yes` never came) or BlueZ dropping it (`Connected: no`) is "the connection never came up on the
+FM-1's side". Only with the services resolved and no port does it name BlueZ's MIDI side (the 3b39ab4 run's "BlueZ without
+MIDI support?" was that wrong guess: xlap's BlueZ 5.87 has MIDI built in). It is tested on stand-ins
 for bluetoothctl, aseqdump and aseqsend (`tests/ble/fake_bluez/`, `tests/ble_central_tool.py`) made from those tools'
 output formats: **not run against a real BlueZ yet**; bluetoothctl's interactive output is the part most likely to differ.
 

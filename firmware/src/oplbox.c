@@ -2670,11 +2670,11 @@ static void wifi_page(void)
 
 
 /* ---- the Bluetooth test page (docs/BLUETOOTH_PAGE.md): the steps of fm1ble_test.h, one line each, then each step's
- * evidence and the counters, 14 pages; its report (ble_sysex.c) is those pages' text, then the counters and the steps'
+ * evidence and the counters, 17 pages; its report (ble_sysex.c) is those pages' text, then the counters and the steps'
  * raw bytes. Built like the WiFi page's: a run asked for over USB opens it and starts as PLAY does. */
 #define BLE_CTR_PAGES (FM1BLE_N_CTR / 8u)        /* 8 counters a page */
-#define BLE_PAGES (1u + FM1BLE_STEPS + BLE_CTR_PAGES)   /* 1 list, 8 steps, 5 of counters: 14 */
-#define BLE_TEXT_MAX 4096u                       /* 3072 cut the FM-1's report at 122afe3 (13 pages) */
+#define BLE_PAGES (1u + FM1BLE_STEPS + BLE_CTR_PAGES)   /* 1 list, 8 steps, 8 of counters: 17 */
+#define BLE_TEXT_MAX 5120u                       /* 3072 cut the FM-1's report at 122afe3 (13 pages); 3351 for 14 at 3b39ab4 */
 #define BLE_REPORT_MAX (WR_HEAD + BLE_TEXT_MAX + 2u + 4u * FM1BLE_N_CTR + FM1BLE_STEPS * (6u + FM1BLE_RAW))
 static uint8_t ble_rep[BLE_REPORT_MAX] __attribute__((section(".pool")));
 static fm1ble_run ble_run __attribute__((section(".pool")));
@@ -2720,7 +2720,7 @@ static char *ble_upper(char *d, const char *s, uint32_t max)   /* s upper-cased,
     return d;
 }
 
-/* page 0 lists the steps, 1-8 show one step's evidence, 9-12 the counters */
+/* page 0 lists the steps, 1-8 show one step's evidence, 9-16 the counters */
 static void ble_show(uint32_t page, const fm1ble_run *r)
 {
     char s[48], *p;

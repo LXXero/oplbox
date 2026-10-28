@@ -22,6 +22,7 @@ typedef struct {
     uint32_t adv_conn_ind;              /* advertising events a CONNECT_IND ended */
     uint32_t adv_done[3];               /* advertising packets completed to Cordio (txCback), per channel 37, 38, 39 */
     uint32_t conn_ended, conn_rx;       /* connection events the baseband ended; packets received in them */
+    uint32_t conn_timeout_us;           /* Cordio's receive timeout for the last connection event (the window it got) */
     uint32_t tx_done, rx_ok, rx_bad, rx_timeout;   /* completions given to Cordio */
     uint32_t resp_set, resp_late;       /* responses put in for T_IFS; ones asked for after the event had ended */
     uint32_t timer_fired, timer_late_us;/* the scheduler's timer: fired, the most it was late */

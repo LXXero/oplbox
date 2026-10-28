@@ -63,6 +63,9 @@ typedef struct {
     uint16_t rx_hdr[2], rx_stat[2];   /* the last packet's RXAHDR/RXDHDR words and RXSTAT (buffer 0 then 1) */
     uint8_t rx_last[48];        /* the last received PDU's first bytes (the payload), rx_last_n of them */
     uint8_t rx_last_n, rx_last_type, rx_last_len;
+    uint8_t rx_last_buf;        /* the RX buffer (0 or 1) the last packet was read from */
+    uint16_t rx_last_ahdr, rx_last_dhdr;   /* its RXAHDR and RXDHDR words */
+    uint8_t agc_table;          /* 1 when the last power-up wrote the AGC gain table (fm1ble_rx_setup) */
     uint32_t pending_last;      /* the last value of the pending register */
     uint32_t tx_flips;          /* events after which TXTOG had changed: the hardware's record that it sent a buffer (E.4) */
     uint16_t txtog;             /* TXTOG as last read */
@@ -78,6 +81,11 @@ typedef struct {
  * and documents 0-11 (docs/BLUETOOTH_RADIO.md "The TX power level"). Level 0 is the lowest. */
 #define FM1BLE_TXPWR_LEVEL  6u
 #define FM1BLE_TXPWR_MAX    11u
+/* The receive windows (docs/BLUETOOTH_RADIO.md E.2 WINCNTL2): every JieLi path writes WINCNTL0 = 0x32 and puts the time
+ * the receiver listens into WINCNTL2: 0x32 when advertising (le_hw_advertising), the scan window when scanning, the
+ * first transmit window of a connection; the direct-test receiver writes 0x96. Taken as microseconds from those uses. */
+#define FM1BLE_WIN0         0x32u
+#define FM1BLE_ADV_WIN_US   0x32u
 typedef struct {
     uint8_t *blk;               /* the RAM block */
     uint32_t blk_bus;           /* its address as the baseband takes it */
@@ -91,6 +99,8 @@ typedef struct {
     uint8_t txpwr;              /* the transmit power level in both TXPWR words */
     uint8_t adv_type;           /* fm1ble_adv_start's PDU type, for re-pointing the buffers after each event */
     uint16_t slots;             /* the interval in slots, for re-arming */
+    uint8_t rx_set, rx_agc;     /* fm1ble_rx_setup was called; with it, whether the power-up writes the AGC gain table */
+    uint16_t rx_win;            /* with it, WINCNTL2 for advertising */
     uint32_t ana_pll[243];      /* the PLL table (F.2): 81 entries of 3 words, the analog block reads it */
     fm1ble_cal cal;
     fm1ble_diag d;
@@ -101,6 +111,13 @@ typedef struct {
  * measurement). Fills b->d.rb. A step whose readback differs is counted, not an error: the baseband may change a bit
  * that was written. Returns FM1BLE_OK. */
 int fm1ble_radio_up(fm1ble *b, int variant, const fm1ble_cal *cal);
+
+/* The receive setup, for the test run's RX trials (fm1ble_test.h): whether fm1ble_radio_up writes the AGC block's gain
+ * table (C.3 btagc_ram_init, fm1ble_agc.h: the receiver heard nothing on the FM-1 without it and without WINCNTL2,
+ * oplbox-ble-run-3b39ab4), and the WINCNTL2 that fm1ble_adv_start and fm1ble_op_adv write (0: none, as before). Without a
+ * call: the table and FM1BLE_ADV_WIN_US, JieLi's setup. The table takes effect at the next fm1ble_radio_up, the window at
+ * the next advertising start. */
+void fm1ble_rx_setup(fm1ble *b, int agc_table, uint32_t adv_win_us);
 
 /* The baseband's control block and RAM block (D.1, E.1) with entity 0 opened and left in standby (E.3). */
 int fm1ble_bb_init(fm1ble *b, void *block);
@@ -167,7 +184,8 @@ void fm1ble_op_power(fm1ble *b, uint8_t level);
  * does not matter, the event covers all three). FM1BLE_ESTATE before fm1ble_bb_init or while fm1ble_adv_start's
  * advertising runs, FM1BLE_EARG for a data channel or a PDU under 8 or over 39 bytes. */
 int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n);
-/* A connection event as the peripheral on the channel set (0-36): listen from delay_us from now for window_us. */
+/* A connection event as the peripheral on the channel set (0-36): listen from delay_us from now for window_us
+ * (WINCNTL2, at most 65535; WINCNTL0 = FM1BLE_WIN0, as le_hw_ioctrl's __set_winsize writes them). */
 int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
 /* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event (kept for the next events' SCAN_REQs),
  * buffer 0 in both TX slots in a connection event. At most 37 bytes of payload (the buffers' size, E.4). */

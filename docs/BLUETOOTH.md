@@ -537,13 +537,14 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
    to show").
 5. **Test page, USB report, tool: done and host-tested; the run uses the stack.** docs/BLUETOOTH_PAGE.md;
    `tools/fm1_ble_report.py --run --out DIR` over SysEx 0x66 (report) and 0x67 (run); `tests/ble_report_tool.py`. Eight steps
-   (radio, block, hci, adv_set, adv_air, connect, midi_in, midi_out), one line each with raw bytes, 40 counters (20-29 and
-   32-38 the PAL's); a failed step's note says what to do next. The firmware's run (`firmware/ble/fm1ble_test.c`) does the driver's
-   own advertising first, in three air trials from their own addresses (`adv_set`, `adv_air`), and then brings up the stack
+   (radio, block, hci, adv_set, adv_air, connect, midi_in, midi_out), one line each with raw bytes, 64 counters (20-29 and
+   32-38 the PAL's, 40-55 the RX trials'); a failed step's note says what to do next. The firmware's run (`firmware/ble/fm1ble_test.c`) does the driver's
+   own advertising first, in three air trials from their own addresses (`adv_set`, `adv_air`) and four RX trials with their
+   own receive setups (docs/BLUETOOTH_PAGE.md), and then brings up the stack
    on the radio of the trial that sent (`hci`, `connect`, `midi_in`, `midi_out`). `tests/ble_stack.c run` runs it on the air with the central: every step PASS.
    The host build's page and tool tests run a scripted fake (`tests/ble/fm1ble_test_host.c`).
-6. **Size: in the app.** The app links the test run, the driver, the PAL, Cordio, NimBLE and `ble_libc.c`: 527,568 B of
-   581,564 B and 93,908 B of 98,304 B of RAM (Cordio's 3 KB heap and the C library's 3 KB heap are in the pool, app.ld's
+6. **Size: in the app.** The app links the test run, the driver, the PAL, Cordio, NimBLE and `ble_libc.c`: 529,328 B of
+   581,564 B and 94,084 B of 98,304 B of RAM (Cordio's 3 KB heap and the C library's 3 KB heap are in the pool, app.ld's
    zeroed region outside the 96 KB), with WiFi's stages 4-9 in the same image.
 
 ### The first FM-1 run (48ea034) and what changed

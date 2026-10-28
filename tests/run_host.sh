@@ -338,7 +338,7 @@ python3 tests/wifi_ip_mutants.py build/host
 # and the test must catch 17 deliberate bugs in hci.c
 for f in firmware/ble/*.c firmware/ble/*.h; do
   if grep -n '^[[:space:]]*#[[:space:]]*include[[:space:]]*"' "$f" | grep -v -e '"hci\.h"' -e '"ble_midi\.h"' -e '"ble_nimble\.h"' \
-       -e '"ble_nimble_npl\.h"' -e '"fm1ble_test\.h"' -e '"fm1ble\.h"' -e '"fm1ble_port\.h"' -e '"fm1ble_regs\.h"' \
+       -e '"ble_nimble_npl\.h"' -e '"fm1ble_test\.h"' -e '"fm1ble\.h"' -e '"fm1ble_port\.h"' -e '"fm1ble_regs\.h"' -e '"fm1ble_agc\.h"' \
        -e '"fm1ble_stack\.h"' -e '"cordio_ctrl\.h"' -e '"pal_fm1\.h"'; then
     echo "FAIL: $f includes a file from outside firmware/ble/" >&2; exit 1; fi
 done

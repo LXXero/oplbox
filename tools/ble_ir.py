@@ -16,8 +16,10 @@ no IR text, only numbers, offsets and the names the IR carries (docs/BLUETOOTH_R
   --layout           the parameter block (struct ble_param inside struct ble4_hw): offset, size, IR value name
   --registers        every absolute address above 0x10000 that each member touches, by function
   --steps MEMBER FN  the step view of the named functions of one member (e.g. --steps RF_ble le_hw_init)
+  --agc              the AGC gain table btagc_ram_init writes to 0x2FD9C (docs/BLUETOOTH_RADIO.md C.3), as the 128
+                     words in the order they are written, one per line
   --check            fails when the archive is not the one the doc was written from, or when a fact the doc
-                     quotes no longer comes out of the IR
+                     quotes no longer comes out of the IR (including firmware/ble/fm1ble_agc.h's table)
 
 Needs the JieLi AC79 SDK ($AC79_SDK, default ~/fw-AC79_AIoT_SDK) and a system llvm-dis (LLVM 23 was used; the
 bitcode is clang 4.0.1's, whose debug information llvm-dis drops with a warning, which is fine).
@@ -315,6 +317,32 @@ def registers(src):
     return {k: sorted(v) for k, v in out.items()}
 
 
+def agc_table(src):
+    """the gain table btagc_ram_init writes to 0x2FD9C: [u32] in the order written, or None when the IR does not have
+    the walk this reads (64 entries of 8 bytes from entry 63 down to entry 0, the low word then the high word)"""
+    m = re.search(r"^@agc_tlb = internal unnamed_addr constant \[64 x i64\] \[([^\]]*)\]", src, re.M)
+    walk = (re.search(r"phi ptr \[ getelementptr inbounds \(\[64 x i64\], ptr @agc_tlb, i32 0, i32 63\)", src) and
+            re.search(r"icmp eq i32 %cnt\.0, 64", src) and re.search(r"getelementptr inbounds i32, ptr %ptr0\.0, i32 -2", src))
+    if not m or not walk:
+        return None
+    ent = [int(x.split()[1]) & 0xFFFFFFFFFFFFFFFF for x in m.group(1).split(",")]
+    out = []
+    for e in reversed(ent):
+        out += [e & 0xFFFFFFFF, e >> 32]
+    return out
+
+
+def header_table(path):
+    """the words of FM1BLE_AGC_TABLE in firmware/ble/fm1ble_agc.h"""
+    t = Path(path).read_text()
+    body = t[t.index("FM1BLE_AGC_TABLE"):]
+    body = body[body.index("{") + 1:body.index("}")]
+    return [int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]+)", body)]
+
+
+AGC_H = Path(__file__).resolve().parent.parent / "firmware/ble/fm1ble_agc.h"
+
+
 # ---------------------------------------------------------------- what the default report quotes
 REPORT = [
     ("RF", ["bt_rf_init", "bt_process_before_init", "bt_pll_reset", "bt_rf_close", "bt_clk_close", "RF_poweroff_recover"]),
@@ -355,6 +383,15 @@ GOLDEN = [
     ("analog", "bt_rf_analog_init", "st.i32 2FC04 <- 0x4E143CDF"),
     ("analog", "bt_rf_analog_init", "st.i32 2FC88 <- &table"),
     ("btagc", "btagc_init", "st.i32 2FD84 <- 0x1872BF14"),
+    ("btagc", "btagc_init", "call btagc_ram_init()"),
+    ("btagc", "btagc_ram_init", "st.i32 2FD98 <- 0"),
+    ("btagc", "btagc_ram_init", "st.i32 2FD9C <- rd[%ptr0.0+0x4]"),
+    ("RF_ble", "le_hw_advertising", "st.i16 rd[%hw]+0x22 <- 0x32"),
+    ("RF_ble", "le_hw_advertising", "st.i16 rd[%hw]+0x112 <- 0x32"),
+    ("RF_ble", "__set_winsize", "st.i16 %hw+0x22 <- %nwinsize"),
+    ("RF_ble", "__set_winsize", "st.i16 %hw+0x112 <- %winsize"),
+    ("RF_ble", "le_hw_ioctrl", "call __set_winsize(rd[%hw], 0x32, (add (mul rd[%27+0x7] 0x4E2) 0x4E2))"),
+    ("direct_test_dut", "__set_winsize", "st.i16 rd[rd[@ble4_dut]]+0x112 <- 0x96"),
     ("cpu_wlc", "wlc_wreg", "st.i32 14004 <- (or (or (shl %type 4) (shl %wdat 0x10)) 1)"),
 ]
 
@@ -364,6 +401,7 @@ def main():
     ap.add_argument("--layout", action="store_true")
     ap.add_argument("--registers", action="store_true")
     ap.add_argument("--steps", nargs="+", metavar=("MEMBER", "FN"))
+    ap.add_argument("--agc", action="store_true")
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
     for arc, want in ARCHIVES.items():
@@ -389,12 +427,27 @@ def main():
             lay = names_of(by["RF_ble"])
             for name, idx in (("ANCHOR", 0), ("ADVIDX", 2), ("FORMAT", 3), ("OPTCNTL", 4), ("BDADDR0", 5), ("TXPTR0", 9),
                               ("RXPTR0", 15), ("WINCNTL0", 17), ("CHMAP0", 23), ("CRCWORD0", 34), ("WIDEN0", 36),
-                              ("LOCALADRL", 41), ("INTFRAME", 49), ("PLL_COMP", 72)):
+                              ("LOCALADRL", 41), ("INTFRAME", 49), ("WINCNTL2", 63), ("PLL_COMP", 72)):
                 if lay.get(name) != idx:
                     print(f"FAIL layout: {name} is field {lay.get(name)}, the doc says {idx}")
                     bad += 1
-            print("ble_ir --check:", "FAILED %d" % bad if bad else "%d facts reproduce" % (len(GOLDEN) + 14))
+            tab = agc_table(by["btagc"])
+            if tab is None or len(tab) != 128:
+                print("FAIL btagc_ram_init: the gain table's walk is not the one the doc describes")
+                bad += 1
+            elif header_table(AGC_H) != tab:
+                print(f"FAIL {AGC_H.name}: FM1BLE_AGC_TABLE is not the table btagc_ram_init writes")
+                bad += 1
+            print("ble_ir --check:", "FAILED %d" % bad if bad else "%d facts reproduce" % (len(GOLDEN) + 15 + 1))
             return 1 if bad else 0
+        if a.agc:
+            tab = agc_table(by["btagc"])
+            if tab is None:
+                print("ble_ir: btagc_ram_init does not walk the table as expected", file=sys.stderr)
+                return 1
+            for w in tab:
+                print("0x%08X" % w)
+            return 0
         if a.layout:
             t = types["RF_ble"]
             names = {}

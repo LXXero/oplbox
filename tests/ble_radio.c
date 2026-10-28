@@ -11,6 +11,7 @@
 #include "fm1ble.h"
 #include "fm1ble_port.h"
 #include "fm1ble_regs.h"
+#include "fm1ble_agc.h"
 #include "fm1ble_test.h"
 #include "ble_midi.h"
 #include "bb_model.h"
@@ -62,13 +63,16 @@ static void power_up(void)
             { FM1BLE_WL_CON1, 5u << 4 | 0x98u << 16 | 1u }, { FM1BLE_BSFR_50, 0x87 }, { FM1BLE_BSFR_50, 0xAC }, { FM1BLE_IOMAP, 0x101 },
             { FM1BLE_BSFR_BASE, 0xC0000000u }, { FM1BLE_BT_CLKCON, 0xFFFF }, { FM1BLE_BT_CLKCON, 0xFCFD },
             { FM1BLE_BT_ENA, 0xF }, { FM1BLE_BT_ENA, 0x3FF },
+            { FM1BLE_AGC_TAB_AT, 0 }, { FM1BLE_AGC_TAB, 0x008000B6u }, { FM1BLE_AGC_TAB, 0x000000F0u },
             { FM1BLE_AGC_0, 0x000F0000u }, { FM1BLE_AGC_0 + 4, 0x1872BF14u }, { FM1BLE_AGC_0 + 8, 0x1872BF55u },
             { FM1BLE_ANA(0x48), 0xB9 }, { FM1BLE_ANA(0x00), 0x00FFD144u }, { FM1BLE_ANA(0x04), 0x4E143CDFu },
             { FM1BLE_ANA(0x08), 0x03100000u }, { FM1BLE_ANA(0x0C), 0x80808080u }, { FM1BLE_ANA(0x10), 0x80008080u },
             { FM1BLE_ANA(0x20), 0x36555537u }, { FM1BLE_ANA(0x24), 0x00034041u }, { FM1BLE_ANA(0x28), 0x0005C000u },
         };
-        order("power-up writes in the order of B.2, B.1, C.3, C.1", w, (int)(sizeof w / sizeof w[0]));
+        order("power-up writes in the order of B.2, B.1, C.3 (the gain table first), C.1", w, (int)(sizeof w / sizeof w[0]));
     }
+    check(bbm.agc_n == (int)FM1BLE_AGC_WORDS && bbm.agc_bad == 0 && B.d.agc_table == 1 && FM1BLE_AGC_TABLE[0] == 0x008000B6u,
+          "the AGC gain table: 0x2FD98 = 0, then fm1ble_agc.h's 128 words to 0x2FD9C (btagc_ram_init's entry 63 first)");
     check(bb_model_reg(FM1BLE_WL_CON0) == ((2u << 24) | (0x0Cu << 16) | 0x181u), "WL_CON0: B.2's field and bit 8, B.1's bit 7, field 20-16 and bit 0");
     check(bb_model_reg(FM1BLE_BT_PWRCON) == (0x8u | 0x2u), "0x2FC50: field 5-2 = 2, bit 1");
     check(bb_model_reg(FM1BLE_ANA(0x98)) == 0x02360236u && bb_model_reg(FM1BLE_ANA(0x9C)) == 0x36360008u &&
@@ -172,7 +176,8 @@ static void advertising(void)
     check(e16(FM1BLE_E_LOCALADR) == 0x0001u && e16(FM1BLE_E_LOCALADR + 2) == 0x4D31u && e16(FM1BLE_E_LOCALADR + 4) == 0xC246u,
           "LOCALADR: the address as three little-endian words");
     check((e16(FM1BLE_E_FORMAT) & 0xCu) == 0xCu, "FORMAT bits 3 (local address) and 2 (advertising started)");
-    check(e16(FM1BLE_E_WINCNTL0) == 0x32u && e16(FM1BLE_E_WINCNTL1) == 0 && e16(FM1BLE_E_FILTERCNTL) == 0, "window 0x32, no filter");
+    check(e16(FM1BLE_E_WINCNTL0) == 0x32u && e16(FM1BLE_E_WINCNTL1) == 0 && e16(FM1BLE_E_WINCNTL2) == 0x32u && e16(FM1BLE_E_FILTERCNTL) == 0,
+          "windows: WINCNTL0 0x32, WINCNTL2 0x32 (le_hw_advertising's; 0 up to 3b39ab4), no filter");
     check((e16(FM1BLE_E_OPTCNTL) & 0x10u) == 0, "OPTCNTL bit 4 clear: local address match on");
     check(bbm.ax[FM1BLE_AX_INTERVAL] == 160 && bbm.ax[FM1BLE_AX_INTERVAL_HI] == 0x8000u, "anchor 1 and 0xF: 160 slots, event enable");
     check(bbm.ax[FM1BLE_AX_STATE] == 0x2000u, "anchor 2: state 2 (advertising), no latency");
@@ -309,6 +314,46 @@ static void polling(void)
     check(!B.adv_on && !B.on, "radio_down also stops advertising");
 }
 
+/* the receive setup (fm1ble_rx_setup) and the windows of the one-packet operations */
+static void rx_setup(void)
+{
+    fm1ble_adv a;
+    static const uint8_t pdu[8] = { 0x40, 6, 0x01, 0x00, 0x31, 0x4D, 0x46, 0xC2 };
+    uint32_t v;
+
+    bb_model_reset();
+    memset(&B, 0, sizeof B);
+    fm1ble_rx_setup(&B, 0, 0x96);
+    fm1ble_radio_up(&B, 0, NULL);
+    check(bb_model_nth_write(FM1BLE_AGC_TAB, 0, &v) < 0 && bb_model_nth_write(FM1BLE_AGC_TAB_AT, 0, &v) < 0 && B.d.agc_table == 0,
+          "rx_setup without the table: the power-up writes none of it");
+    fm1ble_bb_init(&B, blk);
+    make_adv(&a, 0);
+    check(fm1ble_adv_start(&B, &a) == FM1BLE_OK && e16(FM1BLE_E_WINCNTL2) == 0x96u, "rx_setup's window in WINCNTL2 (0x96)");
+    fm1ble_adv_stop(&B);
+    fm1ble_rx_setup(&B, 1, 0);
+    check(fm1ble_adv_start(&B, &a) == FM1BLE_OK && e16(FM1BLE_E_WINCNTL2) == 0, "and 0, as the driver had it up to 3b39ab4");
+    fm1ble_adv_stop(&B);
+    fm1ble_radio_down(&B);
+    check(fm1ble_radio_up(&B, 0, NULL) == FM1BLE_OK && B.d.agc_table == 1 && bbm.agc_n == (int)FM1BLE_AGC_WORDS && !bbm.agc_bad,
+          "rx_setup with the table: the next power-up writes it");
+
+    /* without rx_setup: the operations' windows as JieLi writes them */
+    bb_model_reset();
+    memset(&B, 0, sizeof B);
+    fm1ble_radio_up(&B, 0, NULL);
+    fm1ble_bb_init(&B, blk);
+    check(fm1ble_op_chan(&B, FM1BLE_ACCESS_ADV, 0x555555u, 37) == FM1BLE_OK && fm1ble_op_adv(&B, 1000, pdu, 8) == FM1BLE_OK &&
+          e16(FM1BLE_E_WINCNTL0) == 0x32u && e16(FM1BLE_E_WINCNTL2) == FM1BLE_ADV_WIN_US, "op_adv: WINCNTL0 and WINCNTL2 0x32");
+    fm1ble_op_stop(&B);
+    check(fm1ble_op_chan(&B, 0x12345678u, 0x3A5C21u, 5) == FM1BLE_OK && fm1ble_op_conn(&B, 1000, 3750) == FM1BLE_OK &&
+          e16(FM1BLE_E_WINCNTL0) == 0x32u && e16(FM1BLE_E_WINCNTL1) == 0 && e16(FM1BLE_E_WINCNTL2) == 3750u,
+          "op_conn: WINCNTL0 0x32, the window in WINCNTL2 (le_hw_ioctrl's __set_winsize; it went into WINCNTL0 up to 3b39ab4)");
+    fm1ble_op_stop(&B);
+    check(fm1ble_op_conn(&B, 1000, 70000) == FM1BLE_OK && e16(FM1BLE_E_WINCNTL2) == 0xFFFFu, "a window over 16 bits: 65535");
+    fm1ble_op_stop(&B);
+}
+
 /* ---- the test run ---- */
 
 static uint32_t g_t;
@@ -347,6 +392,24 @@ static void inject_conn(uint32_t t)
 
 static uint32_t raw16(int step, int k) { return R.step[step].raw[2 * k] | R.step[step].raw[2 * k + 1] << 8; }
 
+/* a SCAN_REQ once, while the RX trial advertising from C2:46:4D:31:00:<g_scan_to> has an event armed */
+static uint8_t g_scan_to;
+static int g_scanned;
+static void inject_scan(uint32_t t)
+{
+    static const uint8_t scan[12] = { 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6, 0, 0, 0x31, 0x4D, 0x46, 0xC2 };
+    const uint8_t *b = (const uint8_t *)(bbm.hi | bb_model_reg(FM1BLE_BB_RAM_START)), *e;
+    (void)t;
+    if (g_scanned || !bbm.armed || !bb_model_reg(FM1BLE_BB_RAM_START) || bbm.ax[FM1BLE_AX_STATE] >> 12 != FM1BLE_STATE_ADV)
+        return;
+    e = b + (b[0] | (b[1] & 0x7F) << 8);
+    if (e[FM1BLE_E_LOCALADR] == g_scan_to && e[FM1BLE_E_LOCALADR + 2] == 0x31) {
+        g_scanned = 1;
+        bb_model_rx(0, 3, scan, 12);
+    }
+}
+static uint32_t rxt(int k, int w) { return R.ctr[FM1BLE_C_RXT + 4 * k + w]; }
+
 static void test_runs(void)
 {
     /* the baseband repeats its events and sends (TXTOG changes): every trial shows it */
@@ -368,7 +431,18 @@ static void test_runs(void)
           raw16(FM1BLE_STEP_ADV_AIR, 3) >= 25 && raw16(FM1BLE_STEP_ADV_AIR, 6) >= 25,
           "adv_air's evidence: per trial events (about 30 in 3 s) and as many TXTOG changes, then the hardware's words");
     check(R.ctr[FM1BLE_C_AIR_TRIALS] == 7 && R.ctr[FM1BLE_C_VARIANT] == 1 && R.ctr[FM1BLE_C_TXPWR] == FM1BLE_TXPWR_LEVEL &&
-          bbm.rf_common_calls == 1, "counters: all three trials, the stack on variant 1 (the shared init ran once) at level 6");
+          R.ctr[FM1BLE_C_RF_COMMON] == 1 && bbm.rf_common_calls == 2,
+          "counters: all three trials, the stack on variant 1 at level 6 (the shared init: trial 1, then RX trial 1's power-up)");
+    {
+        int k, ok = 1;
+        for (k = 0; k < FM1BLE_RX_TRIALS; k++)
+            ok &= (rxt(k, FM1BLE_RXT_COUNTS) & 0xFFu) >= 25 && ((rxt(k, FM1BLE_RXT_COUNTS) >> 8) & 0xFFu) >= 25 &&
+                  (rxt(k, FM1BLE_RXT_COUNTS) >> 16) == 0 && ((rxt(k, FM1BLE_RXT_PKT) >> 16) & 0xFFu) == 0xFFu;
+        check(ok, "the four RX trials ran (events and TXTOG changes), nothing received, no buffer named");
+    }
+    check(R.ctr[FM1BLE_C_RX_STACK_TRIAL] == 2 && R.ctr[FM1BLE_C_RX_AGC_TABLE] == 1 && R.ctr[FM1BLE_C_RX_WIN] == 0x32u &&
+          (R.ctr[FM1BLE_C_AGC_CTL] & 1u) && R.ctr[FM1BLE_C_AGC_RSSI] == 0x1872BF00u,
+          "nothing received: the stack on RX trial 2's setup (the table, 0x32); the AGC block read back after the trials");
     check(R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_FAIL && strstr(R.step[FM1BLE_STEP_CONNECT].note, "no SCAN_REQ"), "connect: FAIL, nobody came");
     check(R.step[FM1BLE_STEP_MIDI_IN].result == FM1BLE_SKIP && R.step[FM1BLE_STEP_MIDI_OUT].result == FM1BLE_SKIP, "the MIDI steps: SKIP");
     check(R.ctr[FM1BLE_C_REARM_USED] == 0, "no re-arm needed");
@@ -387,7 +461,7 @@ static void test_runs(void)
     bbm.needs_common = 1;
     run_to_end(0, NULL);
     check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_PASS && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "trials 1 2") && R.ctr[FM1BLE_C_AIR_TRIALS] == 6 &&
-          R.ctr[FM1BLE_C_VARIANT] == 1 && R.ctr[FM1BLE_C_RF_COMMON] == 1 && bbm.rf_common_calls == 1,
+          R.ctr[FM1BLE_C_VARIANT] == 1 && R.ctr[FM1BLE_C_RF_COMMON] == 1 && bbm.rf_common_calls == 2,
           "no events without the shared init: trials 1 and 2 send, the stack runs on variant 1");
     check(raw16(FM1BLE_STEP_ADV_AIR, 0) == 0 && raw16(FM1BLE_STEP_ADV_AIR, 3) >= 25, "trial 0's events 0, trial 1's counted");
 
@@ -407,7 +481,8 @@ static void test_runs(void)
     bbm.silent = 1;
     run_to_end(1000, NULL);
     check(R.step[FM1BLE_STEP_ADV_AIR].result == FM1BLE_FAIL && strstr(R.step[FM1BLE_STEP_ADV_AIR].note, "any trial"), "silent: adv_air FAIL after every trial");
-    check(R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_SKIP && bbm.rf_common_calls == 1, "connect SKIP; the shared init was tried once");
+    check(R.step[FM1BLE_STEP_CONNECT].result == FM1BLE_SKIP && bbm.rf_common_calls == 1 && (R.ctr[FM1BLE_C_RXT] & 0xFFu) == 0,
+          "connect SKIP; the shared init was tried once; no RX trial without an event");
     check(R.state == FM1BLE_DONE, "and the run ends");
 
     /* a central connects: the CONNECT_IND is the evidence */
@@ -422,6 +497,25 @@ static void test_runs(void)
     check(R.ctr[FM1BLE_C_RX_CONN_IND] == 1 && R.ctr[FM1BLE_C_RX_TYPE] == 5 && R.ctr[FM1BLE_C_RX_LEN] == 34, "counters: one CONNECT_IND, type 5, length 34");
     check(R.step[FM1BLE_STEP_MIDI_IN].result == FM1BLE_SKIP, "the MIDI steps need a connection");
 
+    /* a SCAN_REQ in RX trial 2 (:15): its counters say what came in, the stack keeps its setup; then one in trial 3 only */
+    bb_model_reset();
+    bbm.repeat = 1;
+    g_scan_to = FM1BLE_RX_ADDR0 + 2;
+    g_scanned = 0;
+    run_to_end(0, inject_scan);
+    check(g_scanned && ((rxt(2, FM1BLE_RXT_COUNTS) >> 16) & 0xFFu) == 1 && (rxt(2, FM1BLE_RXT_COUNTS) >> 24) == 1 &&
+          (rxt(3, FM1BLE_RXT_COUNTS) >> 16) == 0, "a SCAN_REQ in RX trial 2: one packet, one SCAN_REQ, in that trial only");
+    check(rxt(2, FM1BLE_RXT_STAT) == (1u | 3u << 16) && (rxt(2, FM1BLE_RXT_PKT) & 0xFFFFFFu) == 12u << 8 && rxt(2, FM1BLE_RXT_BYTES) == 0xA4A3A2A1u,
+          "its words: RXSTAT 1, RXAHDR type 3, RXDHDR length 12, buffer 0, the payload's first four bytes");
+    check(R.ctr[FM1BLE_C_RX_STACK_TRIAL] == 2, "the stack runs on trial 2's setup");
+    bb_model_reset();
+    bbm.repeat = 1;
+    g_scan_to = FM1BLE_RX_ADDR0 + 3;
+    g_scanned = 0;
+    run_to_end(0, inject_scan);
+    check(g_scanned && ((rxt(3, FM1BLE_RXT_COUNTS) >> 16) & 0xFFu) == 1 && R.ctr[FM1BLE_C_RX_STACK_TRIAL] == 3 && R.ctr[FM1BLE_C_RX_WIN] == 0x96u,
+          "a SCAN_REQ in RX trial 3 only: the stack runs on its window (0x96)");
+
     /* names */
     check(!strcmp(fm1ble_step_name(FM1BLE_STEP_ADV_AIR), "adv_air") && fm1ble_step_name(8) == NULL && fm1ble_ctr_name(FM1BLE_N_CTR) == NULL &&
           !strcmp(fm1ble_ctr_name(FM1BLE_C_EVENTS), "events") && !strcmp(fm1ble_ctr_name(FM1BLE_C_TX_FLIPS), "tx_flips") &&
@@ -433,6 +527,7 @@ int main(void)
     power_up();
     advertising();
     polling();
+    rx_setup();
     test_runs();
     printf("ble_radio: %d checks, %s\n", checks, bad ? "FAILED" : "all passed");
     return bad;

@@ -18,7 +18,8 @@ connect and MIDI steps): connect to the FM-1 from a phone or a Mac (a BLE MIDI a
 while EDIT is open. Finds the FM-1 the way fm1_install.py does. Needs mido with python-rtmidi.
 
 --central HOST runs tools/ble_central.py on HOST (over ssh; "local" runs it here) while the run goes on: a BlueZ central
-that scans for the run's advertisements (the three air trials' addresses and the stack's), connects to the stack, sends
+that scans for the run's advertisements (the three air trials' addresses, the four RX trials' and the stack's; its active
+scan sends the SCAN_REQs the RX trials count), connects to the stack, sends
 a Note On (90 3C 64) through the ALSA sequencer port BlueZ makes and captures the FM-1's notification. Its findings are
 printed after the report and written to DIR/central.json. So one run on the bench checks all eight steps.
 
@@ -53,21 +54,30 @@ COUNTERS = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common",
             "pal_resp_late", "pal_stuck", "pal_timer_late_us", "pal_done_37",
             "pal_done_38", "pal_done_39", "txpwr", "ram_end",
             "pal_adv_events", "pal_adv_covered", "pal_adv_ended", "pal_adv_conn_ind",
-            "pal_conn_ended", "pal_conn_rx", "pal_refused", "evtcount"]
+            "pal_conn_ended", "pal_conn_rx", "pal_refused", "evtcount",
+            *[f"rxt{k}_{w}" for k in range(4) for w in ("counts", "stat", "pkt", "bytes")],
+            "rx_stack_trial", "rx_agc_table", "rx_win", "agc_ctl",
+            "agc_rssi", "conn_win", "pal_conn_timeout_us", "rx_stat1"]
 # up to 122afe3 the firmware sent the first 32 of these (pal_done_37-39 then counted the driver's one-channel events
-# that ended); a report of 32 reads with those names
+# that ended), up to 3b39ab4 the first 40; a shorter report reads with the first names
 # the 24 counters of the firmware at 48ea034 and before (the first FM-1 run); a pair is two 16-bit counts in one word, low
 # then high, which the tool splits
 COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "events", "rearms", "rx_packets", "rx_scan_req",
                "rx_conn_ind", "rx_other", "pending_last", "bb_err", "events_v0", "events_v1", "rearm_used", "adv_err",
                "rx_hdr", "rx_stat", "rx_type", "rx_len", ("pal_adv_ops", "pal_conn_ops"), ("pal_rx_ok", "pal_rx_timeout"),
                ("pal_resp_late", "pal_stuck"), "pal_timer_late_us"]
-HEX_COUNTERS = {"pending_last", "rx_hdr", "rx_stat", "air_trials", "txtog", "ram_end"}
+HEX_COUNTERS = {"pending_last", "rx_hdr", "rx_stat", "air_trials", "txtog", "ram_end", "rx_win", "agc_ctl", "agc_rssi",
+                "conn_win", "rx_stat1", *[f"rxt{k}_{w}" for k in range(4) for w in ("counts", "stat", "pkt", "bytes")]}
 # the air trials (fm1ble_test.h): the driver's own ADV_IND from these addresses, then the stack's
 STACK_ADDR = "C2:46:4D:31:00:01"
 TRIALS = [("C2:46:4D:31:00:10", "variant 0 (no shared radio init), level 6"),
           ("C2:46:4D:31:00:11", "variant 1 (shared radio init first), level 6"),
           ("C2:46:4D:31:00:12", "variant 1, level 11")]
+# the RX trials (fm1ble_test.h): the same ADV_IND on variant 1 at level 6, each with its own receive setup
+RX_TRIALS = [("C2:46:4D:31:00:13", "RX 0: no gain table, WINCNTL2 0x32"),
+             ("C2:46:4D:31:00:14", "RX 1: the gain table, WINCNTL2 0"),
+             ("C2:46:4D:31:00:15", "RX 2: the gain table, WINCNTL2 0x32 (JieLi's)"),
+             ("C2:46:4D:31:00:16", "RX 3: the gain table, WINCNTL2 0x96 (the direct test's)")]
 HW_WORDS = ["TXTOG", "RXTOG", "ANCHOR", "BITOFF", "EVTCOUNT", "LASTCHMAP", "RXSTAT0", "FORMAT"]
 DELAY = {"reply": 3.0, "poll": 0.5, "central": 2.0}   # seconds; the tests shorten them
 CENTRAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ble_central.py")
@@ -220,6 +230,43 @@ def air_trials(rep):
     return trials, dict(zip(HW_WORDS, u16[3 * len(TRIALS):]))
 
 
+def rx_trials(rep):
+    """the RX trials' counters (fm1ble_test.h FM1BLE_RXT_*) -> [dict per trial], or None for a report without them"""
+    c = rep["counters"]
+    if "rxt3_bytes" not in c:
+        return None
+    out = []
+    for k, (addr, what) in enumerate(RX_TRIALS):
+        n, st, pk, by = (c[f"rxt{k}_{w}"] for w in ("counts", "stat", "pkt", "bytes"))
+        out.append({"addr": addr, "what": what, "events": n & 0xFF, "flips": n >> 8 & 0xFF, "rx": n >> 16 & 0xFF,
+                    "scan_req": n >> 24, "rxstat": st & 0xFFFF, "rxahdr": st >> 16, "rxdhdr": pk & 0xFFFF,
+                    "buf": pk >> 16 & 0xFF, "chan": pk >> 24, "bytes": by.to_bytes(4, "little")})
+    return out
+
+
+def show_rx(rep, out):
+    t = rx_trials(rep)
+    if not t:
+        return
+    c = rep["counters"]
+    print("\nRX TRIALS (the receive setups; a central's active scan sends each SCAN_REQs)", file=out)
+    for r in t:
+        line = (f"  {r['addr']}  {r['what']}: {r['events']} events, {r['flips']} TXTOG changes, {r['rx']} received, "
+                f"{r['scan_req']} SCAN_REQ")
+        if r["buf"] != 0xFF:
+            line += (f"; first: RXSTAT {r['rxstat']:04X}, type {r['rxahdr'] & 0xF} (RXAHDR {r['rxahdr']:04X}), "
+                     f"length {r['rxdhdr'] >> 8}, buffer {r['buf']}, bytes {r['bytes'].hex(' ')}")
+        else:
+            line += f"; nothing received: RXSTAT0 {r['rxstat']:04X}, RXAHDR0 {r['rxahdr']:04X} as left"
+        print(line, file=out)
+    if c.get("rx_stack_trial", 0xFF) != 0xFF:
+        print(f"  the stack ran on RX trial {c['rx_stack_trial']}'s window: WINCNTL2 {c['rx_win']:X}, gain table "
+              f"{'written' if c['rx_agc_table'] else 'not written'}", file=out)
+    print(f"  AGC block after the RX trials: 0x2FD80 {c['agc_ctl']:08X}, 0x2FD8C {c['agc_rssi']:08X}; RXSTAT1 "
+          f"{c['rx_stat1']:04X}; last windows WINCNTL0 {c['conn_win'] & 0xFFFF:X}, WINCNTL2 {c['conn_win'] >> 16:X}; "
+          f"Cordio's last connection timeout {c['pal_conn_timeout_us']} us", file=out)
+
+
 def show(rep, out):
     print(f"Bluetooth test run {rep['run']}", file=out)
     print(rep["text"], end="" if rep["text"].endswith("\n") else "\n", file=out)
@@ -234,6 +281,7 @@ def show(rep, out):
         for addr, what, ev, flips, rx in t[0]:
             print(f"  {addr}  {what}: {ev} events, {flips} TXTOG changes, {rx} received", file=out)
         print("  after the last trial: " + ", ".join(f"{k} {v:04X}" for k, v in t[1].items()), file=out)
+    show_rx(rep, out)
     if rep["cut_text"] or rep["cut_steps"]:
         print("(the FM-1 cut the report short: it did not fit its buffer)", file=out)
 
@@ -242,7 +290,7 @@ class Central:
     """tools/ble_central.py on another host over ssh (the script on its stdin), or here ("local"), in the background"""
 
     def __init__(self, host, timeout):
-        args = ["--stack", STACK_ADDR, "--trials", ",".join(a for a, _ in TRIALS), "--timeout", f"{timeout:g}", "--json"]
+        args = ["--stack", STACK_ADDR, "--trials", ",".join(a for a, _ in TRIALS + RX_TRIALS), "--timeout", f"{timeout:g}", "--json"]
         if host == "local":
             argv, stdin = [sys.executable, "-I", CENTRAL, *args], subprocess.DEVNULL
         else:
@@ -274,10 +322,13 @@ def show_central(c, out):
         if c.get("stderr"):
             print("  " + c["stderr"].strip().replace("\n", "\n  "), file=out)
     seen = c.get("seen", {})
-    for addr, what in [*TRIALS, (STACK_ADDR, "the stack (Cordio, NimBLE)")]:
+    for addr, what in [*TRIALS, *RX_TRIALS, (STACK_ADDR, "the stack (Cordio, NimBLE)")]:
         d = seen.get(addr)
         print(f"  {addr}  {what}: " + (f"seen at {d['first']:.1f} s, RSSI {d.get('rssi')}" if d else "not seen"), file=out)
     if "connected" in c:
+        if c["connected"] and "services" in c:
+            print(f"  GATT services resolved: {'yes' if c['services'] else 'no'}; dropped: "
+                  f"{'after %g s' % c['dropped'] if c.get('dropped') is not None else 'no'}", file=out)
         print(f"  connect: {'yes' if c['connected'] else 'no'}; MIDI port: {c.get('port') or 'none'}; Note On sent: "
               f"{'yes' if c.get('sent') else 'no'}; heard from the FM-1: {c.get('received') or 'nothing'}", file=out)
     for e in c.get("errors", []):

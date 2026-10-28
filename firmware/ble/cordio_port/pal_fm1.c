@@ -258,6 +258,7 @@ void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
     g_armed = 1;
     g_kind = K_CONN;
     g_st.conn_ops++;
+    g_st.conn_timeout_us = g_rx_timeout;
 }
 
 void PalBbBleRxTifsData(uint8_t *pBuf, uint16_t len)
