@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Run firmware/src/oplbox.c on this computer (tests/host.c): build/host/oplbox.wav and the screens as PNG.
 # Then check them, so a drawing or sound regression fails here (exit 1) instead of passing silently.
+# The mutation checks (tests/*_mutants.py, tests/mutation.py) run up to 4 mutants at once. OPLBOX_MUTANTS=changed is the
+# quick mode for build rounds: only the mutants of the files that differ from main (and every mutant of a set whose test
+# changed), each mutant's text still checked. Leave it unset for the full set, which is what a merge runs.
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p build/host
@@ -92,6 +95,8 @@ gzip -dc tests/wifi/radio_trace.txt.gz > build/host/radio_trace.txt
 WIFI_AP="tests/wifi/wpa_ap.c firmware/wifi/wpa_crypto.c firmware/wifi/bearssl/*.c"   # the model's WPA2 AP (tests/wifi/sdio_model.h "ap")
 cc -std=c11 -Wall -Wextra -Werror -Ifirmware/wifi -Itests/wifi -o build/host/wifi_model tests/wifi_model.c tests/wifi/sdio_model.c firmware/wifi/fm1wifi.c firmware/wifi/fm1wifi_frame.c $WIFI_AP
 build/host/wifi_model tests/wifi build/host
+# which mutants the checks below run (every one, or in quick mode those of the files that changed: tests/mutation.py)
+python3 tests/mutation_test.py
 # ... and that test catches a swapped write, a dropped delay and a wait without its bound (8 deliberate bugs)
 python3 tests/wifi_mutants.py build/host
 # stages 4-6 (docs/WIFI_STAGE4.md): the frame code alone (the RX parser on buffers laid out as the FIFO gives them,

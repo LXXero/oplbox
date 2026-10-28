@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import limits
+import mutation
 
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "firmware/wifi"
@@ -47,44 +48,55 @@ MUTANTS = (
 )
 
 
+HARNESS = ("tests/wifi_mutants.py", "tests/wifi_model.c", "tests/wifi/")
+
+
+def one(out, work, n):
+    name, fname, old, new, want = MUTANTS[n]
+    d = work / str(n)
+    if d.exists():
+        shutil.rmtree(d)
+    shutil.copytree(LIB, d, ignore=shutil.ignore_patterns("bearssl", "*.md"))
+    f = d / fname
+    f.write_text(f.read_text().replace(old, new))
+    (d / "radio_trace.txt").symlink_to((out / "radio_trace.txt").resolve())   # its own <out>: the runs write there
+    exe = d / "wifi_model"
+    subprocess.run(["cc", "-std=c11", "-O1", "-w", "-I" + str(d), "-I" + str(ROOT / "tests/wifi"),
+                    "-I" + str(LIB), "-o", str(exe), str(ROOT / "tests/wifi_model.c"), str(ROOT / "tests/wifi/sdio_model.c"),
+                    str(d / "fm1wifi.c"), str(d / "fm1wifi_frame.c"), str(ROOT / "tests/wifi/wpa_ap.c"),
+                    str(LIB / "wpa_crypto.c"), *map(str, sorted((LIB / "bearssl").glob("*.c")))], check=True)
+    try:
+        r = limits.run([str(exe), str(ROOT / "tests/wifi"), str(d)], capture_output=True, text=True, timeout=120)
+        code, err = r.returncode, r.stderr
+        if code < 0:                                          # killed by a signal, e.g. the memory limit
+            code, err = None, "killed (signal %d)" % -code
+    except subprocess.TimeoutExpired:
+        code, err = None, "hung"
+    caught = (code == 3 and "unbounded wait" in err) if want == "unbounded" else (code == 1 and "FAIL" in err)
+    return caught, "  exit %s; %s" % (code, err.strip().splitlines()[-1] if err.strip() else "")
+
+
 def main():
     out = Path(sys.argv[1])
     work = out / "mutants"
+    todo, stale = mutation.plan("wifi mutants", [("firmware/wifi/" + m[1], m[2]) for m in MUTANTS], HARNESS)
+    res = mutation.run(todo, lambda n: one(out, work, n))
     survived = 0
-    for n, (name, fname, old, new, want) in enumerate(MUTANTS):
-        d = work / str(n)
-        if d.exists():
-            shutil.rmtree(d)
-        shutil.copytree(LIB, d, ignore=shutil.ignore_patterns("bearssl", "*.md"))
-        f = d / fname
-        text = f.read_text()
-        if text.count(old) != 1:
+    for n, (name, fname, *_) in enumerate(MUTANTS):
+        if n in stale:
             print("FAIL: mutant %r: its text is not in %s exactly once (the code moved: update the mutant)" % (name, fname))
             survived += 1
-            continue
-        f.write_text(text.replace(old, new))
-        exe = d / "wifi_model"
-        subprocess.run(["cc", "-std=c11", "-O1", "-w", "-I" + str(d), "-I" + str(ROOT / "tests/wifi"),
-                        "-I" + str(LIB), "-o", str(exe), str(ROOT / "tests/wifi_model.c"), str(ROOT / "tests/wifi/sdio_model.c"),
-                        str(d / "fm1wifi.c"), str(d / "fm1wifi_frame.c"), str(ROOT / "tests/wifi/wpa_ap.c"),
-                        str(LIB / "wpa_crypto.c"), *map(str, sorted((LIB / "bearssl").glob("*.c")))], check=True)
-        try:
-            r = limits.run([str(exe), str(ROOT / "tests/wifi"), str(out)], capture_output=True, text=True, timeout=120)
-            code, err = r.returncode, r.stderr
-            if code < 0:                                          # killed by a signal, e.g. the memory limit
-                code, err = None, "killed (signal %d)" % -code
-        except subprocess.TimeoutExpired:
-            code, err = None, "hung"
-        caught = (code == 3 and "unbounded wait" in err) if want == "unbounded" else (code == 1 and "FAIL" in err)
-        print("%s: %s" % ("caught" if caught else "SURVIVED", name))
-        if not caught:
-            print("  exit %s; %s" % (code, err.strip().splitlines()[-1] if err.strip() else ""))
-            survived += 1
-    shutil.rmtree(work)
+        elif n in res:
+            caught, why = res[n]
+            print("%s: %s" % ("caught" if caught else "SURVIVED", name))
+            if not caught:
+                print(why)
+                survived += 1
+    if work.exists():
+        shutil.rmtree(work)
     if survived:
         sys.exit("FAIL: %d mutant(s) not caught" % survived)
-    print("wifi mutants: all %d caught" % len(MUTANTS))
-
+    print(mutation.summary("wifi mutants", len(MUTANTS), len(res)))
 
 if __name__ == "__main__":
     main()

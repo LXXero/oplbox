@@ -7,9 +7,14 @@ line, a non-zero exit, or a hang killed by the time limit).
 
     ble_nimble_mutants.py <out>      <out> is build/host (with nimble/*.o from run_host.sh); exit 1 if a mutant survives
 """
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import limits
+import mutation
 
 ROOT = Path(__file__).resolve().parent.parent
 LIB = ROOT / "firmware/ble"
@@ -101,44 +106,63 @@ MUTANTS = (
 )
 
 
+HARNESS = ("tests/ble_nimble_mutants.py", "tests/ble_nimble.c", "tests/ble/")
+
+
 def run(cmd, **kw):
-    return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, **kw)
+    return limits.run(cmd, cwd=ROOT, capture_output=True, text=True, **kw)
+
+
+def one(work, keep, i):
+    fname, name, old, new = MUTANTS[i]
+    d = work / str(i)                                            # its own directory: the runs write their logs there
+    d.mkdir(parents=True, exist_ok=True)
+    mutated = d / fname
+    mutated.write_text((LIB / fname).read_text().replace(old, new, 1))
+    other = "ble_nimble_npl.c" if fname == "ble_nimble.c" else "ble_nimble.c"
+    exe = d / "ble_nimble_mut"
+    cc = subprocess.run(["cc", "-std=gnu11", "-O1", "-w", "-D_POSIX_C_SOURCE=200809L", *INC, "-o", str(exe), "tests/ble_nimble.c",
+                         "tests/ble/hci_model.c", "firmware/ble/hci.c", "firmware/ble/ble_midi.c", str(mutated), str(LIB / other),
+                         *keep], cwd=ROOT, capture_output=True, text=True)
+    if cc.returncode:
+        sys.exit(f"mutant '{name}' does not build:\n{cc.stderr[:2000]}")
+    for sc in SCENARIOS:
+        try:
+            r = run([str(exe), "tests/ble", str(d), sc], timeout=30)
+        except subprocess.TimeoutExpired:
+            return True
+        if r.returncode != 0:
+            return True
+    return False
 
 
 def main():
     out = Path(sys.argv[1]).resolve()
     work = out / "nimble_mut"
-    work.mkdir(parents=True, exist_ok=True)
     keep = [str(p) for p in sorted((out / "nimble").glob("*.o")) if p.name not in ("ble_nimble.o", "ble_nimble_npl.o")]
     if not keep:
         sys.exit("no vendored objects in build/host/nimble: run tests/run_host.sh")
+    todo, stale = mutation.plan("ble_nimble mutants", [("firmware/ble/" + m[0], m[2]) for m in MUTANTS], HARNESS)
+    res = mutation.run(todo, lambda i: one(work, keep, i))
     survived = []
-    for i, (fname, name, old, new) in enumerate(MUTANTS):
-        src = (LIB / fname).read_text()
-        if src.count(old) != 1:
-            sys.exit(f"mutant '{name}': text found {src.count(old)} times in {fname}")
-        mutated = work / fname
-        mutated.write_text(src.replace(old, new, 1))
-        other = "ble_nimble_npl.c" if fname == "ble_nimble.c" else "ble_nimble.c"
-        exe = work / "ble_nimble_mut"
-        cc = run(["cc", "-std=gnu11", "-O1", "-w", "-D_POSIX_C_SOURCE=200809L", *INC, "-o", str(exe), "tests/ble_nimble.c",
-                  "tests/ble/hci_model.c", "firmware/ble/hci.c", "firmware/ble/ble_midi.c", str(mutated), str(LIB / other), *keep])
-        if cc.returncode:
-            sys.exit(f"mutant '{name}' does not build:\n{cc.stderr[:2000]}")
-        caught = False
-        for sc in SCENARIOS:
-            try:
-                r = run([str(exe), "tests/ble", str(work), sc], timeout=30)
-            except subprocess.TimeoutExpired:
-                caught = True
-                break
-            if r.returncode != 0:
-                caught = True
-                break
-        print(f"  {'caught ' if caught else 'SURVIVED'} {name}")
-        if not caught:
+    for i, (fname, name, old, _) in enumerate(MUTANTS):
+        if i in stale:
+            print(f"FAIL: mutant '{name}': text found {(LIB / fname).read_text().count(old)} times in {fname}")
             survived.append(name)
-    print(f"ble_nimble mutants: {len(MUTANTS) - len(survived)} of {len(MUTANTS)} caught")
+        elif i in res:
+            print(f"  {'caught ' if res[i] else 'SURVIVED'} {name}")
+            if not res[i]:
+                survived.append(name)
+    if work.exists():
+        shutil.rmtree(work)
+    ran = len(res)
+    if ran == len(MUTANTS):
+        print(f"ble_nimble mutants: {len(MUTANTS) - len(survived)} of {len(MUTANTS)} caught")
+    elif not ran:
+        print(mutation.summary("ble_nimble mutants", len(MUTANTS), 0))
+    else:
+        print(f"ble_nimble mutants: {sum(res.values())} of {ran} run caught; {len(MUTANTS) - ran - len(stale)} "
+              "skipped (quick mode), not yet checked")
     if survived:
         sys.exit("FAIL: survived: " + "; ".join(survived))
 
