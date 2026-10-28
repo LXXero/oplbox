@@ -10,7 +10,9 @@ SysEx in the updater's framing (firmware/src/ble_sysex.c, docs/API.md "Bluetooth
 what the page's twelve pages show, as text, then the steps' full notes, then the counters behind pages 10-12 and each
 step's raw evidence, as bytes (docs/BLUETOOTH_PAGE.md says what each step's evidence is). The tool prints the text and the
 counters. With --out DIR it writes report.txt, report.bin (the report as sent), counters.txt and one file per step that
-has evidence, step-N-<name>.bin (register readbacks as u32 little-endian, or HCI event bytes, as the step kept them).
+has evidence, step-N-<name>.bin (register readbacks as u32 little-endian, or HCI event bytes, as the step kept them), and
+capture.bin, the PDU capture (firmware/ble/fm1ble_test.h FM1BLE_CAP_*: the bytes that went each way in the connections,
+printed as PDU CAPTURE).
 
 --run starts a run as SAVE, HOME, then PLAY would on the FM-1 (the sound stops; the page stays open afterwards, SAVE
 leaves it). --wait S is how long a central has to connect once advertising is on (0-120 s, default 20; 0 skips the
@@ -124,6 +126,21 @@ LL_OPS = ["CONN_UPDATE_IND", "CHANNEL_MAP_IND", "TERMINATE_IND", "ENC_REQ", "ENC
           "PERIPHERAL_FEATURE_REQ", "CONN_PARAM_REQ", "CONN_PARAM_RSP", "REJECT_EXT_IND", "PING_REQ", "PING_RSP",
           "LENGTH_REQ", "LENGTH_RSP", "PHY_REQ", "PHY_RSP", "PHY_UPDATE_IND", "MIN_USED_CHANNELS_IND"]
 LOG_NONE = 0x8000                        # pal_fm1.h PAL_FM1_LOG_NONE
+# the PDU capture (firmware/ble/fm1ble_test.h FM1BLE_CAP_*, since round 7): a frame after the steps', index len(STEPS)
+CAP_HEAD = 16
+ATT_OPS = {0x01: "ATT Error Rsp", 0x02: "ATT Exchange MTU Req", 0x03: "ATT Exchange MTU Rsp", 0x04: "ATT Find Information Req",
+           0x05: "ATT Find Information Rsp", 0x06: "ATT Find By Type Value Req", 0x07: "ATT Find By Type Value Rsp",
+           0x08: "ATT Read By Type Req", 0x09: "ATT Read By Type Rsp", 0x0A: "ATT Read Req", 0x0B: "ATT Read Rsp",
+           0x0C: "ATT Read Blob Req", 0x0D: "ATT Read Blob Rsp", 0x10: "ATT Read By Group Type Req",
+           0x11: "ATT Read By Group Type Rsp", 0x12: "ATT Write Req", 0x13: "ATT Write Rsp", 0x1B: "ATT Notification",
+           0x1D: "ATT Indication", 0x1E: "ATT Confirmation", 0x52: "ATT Write Cmd"}
+ATT_ERRORS = {0x01: "Invalid Handle", 0x02: "Read Not Permitted", 0x03: "Write Not Permitted", 0x04: "Invalid PDU",
+              0x05: "Insufficient Authentication", 0x06: "Request Not Supported", 0x07: "Invalid Offset",
+              0x0A: "Attribute Not Found", 0x0B: "Attribute Not Long", 0x0D: "Invalid Attribute Value Length",
+              0x0E: "Unlikely Error", 0x10: "Unsupported Group Type", 0x11: "Insufficient Resources"}
+L2CAP_SIG = {0x01: "L2CAP Command Reject", 0x12: "L2CAP Connection Parameter Update Req",
+             0x13: "L2CAP Connection Parameter Update Rsp", 0x14: "L2CAP LE Credit Based Connection Req",
+             0x15: "L2CAP LE Credit Based Connection Rsp", 0x16: "L2CAP Flow Control Credit"}
 RX_TRIALS = [("C2:46:4D:31:00:13", "RX 0: no gain table, WINCNTL2 0x32"),
              ("C2:46:4D:31:00:14", "RX 1: the gain table, WINCNTL2 0"),
              ("C2:46:4D:31:00:15", "RX 2: the gain table, WINCNTL2 0x32 (JieLi's)"),
@@ -170,19 +187,23 @@ def decode(rep):
     at += 4 * k
     n = rep[at]
     at += 1
-    steps = []
+    steps, capture = [], None
     for i in range(n):
         need(at + 6, f"step {i + 1}'s header")
         idx, res = rep[at], rep[at + 1]
         had, kept = int.from_bytes(rep[at + 2:at + 4], "little"), int.from_bytes(rep[at + 4:at + 6], "little")
         need(at + 6 + kept, f"step {i + 1}'s bytes")
+        if idx == len(STEPS):                            # the PDU capture (fm1ble_test.h FM1BLE_CAP_*)
+            capture = rep[at + 6:at + 6 + kept]
+            at += 6 + kept
+            continue
         steps.append({"step": STEPS[idx] if idx < len(STEPS) else f"step{idx}", "index": idx,
                       "result": RESULTS.get(res, f"result{res}"), "had": had, "data": rep[at + 6:at + 6 + kept]})
         at += 6 + kept
     if at != len(rep):
         raise ReportError("noreply", f"{len(rep) - at} bytes after the last step")
     return {"run": run, "cut_text": bool(flags & 1), "cut_steps": bool(flags & 2), "text": text,
-            "counters": counters, "steps": steps}
+            "counters": counters, "steps": steps, "capture": capture}
 
 
 def ask(link, cmd, body):
@@ -268,6 +289,9 @@ def write_out(d, rep, raw):
         if st["data"]:
             with open(os.path.join(d, step_name(st["index"], st)), "wb") as f:
                 f.write(st["data"])
+    if rep.get("capture"):
+        with open(os.path.join(d, "capture.bin"), "wb") as f:
+            f.write(rep["capture"])
 
 
 def air_trials(rep):
@@ -435,6 +459,67 @@ def show_ll(c, out):
             print(f"    {i:2d}  {rx} {tog}  {told}  {ans}", file=out)
 
 
+def pdu_what(llid, data, n):
+    """a data PDU's payload (its first bytes) -> what it is: an LL control PDU, an ATT or L2CAP signalling PDU"""
+    if llid == 3:
+        return f"LL {LL_OPS[data[0]] if data and data[0] < len(LL_OPS) else (f'{data[0]:02X}' if data else '?')}"
+    if llid == 1:
+        return "L2CAP continuation"
+    if len(data) < 5:
+        return "L2CAP"
+    ln, cid, op = int.from_bytes(data[0:2], "little"), int.from_bytes(data[2:4], "little"), data[4]
+    tail = "" if ln + 4 == n else f" (L2CAP length {ln}, the PDU's {n})"
+    if cid == 4:
+        w = ATT_OPS.get(op, f"ATT {op:02X}")
+        if op == 0x01 and len(data) >= 9:
+            req, h, e = data[5], int.from_bytes(data[6:8], "little"), data[8]
+            w += f": {ATT_OPS.get(req, f'{req:02X}')}, handle {h:04X}, {ATT_ERRORS.get(e, f'error {e:02X}')}"
+        elif op in (0x02, 0x03) and len(data) >= 7:
+            w += f": MTU {int.from_bytes(data[5:7], 'little')}"
+        elif op in (0x04, 0x06, 0x08, 0x10) and len(data) >= 9:
+            w += f": {int.from_bytes(data[5:7], 'little'):04X}-{int.from_bytes(data[7:9], 'little'):04X}"
+            if op in (0x08, 0x10) and len(data) >= 11 and ln == 7:
+                w += f", type {int.from_bytes(data[9:11], 'little'):04X}"
+        return w + tail
+    if cid == 5:
+        return L2CAP_SIG.get(op, f"L2CAP signalling {op:02X}") + tail
+    return f"L2CAP channel {cid:04X}" + tail
+
+
+def show_capture(rep, out):
+    """the PDU capture and ARQ's ways (fm1ble_test.h FM1BLE_CAP_*, pal_fm1.h PAL_FM1_CAP), for a report that has them"""
+    c = rep.get("capture")
+    if not c or len(c) < CAP_HEAD or c[0] != 1:
+        return
+    n, size = c[1], c[2]
+    u16 = lambda i: int.from_bytes(c[i:i + 2], "little")  # noqa: E731
+    ahead = [str(k + 1) for k in range(16) if u16(4) >> k & 1]
+    kept = {0: "in T_IFS", 1: "ahead"}.get(c[6], "none")
+    print(f"\nPDU CAPTURE (what went each way, as the chip received it and as Cordio handed it over; ARQ's ways)", file=out)
+    print(f"  ARQ connections {c[3]}: ahead {', '.join(ahead) or 'none'}, the others in T_IFS; kept: {kept} "
+          f"(after {c[14]} L2CAP PDUs from the central); responses written ahead {u16(12)}", file=out)
+    print(f"  the chip's SN: bit 2 changed at a connection's first packet {u16(8)}, after {c[7]} packets the central took "
+          f"none of {u16(10)}", file=out)
+    print("     # conn    ev  from     hdr len  side  what", file=out)
+    for k in range(n):
+        e = c[CAP_HEAD + size * k:CAP_HEAD + size * (k + 1)]
+        if len(e) < 6:
+            break
+        mine, ln, ev = e[0] & 1, e[2], e[3] | e[4] << 8
+        data = e[6:6 + min(ln, size - 6)]
+        if mine:
+            frm, side = "Cordio" + ("+" if e[0] >> 1 & 1 else " "), "-" if e[5] == 0xFF else f"{2 * e[5]}us"
+        else:
+            frm = "central" + ("" if e[0] >> 1 & 1 else "!")
+            side = ("R" if e[5] & 1 else "-") + ("T" if e[5] & 2 else "-") + ("+" if e[0] >> 3 & 1 else "")
+        print(f"  {k:4d} {(e[0] >> 4) + 1:4d} {ev:5d}  {frm:8s} {e[1]:02X} {ln:4d}  {side:5s} {pdu_what(e[1] & 3, data, ln)}",
+              file=out)
+        print(f"{'':30s}{data.hex(' ')}", file=out)
+    print("  (from: Cordio+ written ahead; side: Cordio's response time after the packet was seen, or for the central's, "
+          "RXTOG/TXTOG changed at it, + a later packet of its event; hdr: RXDHDR bits 4-0 as the chip wrote them, or "
+          "Cordio's header bits 4-0; the first 14 payload bytes)", file=out)
+
+
 def t16(v):
     """a signed 16-bit time of the PAL's (LOG_NONE: none) -> int or None"""
     return None if v == LOG_NONE else s16(v)
@@ -564,6 +649,7 @@ def show(rep, out):
     show_probe(rep, out)
     show_conn(rep, out)
     show_ll(rep["counters"], out)
+    show_capture(rep, out)
     if rep["cut_text"] or rep["cut_steps"]:
         print("(the FM-1 cut the report short: it did not fit its buffer)", file=out)
 

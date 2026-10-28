@@ -150,6 +150,31 @@ Cordio's PAL"):
   to Cordio (LINK LAYER in the report). On the model the central can send its queue in one event (`air_central.h` burst,
   `bb_air` conn_next): with the PAL as at 1b251ea the ATT write after LL_FEATURE_REQ (MD set) is lost, as on the FM-1.
 
+- **e3d2a74, the done-check after round 6 (2026-10-28, `~/oplbox-ble-runs/e3d2a74-1` on xryzen):** on padw arq 574 of
+  755 events received and the link layer came up: in the first connection LL_FEATURE_REQ/RSP both ways, LL_LENGTH_REQ/RSP,
+  BlueZ's ATT Exchange MTU request (L2CAP length 3) and NimBLE's answer (3), then BlueZ's next request (7 bytes: Read By
+  Group Type or Read By Type) and NimBLE's 5-byte answer (an ATT Error Response's length), after which BlueZ sent only empty
+  PDUs until it left; GATT never resolved. NimBLE's first L2CAP PDU (12 bytes, its connection parameter request) was put in
+  70 us after the packet and BlueZ never answered it. The second connection deadlocked: its first packet (NESN 0) moved
+  TXTOG, the PAL told Cordio its PDU was acknowledged, and the central took each of Cordio's 244 LL_PERIPHERAL_FEATURE_REQs
+  after it as a repeat, its SN alternating (RXTOG moving) and its NESN never. Two readings, round 7's changes
+  (pal_fm1.h PAL_FM1_L2_GOOD, PAL_FM1_ARQ_STUCK): (1) the chip judges an acknowledgement by an SN state of its own that
+  nothing resets at a CONNECT_IND, while the slots' bit 2 is the SN on the air: left at 1 by the first connection, it took
+  the second's NESN 0 as an acknowledgement and named the slot with bit 2 set, so the central (waiting for SN 0) dropped
+  every PDU. The PAL now tells Cordio a first packet acknowledges nothing, changes bit 2 in both slots when TXTOG moved at
+  it (fm1ble_op_arq_flip), and again after PAL_FM1_ARQ_STUCK packets in a row at which RXTOG moved and TXTOG did not.
+  (2) The chip reads the slot it sends before T_IFS, so a response put in late is not sent, and the central's next
+  acknowledgement (of the empty PDU that went) moves TXTOG as if it had been: the PDU is lost and Cordio never knows.
+  ARQ ahead (fm1ble_op_arq_ahead) writes Cordio's response into the slot sent after the next acknowledgement, as JieLi
+  fills its slots after a packet, and tells Cordio its PDU was acknowledged once TXTOG names that slot; no write races the
+  hardware. The stack runs ARQ only now (the other modes lose the link layer on the chip's own SN and NESN), its
+  connections ahead and in T_IFS in turn until one carries PAL_FM1_L2_GOOD of the central's L2CAP PDUs. The PDU capture
+  (pal_fm1.h PAL_FM1_CAP; the report's PDU CAPTURE) keeps the first 32 PDUs' bytes either way, so the next run says
+  what BlueZ asked and what NimBLE answered. On the model (`bb_model` own_sn, tx_latch_us) both failures reproduce: the
+  in-T_IFS response put in after the slot was read is lost, ahead delivers it once; with the chip's SN left at 1 both ways
+  get through only with bit 2 changed; and the whole stack (`tests/ble_stack.c run`) passes GATT, MIDI in and MIDI out
+  on ARQ ahead with the SN left at 1.
+
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ
 29) or, for connection events, the busy wait above (`pal_resp_us_max` says how long Cordio took). This build attaches no
@@ -160,7 +185,7 @@ at once, as an interrupt within T_IFS would. Also unchecked: where the hardware'
 write (the model takes one at the write), state 7 with a fixed channel, how TXTOG changes in a connection, the data PDU header
 words, the receive window's unit, the RSSI (not read: Cordio is told 127, not available).
 
-**Tests.** `tests/ble_pal.c` (78 checks; `tests/ble_pal_mutants.py` catches 53 deliberate bugs in the PAL and the driver's
+**Tests.** `tests/ble_pal.c` (112 checks; `tests/ble_pal_mutants.py` catches 83 deliberate bugs in the PAL and the driver's
 operations; the model can count a slot more than op_arm writes, take the bit offset only with bit 15, and take the
 window from WINCNTL0 (`bb_model.h` cnt_jieli, bit15, win0), so each new setup is shown to receive on the chip it is for; the model sends a connection response from the TX slot as it is T_IFS after the packet, and a connection polled
 every 200 us, as on the FM-1, misses most events without the busy wait and none with it; with the padded window alone,

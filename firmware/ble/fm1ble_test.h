@@ -217,6 +217,17 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
  * central connects again (tools/ble_central.py --tries) tries them in turn. */
 #define FM1BLE_CONN_TRIES   7u
 
+/* The PDU capture (since round 7 of the FM-1 Bluetooth goal): the PAL's (pal_fm1.h PAL_FM1_CAP, PAL_FM1_CAP_BYTES, 32 of
+ * 20 bytes) and ARQ's ways, after the steps' frames in the report as one more frame, index FM1BLE_STEPS
+ * (tools/fm1_ble_report.py prints it as PDU CAPTURE). Its bytes: a head of FM1BLE_CAP_HEAD,
+ *   0 the layout (1); 1 the entries; 2 an entry's bytes; 3 the ARQ connections started (at most 255);
+ *   4-5 the first 16 connections that ran ARQ ahead (bit k: connection k); 6 the way kept (1 ahead, 0 in T_IFS, 0xFF
+ *   none); 7 PAL_FM1_ARQ_STUCK; 8-9 and 10-11 bit 2 changed at a first packet and after PAL_FM1_ARQ_STUCK; 12-13 the
+ *   responses written ahead; 14 PAL_FM1_L2_GOOD; 15 0 (u16 little-endian, each at most 65535),
+ * then the entries as pal_fm1.h lays them out. */
+#define FM1BLE_CAP_HEAD     16u
+#define FM1BLE_CAP_MAX      (FM1BLE_CAP_HEAD + 32u * 20u)
+
 enum { FM1BLE_IDLE, FM1BLE_RUNNING, FM1BLE_DONE };
 
 typedef struct {
@@ -226,6 +237,8 @@ typedef struct {
     uint32_t t0, now;           /* the clock at begin and at the last poll, ms */
     fm1ble_step step[FM1BLE_STEPS];
     uint32_t ctr[FM1BLE_N_CTR]; /* see fm1ble_ctr_name */
+    uint16_t ncap;              /* the PDU capture's bytes (FM1BLE_CAP_MAX above) */
+    uint8_t cap[FM1BLE_CAP_MAX];
 } fm1ble_run;
 
 /* Starts a run (clears r). The central has `wait_ms` to connect once advertising is on; 0: skip the connect and MIDI steps. */
