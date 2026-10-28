@@ -319,9 +319,16 @@ def show_conn(rep, out):
         return
     log = "pal_log_n" in c
     per_conn = "conn0_a" in c
-    print("\nCONNECTION EVENTS (" + ("each connection runs one window setup, the next connection the next one)" if per_conn else
-          "each runs one window setup; " + ("3 missed in a row move to the next)" if log else "a missed one moves to the next)")),
-          file=out)
+    if "pal_tx_order" in c:
+        # since the TX modes the connections turn through those; the window setups are the build's (fm1ble_stack.c: PADW only)
+        used = sorted({c[f"conn{k}_a"] & 0xF for k in range(min(c["pal_conns"], 8))})
+        names = ", ".join(SETUP_NAMES[s] if s < len(SETUP_NAMES) else str(s) for s in used) or "none started"
+        how = f"each connection runs one TX mode, the next connection the next one; window setups used: {names})"
+    elif per_conn:
+        how = "each connection runs one window setup, the next connection the next one)"
+    else:
+        how = "each runs one window setup; " + ("3 missed in a row move to the next)" if log else "a missed one moves to the next)")
+    print("\nCONNECTION EVENTS (" + how, file=out)
     for k, what in enumerate(CONN_SETUPS):
         if f"pal_set{k}_counts" not in c:
             continue
