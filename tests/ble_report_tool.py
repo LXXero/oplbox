@@ -328,6 +328,49 @@ dev = PipeBackend("--serve-ble", REPORT, "edit")
 rc, out, err = tool(dev, "--run")
 check(rc == 1 and "EDIT" in err, f"--run in EDIT: exit {rc} {err}")
 dev.stop()
+
+
+# --btmon when start() or read() fails: the run ends with the stand-in btmon (which runs until it is stopped) stopped
+class Kept(br.Btmon):
+    made = []
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        Kept.made.append(self)
+
+
+class KeptCentral(br.Central):
+    made = []
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        KeptCentral.made.append(self)
+
+
+br.Btmon, br.Central, real_read = Kept, KeptCentral, br.read
+
+
+def failed_read(link):
+    raise br.ReportError("noreply", "made-up failed read")
+
+
+for mode, what in (("edit", "start() refused (EDIT)"), ("ok", "read() failed")):
+    Kept.made.clear()
+    KeptCentral.made.clear()
+    dev = PipeBackend("--serve-ble", REPORT, *([mode] if mode != "ok" else []))
+    if mode == "ok":
+        br.read = failed_read
+    rc, out, err = tool(dev, "--run", "--wait", "3", "--timeout", "20", "--central", "local", "--btmon", "--out", d)
+    br.read = real_read
+    bm = Kept.made[0] if Kept.made else None
+    check(rc != 0 and bm is not None and bm.p.poll() is not None and bm.f.closed,
+          f"--btmon, {what}: exit {rc} {err}; btmon {'not started' if bm is None else 'still running' if bm.p.poll() is None else 'stopped'}"
+          f"{'' if bm is None or bm.f.closed else ', btmon.txt still open'}")
+    for p in [k.p for k in Kept.made + KeptCentral.made if k.p.poll() is None]:   # what a failed check left running
+        p.kill()
+        p.wait()
+    dev.stop()
+br.Btmon, br.Central = Kept.__base__, KeptCentral.__base__
 dev = PipeBackend("--serve-ble", REPORT, "running")
 rc, out, err = tool(dev, "--run", "--timeout", "0")
 check(rc == 5 and "not finished" in err, f"--run with no time to finish: exit {rc} {err}")
