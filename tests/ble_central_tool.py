@@ -3,7 +3,8 @@
 """tools/ble_central.py against stand-ins for bluetoothctl, aseqdump and aseqsend (tests/ble/fake_bluez/, made up from
 those tools' output formats, not recorded): the trial addresses heard and the others left out, the RSSI in both of
 bluetoothctl's forms, the prompt and colours stripped, connect, the new sequencer port found, the Note On sent and the
-FM-1's heard, disconnect; and the stack never heard, a connection refused, no MIDI port, no bluetoothctl. Then
+FM-1's heard, disconnect; and the stack never heard, a connection refused, no MIDI port, no bluetoothctl; and the
+central ending (bluetoothctl quit) when the process that started it goes, as its ssh does when a run fails to start. Then
 tools/fm1_ble_report.py's summary of a central's result. Exit 1 when a check fails.
 
   tests/ble_central_tool.py OUTDIR
@@ -12,7 +13,10 @@ import io
 import json
 import os
 import shutil
+import signal
+import subprocess
 import sys
+import time
 from contextlib import redirect_stderr, redirect_stdout
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -125,6 +129,53 @@ try:
 except SystemExit as e:
     check(e.code == 2, f"a short address: exit {e.code}")
 os.environ["PATH"] = PATH
+
+
+def alive(pid):
+    """the process runs (a zombie waiting for its reaper does not)"""
+    try:
+        return open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (FileNotFoundError, IndexError):
+        return False
+
+
+def kids(pid):
+    out = []
+    for d in os.listdir("/proc"):
+        try:
+            if d.isdigit() and int(open(f"/proc/{d}/stat").read().rsplit(")", 1)[1].split()[1]) == pid:
+                out.append(int(d))
+        except (FileNotFoundError, IndexError, ValueError):
+            pass
+    return out
+
+
+# the process that started the central goes (the ssh of fm1_ble_report.py --central HOST, killed when the run fails to
+# start: over ssh the central gets no SIGHUP): the central quits bluetoothctl and ends in seconds, not at its --timeout
+st = os.path.join(OUT, "fake_bluez_orphan")
+shutil.rmtree(st, ignore_errors=True)
+os.makedirs(st)
+env = dict(os.environ, FAKE_BLUEZ_STATE=st, FAKE_BLUEZ_MODE="nostack", PATH=os.path.join(HERE, "ble", "fake_bluez") + os.pathsep + PATH)
+sh = subprocess.Popen(["sh", "-c", '"$@" </dev/null >/dev/null 2>&1 & echo $!; wait', "sh", sys.executable, "-I",
+                       os.path.join(HERE, "..", "tools", "ble_central.py"), "--stack", br.STACK_ADDR, "--timeout", "60",
+                       "--json"], stdout=subprocess.PIPE, env=env, text=True)
+pid = int(sh.stdout.readline())
+cmds_txt = os.path.join(st, "cmds.txt")
+t_end = time.monotonic() + 10
+while time.monotonic() < t_end and not (os.path.exists(cmds_txt) and "scan le" in open(cmds_txt).read()):
+    time.sleep(0.05)
+ctl_pids = kids(pid)
+sh.kill()
+sh.wait()
+t_end = time.monotonic() + 5
+while time.monotonic() < t_end and (alive(pid) or any(alive(k) for k in ctl_pids)):
+    time.sleep(0.05)
+left = [x for x in [pid, *ctl_pids] if alive(x)]
+for x in left:
+    os.kill(x, signal.SIGKILL)
+cmds = open(cmds_txt).read().split("\n") if os.path.exists(cmds_txt) else []
+check(ctl_pids and not left and "scan off" in cmds and "quit" in cmds,
+      f"its parent gone: the central and bluetoothctl {ctl_pids} still ran after 5 s: {left}; commands {cmds}")
 
 # the report tool's summary of a central's result
 rc, r, cmds, sent, err = central("ok")

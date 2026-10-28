@@ -719,14 +719,15 @@ def show(rep, out):
 
 
 class Central:
-    """tools/ble_central.py on another host over ssh (the script on its stdin), or here ("local"), in the background"""
+    """tools/ble_central.py on another host over ssh (the script on its stdin), or here ("local"), in the background;
+    over ssh "exec" makes it the ssh session's own process, so it sees the session end (ble_central.py watch_parent)"""
 
     def __init__(self, host, timeout):
         args = ["--stack", STACK_ADDR, "--trials", ",".join(a for a, _ in TRIALS + RX_TRIALS), "--timeout", f"{timeout:g}", "--json"]
         if host == "local":
             argv, stdin = [sys.executable, "-I", CENTRAL, *args], subprocess.DEVNULL
         else:
-            argv, stdin = ["ssh", "-o", "BatchMode=yes", host, "python3", "-", *args], open(CENTRAL, "rb")
+            argv, stdin = ["ssh", "-o", "BatchMode=yes", host, "exec", "python3", "-", *args], open(CENTRAL, "rb")
         self.host = host
         self.p = subprocess.Popen(argv, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if stdin is not subprocess.DEVNULL:
