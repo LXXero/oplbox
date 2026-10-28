@@ -143,7 +143,7 @@ static uint32_t ble_report_state(void);
 static const uint8_t *ble_report(uint32_t *n, uint32_t *serial);
 static int ble_run_ask(uint32_t wait_s, uint32_t *run);
 #include "ble_sysex.c"
-static uint8_t brep[8000];
+static uint8_t brep[16384];
 static uint32_t brep_n, brep_serial, bstate, bruns, breq, bedit, bpolls, brun_polls = 3, bwait = ~0u;
 static void ble_run_ends(void)
 {

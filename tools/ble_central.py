@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """A BlueZ central for the FM-1's Bluetooth test run (docs/BLUETOOTH_PAGE.md "A central on the bench").
 
-  ble_central.py --stack ADDR [--trials ADDR,ADDR,...] [--timeout S] [--json]
+  ble_central.py --stack ADDR [--trials ADDR,ADDR,...] [--timeout S] [--tries N] [--json]
 
 Runs on a Linux host with BlueZ (bluetoothctl) and, for the MIDI part, BlueZ's MIDI support and alsa-utils (aseqdump,
 aseqsend). It scans (LE) and logs every advertisement it hears from the given addresses, with the time it first heard
@@ -19,6 +19,11 @@ bluetoothctl says "Connection successful" on LE once its controller has sent the
 peripheral got it. So no MIDI port after a connect is first a question of the connection: with no GATT services resolved
 (ServicesResolved: yes never came) or a drop, the connection never came up on the FM-1's side, and the result says so;
 only with the services resolved and still no port is it BlueZ's MIDI side.
+
+A connection that drops (or fails, or resolves no GATT services) before the MIDI port comes is tried again, up to --tries
+connects in all (default 6): the FM-1's PAL runs its next window setup in each new connection (firmware/ble/cordio_port/
+pal_fm1.h), so one bench run tries them in turn. attempts in the JSON lists each: at (seconds from the start), connected,
+services, dropped, error; the other fields are the last attempt's.
 
 tools/fm1_ble_report.py --run --central HOST starts this on HOST over ssh (`ssh HOST python3 - ARGS` with this file on
 stdin), so the run on the FM-1 and the central's side come back as one report. Exit code 0 when it finished (whatever
@@ -38,7 +43,7 @@ import time
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x01|\x02|\r")
 DEVICE = re.compile(r"\[(NEW|CHG|DEL)\]\s+Device\s+([0-9A-Fa-f:]{17})\s*(.*)")
 PORT = re.compile(r"^\s*(\d+):(\d+)\s+(.*?)\s{2,}(.*)$")
-STEP = {"connect": 25.0, "port": 10.0, "notify": 15.0, "settle": 0.5, "quit": 3.0}   # seconds; the tests shorten them
+STEP = {"connect": 25.0, "port": 10.0, "notify": 15.0, "settle": 0.5, "quit": 3.0, "again": 1.0}   # seconds; the tests shorten them
 
 
 class Ctl:
@@ -101,13 +106,61 @@ def seq_ports():
     return ports
 
 
+def connect_once(a, ctl, res, stack, end, ports0, device, at, log):
+    """one connect: True once BlueZ says connected (then the wait for the MIDI port, a drop, or services); the attempt
+    goes into res["attempts"]"""
+    t0 = time.monotonic()
+    att = {"at": at(t0), "connected": False, "services": False, "dropped": None}
+    res["attempts"].append(att)
+    ctl.send(f"connect {stack}")
+    log(f"{at(t0):6.2f} connecting to {stack} (attempt {len(res['attempts'])} of {a.tries})")
+    for t, line in ctl.lines(min(end, time.monotonic() + STEP["connect"])):
+        if line is None:
+            break
+        device(t, line)
+        if re.search(r"ServicesResolved:\s*yes", line):
+            res["services"] = True
+        if "Connection successful" in line or re.search(r"Connected:\s*yes", line):
+            res["connected"] = True
+            break
+        if "Failed to connect" in line or "not available" in line:
+            res["errors"].append(f"connect: {line}")
+            att["error"] = line.strip()
+            break
+    if not res["connected"]:
+        att.setdefault("error", "no answer")
+        return False
+    att["connected"] = True
+    t_conn = time.monotonic()
+    log(f"{at(t_conn):6.2f} connected")
+    port_end = min(end, t_conn + STEP["port"])
+    while time.monotonic() < port_end and not res["port"] and res["dropped"] is None:
+        for t, line in ctl.lines(min(port_end, time.monotonic() + 0.2)):     # BlueZ's word on the connection meanwhile
+            if line is None:
+                break
+            device(t, line)
+            if re.search(r"ServicesResolved:\s*yes", line):
+                res["services"] = True
+            if re.search(r"Connected:\s*no", line):
+                res["dropped"] = round(t - t_conn, 2)
+                log(f"{at(t):6.2f} BlueZ dropped the connection")
+                break
+        if ports0 is not None and res["dropped"] is None:
+            new = {k: v for k, v in (seq_ports() or {}).items() if k not in ports0}
+            if new:
+                res["port"] = sorted(new)[0]
+                res["port_name"] = new[res["port"]]
+    att["services"], att["dropped"] = res["services"], res["dropped"]
+    return True
+
+
 def run(a, log):
     t0 = time.monotonic()
     end = t0 + a.timeout
     stack = a.stack.upper()
     watch = {stack, *(x.upper() for x in a.trials)}
     res = {"seen": {}, "stack_seen": False, "connected": False, "services": False, "dropped": None, "port": None,
-           "sent": False, "received": [], "errors": []}
+           "sent": False, "received": [], "errors": [], "attempts": []}
 
     def at(t):
         return round(t - t0, 2)
@@ -151,43 +204,26 @@ def run(a, log):
             res["errors"].append(f"the stack's address {stack} was not heard in {a.timeout:g} s")
             return res
         ctl.send("scan off")
-        ctl.send(f"connect {stack}")
-        log(f"{at(time.monotonic()):6.2f} connecting to {stack}")
-        for t, line in ctl.lines(min(end, time.monotonic() + STEP["connect"])):
-            if line is None:
-                break
-            device(t, line)
-            if re.search(r"ServicesResolved:\s*yes", line):
-                res["services"] = True
-            if "Connection successful" in line or re.search(r"Connected:\s*yes", line):
-                res["connected"] = True
-                break
-            if "Failed to connect" in line or "not available" in line:
-                res["errors"].append(f"connect: {line}")
+        for n in range(a.tries):
+            if n:
+                if res["connected"] and res["dropped"] is None:     # up, but no services: close it before the next
+                    ctl.send(f"disconnect {stack}")
+                    for _, line in ctl.lines(time.monotonic() + STEP["quit"]):
+                        if line is None or "Successful disconnected" in line or re.search(r"Connected:\s*no", line or ""):
+                            break
+                time.sleep(STEP["again"])
+                for k in ("connected", "services", "port"):
+                    res[k] = False if k != "port" else None
+                res["dropped"] = None
+                res["errors"] = [e for e in res["errors"] if not e.startswith("connect:")]
+            if not connect_once(a, ctl, res, stack, end, ports0, device, at, log):
+                continue
+            if res["port"] or (res["services"] and res["dropped"] is None) or time.monotonic() >= end:
                 break
         if not res["connected"]:
             if not any(e.startswith("connect:") for e in res["errors"]):
                 res["errors"].append("connect: no answer")
             return res
-        t_conn = time.monotonic()
-        log(f"{at(t_conn):6.2f} connected")
-        port_end = min(end, t_conn + STEP["port"])
-        while time.monotonic() < port_end and not res["port"] and res["dropped"] is None:
-            for t, line in ctl.lines(min(port_end, time.monotonic() + 0.2)):     # BlueZ's word on the connection meanwhile
-                if line is None:
-                    break
-                device(t, line)
-                if re.search(r"ServicesResolved:\s*yes", line):
-                    res["services"] = True
-                if re.search(r"Connected:\s*no", line):
-                    res["dropped"] = round(t - t_conn, 2)
-                    log(f"{at(t):6.2f} BlueZ dropped the connection")
-                    break
-            if ports0 is not None and res["dropped"] is None:
-                new = {k: v for k, v in (seq_ports() or {}).items() if k not in ports0}
-                if new:
-                    res["port"] = sorted(new)[0]
-                    res["port_name"] = new[res["port"]]
         if res["dropped"] is not None:
             res["errors"].append(f"the connection never came up on the FM-1's side: BlueZ dropped it {res['dropped']:g} s "
                                  f"after sending CONNECT_IND, {'after' if res['services'] else 'before'} resolving GATT services "
@@ -248,10 +284,14 @@ def main(argv=None):
     ap.add_argument("--stack", required=True, metavar="ADDR", help="the address the stack advertises from")
     ap.add_argument("--trials", default="", metavar="ADDR,...", help="more addresses to log (the air trials)")
     ap.add_argument("--timeout", type=float, default=120.0, metavar="S", help="the most it runs (default 120 s)")
+    ap.add_argument("--tries", type=int, default=7, metavar="N",
+                    help="connects in all when one drops before the MIDI port (default 7: the PAL's setups in turn)")
     ap.add_argument("--json", action="store_true", help="the result as JSON on the last line of stdout")
     ap.add_argument("--bluetoothctl", default="bluetoothctl", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
     a.trials = [x for x in a.trials.split(",") if x]
+    if not 1 <= a.tries <= 20:
+        ap.error("--tries takes 1-20")
     for x in [a.stack, *a.trials]:
         if not re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", x):
             ap.error(f"not an address: {x}")

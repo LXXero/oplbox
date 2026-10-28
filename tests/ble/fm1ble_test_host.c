@@ -84,7 +84,17 @@ static void finish(fm1ble_run *r, int i)
         break;
     case FM1BLE_STEP_ADV_SET: note(s, "4 commands accepted"); r->ctr[FM1BLE_C_TXPWR] = 6; break;
     case FM1BLE_STEP_ADV_AIR: note(s, "37 advertising events in 1 s"); r->ctr[FM1BLE_C_EVENTS] = 37; r->ctr[FM1BLE_C_TX_FLIPS] = 37;
-        r->ctr[FM1BLE_C_AIR_TRIALS] = 7; r->ctr[FM1BLE_C_PAL_ADV_EVENTS] = 12; break;
+        r->ctr[FM1BLE_C_AIR_TRIALS] = 7; r->ctr[FM1BLE_C_PAL_ADV_EVENTS] = 12;
+        /* the window probe (made up): 84 events, each setup's four cells, the two delays and windows, the anchor reads */
+        r->ctr[FM1BLE_C_PROBE_N] = 84;
+        for (int k = 0; k < 28; k++)
+            r->ctr[FM1BLE_C_PROBE + k] = (uint32_t)(uint16_t)(60 + 10 * k) | (uint32_t)(uint16_t)(90 + 10 * k) << 16;
+        r->ctr[FM1BLE_C_PROBE + 27] = 0x7FFFu | 0x7FFFu << 16;
+        r->ctr[FM1BLE_C_PROBE_D] = 1400u | 1800u << 16;
+        r->ctr[FM1BLE_C_PROBE_W] = 60u | 2500u << 16;
+        r->ctr[FM1BLE_C_CLK_IDLE] = 0x0123u | 0x0124u << 16;
+        r->ctr[FM1BLE_C_CLK_ARM + 2] = 0x8096u | 0x0000u << 16;
+        break;
     case FM1BLE_STEP_CONNECT:
         if (!g_connect) {
             s->result = FM1BLE_FAIL;
@@ -95,6 +105,14 @@ static void finish(fm1ble_run *r, int i)
             put(s, cc, sizeof cc);
             note(s, "connected, interval 30 ms, MTU 185");
             r->ctr[FM1BLE_C_RX_CONN_IND] = 1; r->ctr[FM1BLE_C_RX_LEN] = 34; r->ctr[FM1BLE_C_RX_TYPE] = 5;
+            /* two connections (made up): padw missed all 6 events, padb received 38 of 40 */
+            r->ctr[FM1BLE_C_PAL_CONNS] = 2; r->ctr[FM1BLE_C_PAL_GOOD] = 0xFFu;
+            r->ctr[FM1BLE_C_NIMBLE_CONNS] = 2u | 1u << 16;
+            r->ctr[FM1BLE_C_CONN_SUM] = 6u | 6u << 4; r->ctr[FM1BLE_C_CONN_SUM + 1] = 0x80008000u;
+            r->ctr[FM1BLE_C_CONN_SUM + 2] = 262u | 846u << 16;
+            r->ctr[FM1BLE_C_CONN_SUM + 3] = 5u | 40u << 4 | 38u << 16; r->ctr[FM1BLE_C_CONN_SUM + 4] = 31u | 29u << 16;
+            r->ctr[FM1BLE_C_CONN_SUM + 5] = 0x80008000u;
+            r->ctr[FM1BLE_C_CONN_RX_WORDS] = 0x00090801u; r->ctr[FM1BLE_C_PAL_SET4 + 2] = 40u | 38u << 16;
         }
         break;
     case FM1BLE_STEP_MIDI_IN: { static const uint8_t m[] = { 0x81, 0x85, 0x90, 0x3C, 0x64 };

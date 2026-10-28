@@ -183,6 +183,13 @@ check(rc == 1 and "no Bluetooth test run" in err, f"--read before any run: exit 
 d = os.path.join(OUT, "ble_report")
 rc, out, err = tool(dev, "--run", "--wait", "3", "--out", d)
 check(rc == 0 and "Bluetooth test run 1" in out and "CONNECT  PASS" in out, f"--run: exit {rc} {err}")
+check("WINDOW PROBE (no central: 84 connection events" in out and "  padw      300..330     310..340     320..350        never" in out
+      and "index 7 8096 0000" in out, f"--run: the window probe's table and the anchor reads:\n{out}")
+check("connections: 2 started on the PAL, NimBLE 2 connects and 1 disconnects; kept setup: none" in out and
+      "connection 1: padw, 6 events, 0 received; missed events ended 262..846 us after dueUsec" in out and
+      "connection 2: padb, 40 events, 38 received; packets 31 (first) and 29 (last) us after dueUsec" in out and
+      "(each connection runs one window setup, the next connection the next one)" in out,
+      f"--run: each connection's summary:\n{out}")
 check(open(wait_out).read() == "3\n", "--wait 3: the FM-1 was not told 3 s")
 check(open(os.path.join(d, "report.txt")).read() == rep["text"], "--out: report.txt is not the report's text")
 check(open(os.path.join(d, "report.bin"), "rb").read()[10:] == raw[10:], "--out: report.bin is not the report")

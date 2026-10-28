@@ -587,9 +587,13 @@ static void op_buf(fm1ble *b, int k, const uint8_t *pdu, uint16_t n, int adv, ui
     }
 }
 
+/* how op_arm writes the counter (fm1ble.h FM1BLE_CONN_PADJ, PADB) */
+#define ARM_JIELI       1u                       /* the slots minus one, the bit offset before them (__set_anchor_cnt) */
+#define ARM_BIT15       2u                       /* the bit offset | 0x8000 (__hw_set_widen_drift) */
+
 /* The common part of a connection event: the RX buffers, the state, a one-shot interval, the channel, interrupts, the
  * counter */
-static void op_arm(fm1ble *b, uint32_t state, uint32_t delay_us)
+static void op_arm(fm1ble *b, uint32_t state, uint32_t delay_us, uint32_t how)
 {
     /* the counter: whole slots, then the bit offset inside the slot. Where the slot boundaries lie against this write is
      * the baseband's own clock [measure on FM-1]: taken as a boundary at the write, so 0 slots and an offset is "this
@@ -610,10 +614,19 @@ static void op_arm(fm1ble *b, uint32_t state, uint32_t delay_us)
     clr(FM1BLE_BB_CON0, BIT(2));
     wr(FM1BLE_BB_IRQ_CLR, BIT(HW_ID) | BIT(HW_ID + 8u));
     set(FM1BLE_BB_IRQ_EN, BIT(HW_ID) | BIT(HW_ID + 8u));
-    ax_wr(FM1BLE_AX_BITOFF, 0);                      /* D.2 __set_anchor_cnt, then the bit offset inside the slot */
-    ax_wr(FM1BLE_AX_CNT_LO, slots & 0xFFFFu);
-    ax_wr(FM1BLE_AX_BITOFF, bitoff);
-    ax_wr(FM1BLE_AX_CNT_HI, (slots >> 16) | 0x8000u);
+    if (how & ARM_JIELI) {                           /* __set_anchor_cnt's writes, the bit offset first */
+        uint32_t cnt = slots ? slots - 1u : 0u;
+        ax_wr(FM1BLE_AX_BITOFF, (how & ARM_BIT15) ? bitoff | 0x8000u : bitoff);
+        ax_wr(FM1BLE_AX_CNT_LO, 0);
+        ax_wr(FM1BLE_AX_CNT_HI, 0);
+        ax_wr(FM1BLE_AX_CNT_LO, cnt & 0xFFFFu);
+        ax_wr(FM1BLE_AX_CNT_HI, (cnt >> 16) | 0x8000u);
+    } else {
+        ax_wr(FM1BLE_AX_BITOFF, 0);                  /* D.2 __set_anchor_cnt, then the bit offset inside the slot */
+        ax_wr(FM1BLE_AX_CNT_LO, slots & 0xFFFFu);
+        ax_wr(FM1BLE_AX_BITOFF, bitoff);
+        ax_wr(FM1BLE_AX_CNT_HI, (slots >> 16) | 0x8000u);
+    }
     b->op_state = (uint8_t)state;
     b->op_on = 1;
 }
@@ -637,6 +650,8 @@ int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n, 
     e16(b, FM1BLE_E_WINCNTL0, FM1BLE_WIN0);
     e16(b, FM1BLE_E_WINCNTL1, 0);
     e16(b, FM1BLE_E_WINCNTL2, adv_win(b));
+    e16(b, FM1BLE_E_WIDEN0, 0);                       /* the open's widening (E.3), which a connection event changes: the */
+    e16(b, FM1BLE_E_WIDEN1, 0x51E7u);                 /* advertising after a connection as the first one */
     e16(b, FM1BLE_E_FILTERCNTL, 0);
     e16(b, FM1BLE_E_RXPTR0, (uint32_t)b->rx[0] + FM1BLE_RX_HDR);
     e16(b, FM1BLE_E_RXPTR1, (uint32_t)b->rx[1] + FM1BLE_RX_HDR);
@@ -663,6 +678,8 @@ int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n, 
 
 int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
 {
+    uint32_t how = 0, win0 = FM1BLE_WIN0;
+
     if (!b->link_open || b->adv_on)
         return FM1BLE_ESTATE;
     if (b->op_chan > 36)
@@ -674,11 +691,17 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
     if (b->conn_setup == FM1BLE_CONN_KEEP) {          /* the open's values (E.3), which 58cadc5 left in place */
         e16(b, FM1BLE_E_WIDEN0, 0);
         e16(b, FM1BLE_E_WIDEN1, 0x51E7u);
-    } else if (b->conn_setup == FM1BLE_CONN_PAD) {
+    } else if (b->conn_setup == FM1BLE_CONN_PAD || b->conn_setup >= FM1BLE_CONN_PADJ) {   /* PAD, and PADJ, PADB, PADW */
         e16(b, FM1BLE_E_WIDEN0, 0);
         e16(b, FM1BLE_E_WIDEN1, 0x5000u);
         delay_us = delay_us > FM1BLE_CONN_PAD_US ? delay_us - FM1BLE_CONN_PAD_US : 0u;
         window_us += 2u * FM1BLE_CONN_PAD_US;
+        if (b->conn_setup >= FM1BLE_CONN_PADJ)
+            how |= ARM_JIELI;
+        if (b->conn_setup >= FM1BLE_CONN_PADB)
+            how |= ARM_BIT15;
+        if (b->conn_setup == FM1BLE_CONN_PADW)
+            win0 = window_us;
     } else if (b->conn_setup == FM1BLE_CONN_WIDEN) {
         uint32_t w = window_us / 2u;                 /* __set_widen(w): w / 625 slots, w % 625 | 0x5000 */
         e16(b, FM1BLE_E_WIDEN0, w / 625u);
@@ -690,10 +713,10 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
         delay_us = delay_us > FM1BLE_CONN_WIDE_US ? delay_us - FM1BLE_CONN_WIDE_US : 0u;
         window_us += 2u * FM1BLE_CONN_WIDE_US;
     }
-    e16(b, FM1BLE_E_WINCNTL0, FM1BLE_WIN0);
-    e16(b, FM1BLE_E_WINCNTL1, 0);
+    e16(b, FM1BLE_E_WINCNTL0, win0 & 0xFFFFu);       /* PADW: the window, as __hw_set_widen_drift writes it; else 0x32 */
+    e16(b, FM1BLE_E_WINCNTL1, win0 >> 16);
     e16(b, FM1BLE_E_WINCNTL2, window_us > 0xFFFFu ? 0xFFFFu : window_us);
-    op_arm(b, 7u, delay_us);
+    op_arm(b, 7u, delay_us, how);
     return FM1BLE_OK;
 }
 
@@ -711,6 +734,14 @@ int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n)
         op_buf(b, 0, pdu, n, 0, 0);
     fm1ble_port_sync();
     return FM1BLE_OK;
+}
+
+uint32_t fm1ble_anchor_rd(fm1ble *b, uint32_t index)
+{
+    if (!b->link_open)
+        return 0;
+    wr(FM1BLE_BB_ANCHOR_CMD, (index & 0x1Fu) << 10 | HW_ID << 4 | 2u);  /* D.2's read; widen_drift writes index 0x10 */
+    return rd(FM1BLE_BB_ANCHOR_RD) & 0xFFFFu;
 }
 
 void fm1ble_op_stop(fm1ble *b)

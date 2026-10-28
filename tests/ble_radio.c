@@ -352,6 +352,55 @@ static void rx_setup(void)
     fm1ble_op_stop(&B);
     check(fm1ble_op_conn(&B, 1000, 70000) == FM1BLE_OK && e16(FM1BLE_E_WINCNTL2) == 0xFFFFu, "a window over 16 bits: 65535");
     fm1ble_op_stop(&B);
+    /* the IR's three (fm1ble.h FM1BLE_CONN_PADJ, PADB, PADW), at 2000 us (the padded window 625 us earlier: 1375 = 2 slots
+     * and 125 us) and a 52 us window: the anchor file as __set_anchor_cnt writes it (the bit offset, the count cleared,
+     * then the slots minus one with the enable last), bit 15 on the offset from padb, the window in WINCNTL0 in padw */
+    {
+        static const struct { uint8_t setup; uint16_t bitoff, win0; const char *what; } J[3] = {
+            { FM1BLE_CONN_PADJ, 125u, 0x32u, "padj: the slots minus one (1), the bit offset first, WINCNTL0 0x32" },
+            { FM1BLE_CONN_PADB, 0x8000u | 125u, 0x32u, "padb: as padj, the bit offset with bit 15" },
+            { FM1BLE_CONN_PADW, 0x8000u | 125u, 52u + 1250u, "padw: as padb, the window (1302 us) in WINCNTL0 too" },
+        };
+        int i, j;
+        for (i = 0; i < 3; i++) {
+            int at_bo = -1, at_lo0 = -1, at_hi0 = -1, at_lo = -1, at_hi = -1;
+            fm1ble_op_conn_setup(&B, J[i].setup);
+            bbm.nlog = 0;
+            check(fm1ble_op_conn(&B, 2000, 52) == FM1BLE_OK, J[i].what);
+            for (j = 0; j + 1 < bbm.nlog; j++) {         /* the anchor writes: 0x28020 = value, then 0x2801C = index << 10 | 5 */
+                uint32_t idx = bbm.log[j + 1].val >> 10 & 15u, v = bbm.log[j].val;
+                if (bbm.log[j].addr != FM1BLE_BB_ANCHOR_WR || bbm.log[j + 1].addr != FM1BLE_BB_ANCHOR_CMD)
+                    continue;
+                if (idx == FM1BLE_AX_BITOFF && at_bo < 0 && v == J[i].bitoff)
+                    at_bo = j;
+                else if (idx == FM1BLE_AX_CNT_LO && v == 0 && at_lo0 < 0)
+                    at_lo0 = j;
+                else if (idx == FM1BLE_AX_CNT_HI && v == 0 && at_hi0 < 0)
+                    at_hi0 = j;
+                else if (idx == FM1BLE_AX_CNT_LO && v == 1u)
+                    at_lo = j;
+                else if (idx == FM1BLE_AX_CNT_HI && v == 0x8000u)
+                    at_hi = j;
+            }
+            check(at_bo >= 0 && at_lo0 > at_bo && at_hi0 > at_lo0 && at_lo > at_hi0 && at_hi > at_lo && bbm.ax[FM1BLE_AX_CNT_LO] == 1u &&
+                  e16(FM1BLE_E_WINCNTL0) == J[i].win0 && e16(FM1BLE_E_WINCNTL1) == 0 && e16(FM1BLE_E_WINCNTL2) == 52u + 1250u &&
+                  e16(FM1BLE_E_WIDEN0) == 0 && e16(FM1BLE_E_WIDEN1) == 0x5000u, J[i].what);
+            fm1ble_op_stop(&B);
+        }
+        fm1ble_op_conn_setup(&B, FM1BLE_CONN_PAD);
+        check(fm1ble_op_conn(&B, 2000, 52) == FM1BLE_OK && bbm.ax[FM1BLE_AX_CNT_LO] == 2u && bbm.ax[FM1BLE_AX_BITOFF] == 125u &&
+              e16(FM1BLE_E_WINCNTL0) == 0x32u, "pad as before: the slots themselves (2), the bit offset without bit 15, WINCNTL0 0x32");
+        fm1ble_op_stop(&B);
+        /* advertising after a connection event: the open's widening again (padw left 0x5000, no widening) */
+        check(fm1ble_op_chan(&B, FM1BLE_ACCESS_ADV, 0x555555u, 37) == FM1BLE_OK && fm1ble_op_adv(&B, 1000, pdu, 8, NULL, 0) == FM1BLE_OK &&
+              e16(FM1BLE_E_WIDEN0) == 0 && e16(FM1BLE_E_WIDEN1) == 0x51E7u && e16(FM1BLE_E_WINCNTL0) == 0x32u,
+              "op_adv after a connection event: WIDEN back to the open's 0 and 0x51E7, WINCNTL0 0x32");
+        fm1ble_op_stop(&B);
+        /* the anchor file read back (D.2): 0x2801C = index << 10 | 2, the value from 0x28024 */
+        bbm.ax[FM1BLE_AX_BITOFF] = 0x1234u;
+        check(fm1ble_anchor_rd(&B, FM1BLE_AX_BITOFF) == 0x1234u && bb_model_reg(FM1BLE_BB_ANCHOR_CMD) == (FM1BLE_AX_BITOFF << 10 | 2u),
+              "anchor_rd: the read command, the value from 0x28024");
+    }
 }
 
 /* ---- the test run ---- */

@@ -38,8 +38,8 @@ const char *fm1ble_ctr_name(int ctr) { return ctr >= 0 && ctr < FM1BLE_N_CTR ? g
 static fm1ble g_b;
 static uint32_t g_blk[FM1BLE_BLOCK_SIZE / 4u];
 
-enum { P_RADIO, P_BLOCK, P_ADV, P_SETTLE, P_WINDOW, P_TRIAL_END, P_STACK, P_HCI, P_WAIT_CONN, P_MIDI_IN, P_MIDI_OUT,
-       P_LEAVE, P_END };
+enum { P_RADIO, P_BLOCK, P_ADV, P_SETTLE, P_WINDOW, P_TRIAL_END, P_PROBE, P_STACK, P_HCI, P_WAIT_CONN, P_MIDI_IN,
+       P_MIDI_OUT, P_LEAVE, P_END };
 #define ALL_TRIALS (FM1BLE_TRIALS + FM1BLE_RX_TRIALS)
 static uint8_t g_phase, g_variant, g_sent, g_left, g_trial, g_trial_bits, g_adv_err, g_rearm_used, g_stack_rx;
 static uint32_t g_phase_t, g_wait_ms, g_nocp0;
@@ -51,6 +51,9 @@ static const struct { uint8_t agc; uint16_t win; } RXT[FM1BLE_RX_TRIALS] = { { 0
 static struct { uint8_t got; uint32_t stat, pkt, bytes; } g_rx[FM1BLE_RX_TRIALS];
 static uint32_t g_agc_ctl, g_agc_rssi, g_rx_stat1;
 static int g_rf_common;                          /* what the shared radio's init returned the first time (trial 1) */
+/* the window probe (fm1ble_test.h FM1BLE_PROBE_*): events run, each cell's earliest and latest end, the anchor reads */
+#define PROBE_CELLS (FM1BLE_CONN_SETUPS * 4u)
+static uint32_t g_probe, g_pr[PROBE_CELLS], g_clk[8];
 
 static void note(fm1ble_step *s, const char *t)
 {
@@ -209,6 +212,23 @@ static void counters(fm1ble_run *r)
         r->ctr[FM1BLE_C_PAL_LOG + 3u * k + 1u] = p->log[k][1];
         r->ctr[FM1BLE_C_PAL_LOG + 3u * k + 2u] = p->log[k][2];
     }
+    for (k = 4; k < FM1BLE_CONN_SETUPS; k++) {
+        r->ctr[FM1BLE_C_PAL_SET4 + 2u * (k - 4u)] = sat16(p->set_events[k]) | sat16(p->set_rx[k]) << 16;
+        r->ctr[FM1BLE_C_PAL_SET4 + 2u * (k - 4u) + 1u] = s16(p->set_arr_min[k]) | s16(p->set_arr_max[k]) << 16;
+    }
+    r->ctr[FM1BLE_C_PAL_CONNS] = p->conns;
+    r->ctr[FM1BLE_C_PAL_GOOD] = p->good;
+    for (k = 0; k < 3u * PAL_FM1_CONNS; k++)
+        r->ctr[FM1BLE_C_CONN_SUM + k] = p->conn_sum[k / 3u][k % 3u];
+    r->ctr[FM1BLE_C_NIMBLE_CONNS] = sat16(ble_nimble_state()->connects) | sat16(ble_nimble_state()->disconnects) << 16;
+    /* the window probe */
+    r->ctr[FM1BLE_C_PROBE_N] = g_probe;
+    for (k = 0; k < 8u; k++)
+        r->ctr[FM1BLE_C_CLK_IDLE + k] = g_clk[k];
+    for (k = 0; k < PROBE_CELLS; k++)
+        r->ctr[FM1BLE_C_PROBE + k] = g_pr[k];
+    r->ctr[FM1BLE_C_PROBE_D] = FM1BLE_PROBE_D0 | FM1BLE_PROBE_D1 << 16;
+    r->ctr[FM1BLE_C_PROBE_W] = FM1BLE_PROBE_W0 | FM1BLE_PROBE_W1 << 16;
 }
 
 /* the addresses: made-up static random ones (the FM-1 has no device address: docs/BLUETOOTH_RADIO.md PalCfgLoadData),
@@ -239,6 +259,10 @@ void fm1ble_test_begin(fm1ble_run *r, uint32_t now_ms, uint32_t wait_ms)
     g_agc_ctl = g_agc_rssi = g_rx_stat1 = 0;
     g_stack_rx = 0xFFu;
     g_rf_common = 0;
+    g_probe = 0;
+    memset(g_clk, 0, sizeof g_clk);
+    for (int k = 0; k < (int)PROBE_CELLS; k++)
+        g_pr[k] = PAL_FM1_LOG_NONE | PAL_FM1_LOG_NONE << 16;
     fm1ble_rx_setup(&g_b, 0, 0);                     /* the air trials: the receive setup up to 3b39ab4 (fm1ble_test.h) */
     r->state = FM1BLE_RUNNING;
     r->t0 = r->now = now_ms;
@@ -335,6 +359,59 @@ static void air_step(fm1ble_run *r)
     } else {
         finish(r, FM1BLE_STEP_ADV_AIR, FM1BLE_FAIL, "no event flag in the baseband, any trial");
     }
+}
+
+/* the anchor file's four indices read twice, FM1BLE_PROBE_CLK_US apart (from t0 + at): the first in bits 15-0 */
+static void clk_reads(uint32_t *w, uint32_t t0, uint32_t at)
+{
+    static const uint8_t idx[4] = { 0, 0xE, 7, 0x10 };
+    uint32_t k, pass;
+    for (pass = 0; pass < 2u; pass++) {
+        while ((int32_t)(fm1ble_port_now_us() - (t0 + at + pass * FM1BLE_PROBE_CLK_US)) < 0)
+            fm1ble_port_delay_us(2);
+        for (k = 0; k < 4u; k++)
+            w[k] |= (fm1ble_anchor_rd(&g_b, idx[k]) & 0xFFFFu) << (16u * pass);
+    }
+}
+
+/* One event of the window probe (fm1ble_test.h): armed with the cell's setup, delay and window, waited for until its end
+ * flag or FM1BLE_PROBE_MAX_US; the end against the delay goes into the cell's earliest and latest */
+static void probe_event(void)
+{
+    uint32_t cell = g_probe / FM1BLE_PROBE_REPS, s = cell / 4u, d = (cell & 2u) ? FM1BLE_PROBE_D1 : FM1BLE_PROBE_D0;
+    uint32_t w = (cell & 1u) ? FM1BLE_PROBE_W1 : FM1BLE_PROBE_W0, t0, t, v, lo, hi;
+    int32_t end = 0x7FFF;
+    fm1ble_pkt p;
+
+    if (!g_probe)
+        clk_reads(&g_clk[0], fm1ble_port_now_us(), 0);
+    fm1ble_op_chan(&g_b, FM1BLE_PROBE_AA, 0x555555u, FM1BLE_PROBE_CHAN);
+    fm1ble_op_conn_setup(&g_b, (uint8_t)s);
+    t0 = fm1ble_port_now_us();
+    if (fm1ble_op_conn(&g_b, d, w) == FM1BLE_OK) {
+        if (!g_probe)
+            clk_reads(&g_clk[4], t0, 100u);
+        for (;;) {
+            t = fm1ble_port_now_us();
+            if (fm1ble_op_service(&g_b, &p) & FM1BLE_EV_DONE) {
+                end = (int32_t)(t - t0) - (int32_t)d;
+                break;
+            }
+            if (t - t0 > FM1BLE_PROBE_MAX_US)
+                break;
+            fm1ble_port_delay_us(2);
+        }
+        fm1ble_op_stop(&g_b);
+    }
+    v = s16(end);
+    lo = g_pr[cell] & 0xFFFFu;
+    hi = g_pr[cell] >> 16;
+    if (lo == PAL_FM1_LOG_NONE || (int16_t)v < (int16_t)lo)
+        lo = v;
+    if (hi == PAL_FM1_LOG_NONE || (int16_t)v > (int16_t)hi)
+        hi = v;
+    g_pr[cell] = lo | hi << 16;
+    g_probe++;
 }
 
 int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
@@ -457,10 +534,15 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
                 g_phase = P_ADV;
             }
         } else {
-            g_phase = P_STACK;
+            g_phase = (g_tr[0].events || g_tr[1].events || g_tr[2].events) ? P_PROBE : P_STACK;
         }
         break;
     }
+    case P_PROBE:                                    /* the window probe, one event a poll */
+        probe_event();
+        if (g_probe >= PROBE_CELLS * FM1BLE_PROBE_REPS)
+            g_phase = P_STACK;
+        break;
     case P_STACK:                                    /* adv_air's result; the stack takes over on the radio that sent */
         air_step(r);
         if (!g_tr[0].events && !g_tr[1].events && !g_tr[2].events) {
@@ -573,10 +655,23 @@ int fm1ble_test_poll(fm1ble_run *r, uint32_t now_ms)
             g_phase = P_MIDI_OUT;
             g_phase_t = now_ms;
             g_sent = 0;
+        } else if (n->state != BLE_NIMBLE_CONNECTED && n->connects < FM1BLE_CONN_TRIES && now_ms - g_phase_t < g_wait_ms) {
+            ;                                        /* the central left: it may connect again, on the PAL's next setup */
         } else if (n->state != BLE_NIMBLE_CONNECTED || now_ms - g_phase_t >= g_wait_ms) {
+            char t[FM1BLE_NOTE];
+            uint32_t c = n->connects > 99u ? 99u : n->connects;
             put32(s, n->writes);
             put32(s, n->rx_bad);
-            finish(r, FM1BLE_STEP_MIDI_IN, FM1BLE_FAIL, n->state != BLE_NIMBLE_CONNECTED ? "the central left" :
+            put32(s, n->connects);
+            memcpy(t, "the central left (N connects)", 30);
+            if (c > 9u) {
+                memmove(t + 19, t + 18, 12);
+                t[18] = (char)('0' + c / 10u);
+                t[19] = (char)('0' + c % 10u);
+            } else {
+                t[18] = (char)('0' + c);
+            }
+            finish(r, FM1BLE_STEP_MIDI_IN, FM1BLE_FAIL, n->state != BLE_NIMBLE_CONNECTED ? t :
                    n->writes ? "writes came, no MIDI in them" : "no write: play a note on the phone");
             skip_rest(r, FM1BLE_STEP_MIDI_OUT, "needs MIDI in");
             g_phase = P_LEAVE;

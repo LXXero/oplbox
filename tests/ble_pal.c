@@ -101,8 +101,9 @@ static int cmd(uint16_t op, const uint8_t *par, uint8_t n)
  * the window setups it may try (pal_fm1_cfg conn_setups); lead: the scheduler's timer fires PAL_FM1_TIMER_LEAD_US
  * early (pal_fm1_cfg no_timer_lead when 0). Returns the
  * connection events the model ran whose packet fell outside the peripheral's window; the central writes, the host
- * sends, the central ends it. */
-static uint32_t polled_conn(fm1ble *b, int busy, uint8_t setups, int lead, uint16_t *handle, int *data_ok)
+ * sends, the central ends it. polled_again: the next connection on the same attach (the PAL's count of connections goes
+ * on, so the next setup of the order runs). */
+static uint32_t polled_run(fm1ble *b, int attach, int busy, uint8_t setups, int lead, uint16_t *handle, int *data_ok)
 {
     static bb_air polled;
     pal_fm1_cfg pc;
@@ -118,7 +119,8 @@ static uint32_t polled_conn(fm1ble *b, int busy, uint8_t setups, int lead, uint1
     pc.no_busy_wait = (uint8_t)!busy;
     pc.conn_setups = setups;
     pc.no_timer_lead = (uint8_t)!lead;
-    pal_fm1_attach(&pc);
+    if (attach)
+        pal_fm1_attach(&pc);
     memset(&C, 0, sizeof C);
     buf[0] = 1;
     cmd(0x200A, buf, 1);
@@ -143,23 +145,35 @@ static uint32_t polled_conn(fm1ble *b, int busy, uint8_t setups, int lead, uint1
     return bbm.air_missed - missed0;
 }
 
+static uint32_t polled_conn(fm1ble *b, int busy, uint8_t setups, int lead, uint16_t *handle, int *data_ok)
+{
+    return polled_run(b, 1, busy, setups, lead, handle, data_ok);
+}
+
+static uint32_t polled_again(fm1ble *b, int busy, uint8_t setups, int lead, uint16_t *handle, int *data_ok)
+{
+    return polled_run(b, 0, busy, setups, lead, handle, data_ok);
+}
+
 static const uint8_t PERIPH[6] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 };   /* least significant first */
 
-/* The PAL's event log (pal_fm1.h) holds what each logged connection event did: a setup leaves only after PAL_FM1_MISSES
- * missed events in a row on it, the first event is marked, a packet's start lies before the event's end. 1 when it does. */
+/* a log entry's setup (pal_fm1.h: bits 7-6 and 14) */
+static uint32_t log_setup(uint32_t a) { return (a >> 6 & 3u) | (a >> 14 & 1u) << 2; }
+
+/* The PAL's event log (pal_fm1.h) holds what each logged connection event did: one setup for a whole connection (a new
+ * one only at an event marked first), at most PAL_FM1_LOG_PER events of each, a packet's start before the event's end.
+ * 1 when it does. */
 static int log_ok(const pal_fm1_stats *st)
 {
-    uint32_t k, miss = 0;
+    uint32_t k, run = 0;
     if (!st->log_n || !(st->log[0][0] & 1u << 13))
         return 0;
     for (k = 0; k < st->log_n; k++) {
         uint32_t a = st->log[k][0], b = st->log[k][1];
         int got = (a >> 8) & 1u;
-        if (k && ((a >> 6) & 3u) != ((st->log[k - 1][0] >> 6) & 3u) && !(a & 1u << 13) && miss != PAL_FM1_MISSES)
+        run = (a & 1u << 13) ? 1u : run + 1u;
+        if (run > PAL_FM1_LOG_PER || (k && !(a & 1u << 13) && log_setup(a) != log_setup(st->log[k - 1][0])))
             return 0;
-        if (k && ((a >> 6) & 3u) != ((st->log[k - 1][0] >> 6) & 3u))
-            miss = 0;
-        miss = got ? 0 : (miss == PAL_FM1_MISSES ? 1 : miss + 1);
         if (got && (b & 0xFFFFu) == PAL_FM1_LOG_NONE)
             return 0;
         if (got && (b >> 16) != PAL_FM1_LOG_NONE && (int16_t)(b >> 16) <= (int16_t)(b & 0xFFFFu))
@@ -362,12 +376,16 @@ int main(void)
         check(data_ok, "polled, waited through: the central's write reaches the host");
         check(st->resp_late == 0 && st->busy_waits >= 15 && st->resp_us_max < 150u,
               "polled, waited through: every response in before T_IFS");
-        check(st->setup_moves == 0 && st->set_rx[FM1BLE_CONN_WIDE] == st->conn_rx && st->set_arr_min[FM1BLE_CONN_WIDE] >= 0 &&
-              st->set_arr_max[FM1BLE_CONN_WIDE] <= (int32_t)(st->conn_timeout_us + 2u * FM1BLE_CONN_WIDE_US + 2600u),
-              "polled, waited through: the first setup of the order (wide) kept, each packet inside its window");
-        check(st->log_n == PAL_FM1_LOG && log_ok(st) && (st->log[0][0] & 1u << 8) && ((st->log[0][0] >> 6) & 3u) == FM1BLE_CONN_WIDE &&
+        check(st->setup_moves == 0 && st->set_rx[FM1BLE_CONN_PADW] == st->conn_rx && st->set_arr_min[FM1BLE_CONN_PADW] >= 0 &&
+              st->set_arr_max[FM1BLE_CONN_PADW] <= (int32_t)(st->conn_timeout_us + 2u * FM1BLE_CONN_WIDE_US + 2600u),
+              "polled, waited through: the first setup of the order (padw) for the whole connection, each packet inside its window");
+        check(st->log_n == PAL_FM1_LOG_PER && log_ok(st) && (st->log[0][0] & 1u << 8) && log_setup(st->log[0][0]) == FM1BLE_CONN_PADW &&
               (st->log[1][0] & 1u << 10) && (st->log[1][2] & 0xFFFFu) > FM1BLE_CONN_WIDE_US,
-              "the event log: the first events, each with its packet and a response sent, armed more than 1250 us ahead");
+              "the event log: a connection's first events, each with its packet and a response sent, armed more than 1250 us ahead");
+        check(st->conns == 1 && (st->conn_sum[0][0] & 0xFu) == FM1BLE_CONN_PADW && (st->conn_sum[0][0] >> 4 & 0xFFFu) == st->conn_ops &&
+              (st->conn_sum[0][0] >> 16) == st->conn_rx && (st->conn_sum[0][1] & 0xFFFFu) != PAL_FM1_LOG_NONE &&
+              (int16_t)(st->conn_sum[0][1] >> 16) >= 0 && (st->conn_sum[0][2] & 0xFFFFu) == PAL_FM1_LOG_NONE,
+              "the connection's summary: its setup, events, packets, the first and last packet's start, no missed event");
         /* the model runs an advertising event's channels in one step of its clock, so the gap is that step and the
          * CONNECT_IND's time on the air (848 us here), not the loop's 200 us */
         check(st->cind_gap_us > 0 && st->cind_gap_us <= 2000u, "the CONNECT_IND's poll gap is measured");
@@ -389,17 +407,57 @@ int main(void)
                 if ((int16_t)e >= (int32_t)(a >> 16) - 10 && (int16_t)e <= (int32_t)(a >> 16) + 210)
                     near++;
             }
-            check(ends >= 2 && near == ends, "the event log: a missed event ends where its window closed");
+            check(ends >= 1 && near == ends, "the event log: a missed event ends where its window closed");
         }
+        check((st->conn_sum[0][2] & 0xFFFFu) != PAL_FM1_LOG_NONE && (st->conn_sum[0][0] >> 16) < (st->conn_sum[0][0] >> 4 & 0xFFFu),
+              "the summary: the missed events' ends");
         run_us(2500000);                    /* Cordio's supervision timeout ends that one */
-        /* not waited through, keep and widen: PAL_FM1_MISSES missed events in a row move to the next setup */
-        missed = polled_conn(&B, 0, 1u << FM1BLE_CONN_KEEP | 1u << FM1BLE_CONN_WIDEN, 0, &h, &data_ok);
-        st = pal_fm1_state();
-        check(st->setup_moves >= 1 && log_ok(st) && st->set_events[FM1BLE_CONN_WIDEN] >= 1,
-              "missed events in a row move to the next window setup, not each one");
+        /* a chip that counts a slot more than op_arm writes (JieLi's __set_anchor_cnt): keep and widen open late, so two
+         * connections, each on its own setup for all its events (the next of the order), receive nothing */
+        bbm.cnt_jieli = 1;
+        polled_conn(&B, 1, 1u << FM1BLE_CONN_KEEP | 1u << FM1BLE_CONN_WIDEN, 1, &h, &data_ok);
         run_us(2500000);
-        /* not waited through, all setups: the wide window, first, holds the late anchors */
-        missed = polled_conn(&B, 0, 0, 1, &h, &data_ok);
+        polled_again(&B, 1, 1u << FM1BLE_CONN_KEEP | 1u << FM1BLE_CONN_WIDEN, 1, &h, &data_ok);
+        run_us(2500000);
+        st = pal_fm1_state();
+        check(st->conns == 2 && (st->conn_sum[0][0] & 0xFu) == FM1BLE_CONN_KEEP && (st->conn_sum[1][0] & 0xFu) == FM1BLE_CONN_WIDEN &&
+              st->set_events[FM1BLE_CONN_KEEP] >= 6 && st->set_events[FM1BLE_CONN_WIDEN] >= 6 && st->setup_moves == 1 &&
+              log_ok(st) && st->log_n == 2u * PAL_FM1_LOG_PER && log_setup(st->log[PAL_FM1_LOG_PER][0]) == FM1BLE_CONN_WIDEN &&
+              st->good == PAL_FM1_NO_SETUP && st->conn_rx == 0,
+              "each connection runs one setup for all its events, the next connection the next one");
+        /* on that chip the counter as JieLi writes it (padj) receives; the next connection keeps it, not the next setup */
+        bbm.conn_in = 0;
+        polled_conn(&B, 1, 1u << FM1BLE_CONN_PADJ | 1u << FM1BLE_CONN_KEEP, 1, &h, &data_ok);
+        st = pal_fm1_state();
+        check(h != 0xFFFF && data_ok && (st->conn_sum[0][0] & 0xFu) == FM1BLE_CONN_PADJ && st->set_rx[FM1BLE_CONN_PADJ] >= 15 &&
+              st->set_arr_min[FM1BLE_CONN_PADJ] >= (int32_t)FM1BLE_CONN_PAD_US && bbm.conn_off_min >= FM1BLE_CONN_PAD_US &&
+              st->set_arr_min[FM1BLE_CONN_PADJ] <= bbm.conn_off_min + 20 && st->set_arr_max[FM1BLE_CONN_PADJ] >= bbm.conn_off_max - 20 &&
+              st->set_arr_max[FM1BLE_CONN_PADJ] <= bbm.conn_off_max + 20,
+              "a chip that counts as JieLi writes: padj receives every event, its window open the pad before dueUsec");
+        run_us(2500000);
+        polled_again(&B, 1, 1u << FM1BLE_CONN_PADJ | 1u << FM1BLE_CONN_KEEP, 1, &h, &data_ok);
+        st = pal_fm1_state();
+        check(h != 0xFFFF && data_ok && st->good == FM1BLE_CONN_PADJ && (st->conn_sum[1][0] & 0xFu) == FM1BLE_CONN_PADJ &&
+              st->set_events[FM1BLE_CONN_KEEP] == 0, "a setup that received a connection runs the next one too");
+        run_us(2500000);
+        /* and a chip that takes the offset only with bit 15 and the window from WINCNTL0 as well: padw receives */
+        bbm.bit15 = bbm.win0 = 1;
+        bbm.conn_in = 0;
+        polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+        st = pal_fm1_state();
+        check(h != 0xFFFF && data_ok && st->set_rx[FM1BLE_CONN_PADW] >= 15 && st->set_rx[FM1BLE_CONN_PADW] == st->conn_rx &&
+              st->set_arr_min[FM1BLE_CONN_PADW] >= bbm.conn_off_min - 20 && st->set_arr_min[FM1BLE_CONN_PADW] <= bbm.conn_off_min + 20 &&
+              st->set_arr_max[FM1BLE_CONN_PADW] >= bbm.conn_off_max - 20 && st->set_arr_max[FM1BLE_CONN_PADW] <= bbm.conn_off_max + 20,
+              "a chip as JieLi's code writes it in all three: padw receives every event");
+        run_us(2500000);
+        polled_conn(&B, 1, 1u << FM1BLE_CONN_PADJ, 1, &h, &data_ok);
+        st = pal_fm1_state();
+        check(st->set_rx[FM1BLE_CONN_PADJ] * 2u < st->set_events[FM1BLE_CONN_PADJ],
+              "on that chip padj (offset without bit 15, window 0x32 in WINCNTL0) misses");
+        bbm.cnt_jieli = bbm.bit15 = bbm.win0 = 0;
+        run_us(2500000);
+        /* not waited through: the wide window holds the late anchors */
+        missed = polled_conn(&B, 0, 1u << FM1BLE_CONN_WIDE, 1, &h, &data_ok);
         st = pal_fm1_state();
         check(st->set_events[FM1BLE_CONN_WIDE] >= 6 && st->set_rx[FM1BLE_CONN_WIDE] * 4u >= st->set_events[FM1BLE_CONN_WIDE] * 3u,
               "not waited through: the wide window receives most events");
@@ -454,7 +512,7 @@ int main(void)
     {
         uint32_t ops = pal_fm1_state()->adv_ops;
         bbm.silent = 1;
-        run_us(200000);
+        run_us(300000);
         check(pal_fm1_state()->stuck >= 3 && pal_fm1_state()->adv_ops - ops >= 6, "a silent baseband: operations end by their deadline, advertising goes on");
         bbm.silent = 0;
         for (i = 0; i < 3; i++)
