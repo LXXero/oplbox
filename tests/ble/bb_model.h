@@ -86,6 +86,8 @@ typedef struct {
 extern bb_model bbm;
 
 void bb_model_reset(void);
+/* Raise pending flags (bit id: the event's end, id + 8: a packet), as the hardware would. */
+void bb_model_pend(uint32_t bits);
 /* Advance the baseband's clock; raises pending flags as the armed counter says. */
 void bb_model_advance_us(uint64_t us);
 /* A packet arrives in receive buffer k: PDU type, payload; sets RXAHDR/RXDHDR/RXSTAT as E.5 says and the receive flag. */

@@ -122,6 +122,13 @@ check([s["result"] for s in old["steps"]][:2] == ["pass", "fail"] and br.air_tri
 
 raw = open(REPORT, "rb").read()
 rep = br.decode(raw)
+# f0e6d08's report: as many counters, the window probe's where the TX side's are now; told apart by its probe_delays word
+k0 = 10 + int.from_bytes(raw[8:10], "little") + 1
+pd = k0 + 4 * br.COUNTERS_F0E6D08.index("probe_delays")
+old192 = br.decode(raw[:pd] + br.PROBE_DELAYS_F0E6D08.to_bytes(4, "little") + raw[pd + 4:])
+check("probe_n" in old192["counters"] and "pal_stale_rx" not in old192["counters"] and
+      old192["counters"]["probe_delays"] == br.PROBE_DELAYS_F0E6D08 and "pal_stale_rx" in rep["counters"],
+      "f0e6d08's 192 counters read with its names (the window probe's), this firmware's with the TX side's")
 
 # the report's text is what the pages drew, line for line in page order (the footers and blank lines left out)
 drawn = []
@@ -183,11 +190,19 @@ check(rc == 1 and "no Bluetooth test run" in err, f"--read before any run: exit 
 d = os.path.join(OUT, "ble_report")
 rc, out, err = tool(dev, "--run", "--wait", "3", "--out", d)
 check(rc == 0 and "Bluetooth test run 1" in out and "CONNECT  PASS" in out, f"--run: exit {rc} {err}")
-check("WINDOW PROBE (no central: 84 connection events" in out and "  padw      300..330     310..340     320..350        never" in out
-      and "index 7 8096 0000" in out, f"--run: the window probe's table and the anchor reads:\n{out}")
-check("connections: 2 started on the PAL, NimBLE 2 connects and 1 disconnects; kept setup: none" in out and
-      "connection 1: padw, 6 events, 0 received; missed events ended 262..846 us after dueUsec" in out and
-      "connection 2: padb, 40 events, 38 received; packets 31 (first) and 29 (last) us after dueUsec" in out and
+check("WINDOW PROBE" not in out and "TX modes, one per connection in the order intime, jieli, air:" in out and
+      "    jieli: the IR's slot words (bit 2 the slot's, SN in bit 3), nothing written at the arm: 40 events, 38 received, "
+      "TXTOG changed in 37, 2 packets with RXSTAT bit 8" in out and
+      "under 50 us 30, 50-99 5, 100-149 2, 150 and more 1 (least 21 us); intime left out 0 (over 100 us)" in out and
+      "stale packet flags dropped 1 (starting 400 us or more before the window); events halted at their deadline 1" in out and
+      "at the first connection packet (before Cordio's response): TXDHDR0 01, TXDHDR1 05, TXTOG 1, RXTOG 0" in out and
+      "at the end: TXTOG 0001, RXTOG 0001, TXDHDR0 0905, TXDHDR1 0001, TXBUF0CNTL 01, TXBUF1CNTL 00, IFSCNT 8295" in out,
+      f"--run: the TX side (no window probe since f0e6d08):\n{out}")
+check("connections: 2 started on the PAL, NimBLE 2 connects and 1 disconnects; kept setup: none, kept TX mode: none" in out and
+      "connection 1: padw intime, 6 events, 0 received; missed events ended 262..846 us after dueUsec; TXTOG changed in 0, "
+      "stale 1, halted 1" in out and
+      "connection 2: padb jieli, 40 events, 38 received; packets 31 (first) and 29 (last) us after dueUsec; TXTOG changed in "
+      "37, stale 0, halted 0" in out and
       "(each connection runs one window setup, the next connection the next one)" in out,
       f"--run: each connection's summary:\n{out}")
 check(open(wait_out).read() == "3\n", "--wait 3: the FM-1 was not told 3 s")

@@ -41,6 +41,8 @@ static void arm(void)
     bbm.period_us = bbm.air ? (slots - (bbm.cnt_jieli ? 0u : 1u)) * 625u + bo : slots * 625u;
 }
 
+void bb_model_pend(uint32_t bits) { pend(bits); }
+
 uint32_t bb_model_air_us(int pdu_len) { return (uint32_t)(1 + 4 + pdu_len + 3) * 8u; }
 
 /* ---- the air (bb_air) */

@@ -61,8 +61,9 @@ static void run_us(uint64_t us)
  * 0 none): a packet flag at once, before its window (H_STALE), a baseband that runs nothing for it and raises no flag
  * (H_HANG), the main loop coming back 300 us late after its packet (H_LATE) */
 enum { H_NONE, H_STALE, H_HANG, H_LATE };
-static int g_hook, g_hook_done;
+static int g_hook, g_hook_done, g_hang_stuck;
 static uint32_t g_hook_ev;
+static uint64_t g_hang_t0;
 static uint8_t g_tx_modes;              /* polled_run's pal_fm1_cfg tx_modes */
 
 static void hook(void)
@@ -72,13 +73,20 @@ static void hook(void)
         bbm.silent = 0;                 /* the next event runs again */
         g_hook_done = 2;
     }
+    if (g_hook == H_HANG && g_hook_done == 1 && bbm.now_us - g_hang_t0 > 50000u && !g_hang_stuck) {
+        g_hang_stuck = 1;               /* the PAL never gave up on it: end it, so the test fails instead of hanging */
+        bbm.silent = 0;
+        bb_model_pend(1u);
+    }
     if (!g_hook || g_hook_done || st->conn_ops != g_hook_ev || !bbm.armed)
         return;
     g_hook_done = 1;
     if (g_hook == H_STALE)
         bb_model_rx(0, 0, (const uint8_t *)"", 0);
-    else if (g_hook == H_HANG)
+    else if (g_hook == H_HANG) {
         bbm.silent = 1;
+        g_hang_t0 = bbm.now_us;
+    }
     else if (g_hook == H_LATE) {
         bbm.jump_reads = 2;
         bbm.jump_us = 300;
@@ -228,6 +236,7 @@ int main(void)
     bbm.air = &AIR;
     memset(&pc, 0, sizeof pc);
     pc.b = &B;
+    pc.tx_modes = 1u << FM1BLE_TX_AIR;               /* this connection's data both ways on the model's air layout */
     pal_fm1_attach(&pc);
     memset(&c, 0, sizeof c);
     c.to_host.send = to_host;
@@ -526,13 +535,14 @@ int main(void)
             }
         }
         /* the TX modes (fm1ble.h FM1BLE_TX_*), one connection each on a chip that puts in NESN itself (bb_model hw_nesn,
-         * the IR's ble_hw_tx keeping TXDHDR bit 2): data both ways, every response in time, the log's word d */
+         * the IR's ble_hw_tx keeping TXDHDR bit 2; AIR on the model's air layout, its NESN Cordio's): data both ways,
+         * every response in time, the log's word d */
         {
             static const uint8_t M[3] = { FM1BLE_TX_INTIME, FM1BLE_TX_JIELI, FM1BLE_TX_AIR };
             static const char *const what[3] = { "INTIME: a connection, data both ways, every response put in",
                                                  "JIELI: a connection, data both ways", "AIR: a connection, data both ways" };
-            bbm.hw_nesn = 1;
             for (i = 0; i < 3; i++) {
+                bbm.hw_nesn = M[i] != FM1BLE_TX_AIR;     /* AIR writes Cordio's NESN itself, as up to f0e6d08 */
                 g_tx_modes = (uint8_t)(1u << M[i]);
                 missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
                 check(h != 0xFFFF && missed == 0 && data_ok && st->conn_tx == M[i] && st->tx_rx[M[i]] >= 15 &&
@@ -542,6 +552,7 @@ int main(void)
                       (st->first_rx_tx >> 31) == 1u && st->conn_txs == M[i], what[i]);
             }
             /* all three, the order: the first connection INTIME; it received, so the next keeps it */
+            bbm.hw_nesn = 1;
             g_tx_modes = 0;
             missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             missed += polled_again(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
@@ -576,7 +587,7 @@ int main(void)
             g_hook = H_HANG;
             g_hook_done = 0;
             missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
-            check(g_hook_done == 2 && h != 0xFFFF && st->halts == 1 && st->halt_busy == 0 && B.d.halts >= 1 &&
+            check(g_hook_done == 2 && !g_hang_stuck && h != 0xFFFF && st->halts == 1 && st->halt_busy == 0 && B.d.halts >= 1 &&
                   (st->log[2][0] & 1u << 11) && (st->conn_sum[0][3] >> 24) == 1u && st->stale_rx == 0 && st->conn_ops >= 15u &&
                   st->conn_rx + 2u >= st->conn_ops && missed == 0,
                   "an event the baseband never ends: halted at its deadline, the connection's later events receive");

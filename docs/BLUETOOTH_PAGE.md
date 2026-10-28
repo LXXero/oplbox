@@ -121,13 +121,20 @@ and the packet's RXDHDR; up to 5474159 the first 12 events, the setup in bits 7-
 word's layout): `pal_set4..6_counts` and `_arr` (padj, padb, padw: fm1ble.h FM1BLE_CONN_*), `pal_conns` and `pal_good`
 (connections the PAL started; the setup a connection received 8 packets on, which every later connection runs, 0xFF for
 none), `connN_a/b/c` (the first 8 connections: setup, events, packets; the first and last packet's start; the earliest
-and latest end of a missed event, us from dueUsec), `nimble_conns` (NimBLE's connects and disconnects), and the window
-probe's (`probe_n`, `clk_idle_*` and `clk_arm_*` the anchor file read back, `prS_a..d` each setup's end times at two
-delays and two windows, `probe_delays`, `probe_windows`). The window probe runs after the RX trials, before the stack,
-without a central: connection events on a data channel nobody sends on, so each ends where the chip closes its window;
-`fm1_ble_report.py` prints it as WINDOW PROBE. Each connection runs one window setup, the next connection the next one
-(pal_fm1.h PAL_FM1_SETUP_ORDER), and MIDI_IN waits through a central leaving while NimBLE has seen fewer than 7 connects,
-so a central that connects again tries the setups in turn. `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS, a table of the logged events) and with `--out`
+and latest end of a missed event, us from dueUsec), `nimble_conns` (NimBLE's connects and disconnects), and the TX
+side's (fm1ble.h FM1BLE_TX_*, pal_fm1.h): `pal_stale_rx` (packet flags dropped because they came before the event's
+window could open), `pal_halts` (events halted at their deadline, and how often the hardware stayed busy through the
+halt), `pal_resp_skipped` and `pal_resp_hist` (intime's responses left out; Cordio's response time in four buckets),
+`pal_txK_counts` and `pal_txK_sent` (per TX mode: events, packets, events in which TXTOG changed, packets with RXSTAT bit
+8), `pal_good_tx`, `pal_conn_txs`, `pal_first_rx_tx` (the TX words when the first connection packet came), `conn_txtog`,
+`conn_txdhdr`, `conn_txbuf` (the TX words at the end), `evN_d` and `connN_d` (the event log's and the summaries' fourth
+words), `pal_cfg`, `pal_tx_order` and `pal_resp_us_min`. Up to f0e6d08 those 39 were the window probe's (`probe_n`,
+`clk_*`, `prS_a..d`, `probe_delays`, `probe_windows`: connection events with no central, at two delays and two windows,
+where each setup's window ended); that run settled that only padw's window follows the register, so the stack now runs
+padw alone and the probe is gone; the tool reads a f0e6d08 report by its `probe_delays` word, always 1400 | 1800 << 16.
+Each connection runs one TX mode, the next connection the next one (pal_fm1.h PAL_FM1_TX_ORDER: intime, jieli, air),
+and MIDI_IN waits through a central leaving while NimBLE has seen fewer than 7 connects, so a central that connects
+again tries the modes in turn; a mode a connection received 8 packets on is kept. `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS, a table of the logged events) and with `--out`
 writes what it printed to summary.txt. `rf_common` is what the shared radio's init returned the first time (trial 1): a later power-up finds WiFi
 up and it returns 0 there. `fm1_ble_report.py` prints the RX trials decoded (RX TRIALS). Up to 122afe3 the firmware sent
 the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the first 120. The PAL runs from the main loop in this build and waits
@@ -147,15 +154,25 @@ stack's with the time and RSSI (its active scan sends the SCAN_REQs the RX trial
 finds the new sequencer port, captures it with `aseqdump`,
 sends a Note On (90 3C 64) with `aseqsend`, waits for the FM-1's Note On (the run's midi_out) and disconnects. A
 connection that drops, fails or resolves no GATT services before the port comes is tried again, up to `--tries` connects
-(default 7), one second apart: each runs the FM-1's next window setup. From the computer the FM-1 is plugged into:
+(default 7), one second apart: each runs the FM-1's next TX mode. The report tool runs on the computer the FM-1 is
+plugged into (USB MIDI), and the central on whichever computer is near it; the two can be the same one. With the FM-1 on
+xRyzen's USB and xlap as the central (the bench since 2026-10-28), from an oplbox checkout on xRyzen:
 
 ```
-python3 tools/fm1_ble_report.py --run --wait 30 --central xlap --out ble-run
+python3 -I tools/fm1_install.py --yes build/oplbox.fwsc
+python3 -I tools/fm1_ble_report.py --run --wait 30 --central xlap --out ble-run
 ```
 
-starts it on xlap over ssh (the script goes on ssh's stdin; nothing to install there but BlueZ and alsa-utils), two
-seconds before the run, and prints its findings after the report (CENTRAL: each address seen or not, connect, the port, the
-Note On both ways), with `ble-run/central.json`. `--central local` runs it on the same computer. bluetoothctl says
+and with the FM-1 on xlap's USB and xlap also the central (the bench up to then), on xlap:
+
+```
+python3 tools/fm1_install.py --yes oplbox.fwsc
+python3 tools/fm1_ble_report.py --run --wait 30 --central local --out ble-run
+```
+
+`--central xlap` starts it on xlap over ssh (the script goes on ssh's stdin; nothing to install there but BlueZ and
+alsa-utils), two seconds before the run, and prints its findings after the report (CENTRAL: each address seen or not, connect, the port, the
+Note On both ways), with `ble-run/central.json`. `--central local` runs it on the same computer as the tool. bluetoothctl says
 "Connection successful" on LE once its controller has sent the CONNECT_IND, whether the FM-1 got it or not; so with no
 MIDI port the central first says whether the connection came up on the FM-1's side: no GATT services resolved
 (`ServicesResolved: yes` never came) or BlueZ dropping it (`Connected: no`) is "the connection never came up on the
