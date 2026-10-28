@@ -158,6 +158,14 @@ static void air_event(void)
             r = 0;
         }
         if (r > 0 && at >= t && at <= t + win) {
+            int64_t off = (int64_t)(at - t);
+            if (!bbm.conn_in || off < bbm.conn_off_min)
+                bbm.conn_off_min = off;
+            if (!bbm.conn_in || off > bbm.conn_off_max)
+                bbm.conn_off_max = off;
+            bbm.conn_in++;
+            if (!bbm.period_us)
+                bbm.conn_at_once++;
             /* the packet, then the response T_IFS after its end (conn_respond): what is in the TX slot then goes */
             bbm.now_us = at + bb_model_air_us(r);
             air_rx(req, r, 0);

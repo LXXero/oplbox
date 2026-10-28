@@ -96,9 +96,11 @@ at once, as an interrupt within T_IFS would. Also unchecked: where the hardware'
 write (the model takes one at the write), state 7 with a fixed channel, how TXTOG changes in a connection, the data PDU header
 words, the receive window's unit, the RSSI (not read: Cordio is told 127, not available).
 
-**Tests.** `tests/ble_pal.c` (57 checks; `tests/ble_pal_mutants.py` catches 34 deliberate bugs in the PAL and the driver's
+**Tests.** `tests/ble_pal.c` (60 checks; `tests/ble_pal_mutants.py` catches 37 deliberate bugs in the PAL and the driver's
 operations; the model sends a connection response from the TX slot as it is T_IFS after the packet, and a connection polled
-every 200 us, as on the FM-1, misses most events without the busy wait and none with it) and `tests/ble_stack.c` (22 checks): NimBLE over Cordio over the PAL with a central doing L2CAP and ATT; with
+every 200 us, as on the FM-1, misses most events without the busy wait and none with it; with the padded window alone,
+each event armed under 625 us before its due time opens the window at once, and the PAL's arrival positions must match
+where the model opened it) and `tests/ble_stack.c` (22 checks): NimBLE over Cordio over the PAL with a central doing L2CAP and ATT; with
 `run`, the firmware's test run on the same air, every step PASS (docs/BLUETOOTH.md "Cordio path as built" 4 and 5).
 
 ## Size (tools/build.py, JieLi's clang at `-Os -ffunction-sections`, numbers from the build)

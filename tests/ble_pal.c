@@ -353,6 +353,28 @@ int main(void)
         st = pal_fm1_state();
         check(st->setup_moves >= 1 && st->set_events[FM1BLE_CONN_PAD] >= 6 && st->set_rx[FM1BLE_CONN_PAD] >= 6,
               "a missed event moves to the next window setup; the padded one receives");
+        /* the padded window alone, waited through: Cordio arms each event SCH_LOAD_DELAY_US (300 us) before dueUsec, less
+         * than FM1BLE_CONN_PAD_US, so fm1ble_op_conn opens the window at once (the counter at 0), not 625 us before
+         * dueUsec. The arrival positions the PAL reports count from where the window really opened, as the model saw it. */
+        run_us(2500000);
+        bbm.conn_in = bbm.conn_at_once = 0;
+        missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PAD, &h, &data_ok);
+        st = pal_fm1_state();
+        check(h != 0xFFFF && missed == 0 && data_ok && st->set_rx[FM1BLE_CONN_PAD] >= 15 &&
+              st->set_rx[FM1BLE_CONN_PAD] == st->conn_rx,
+              "the padded window alone: a connection, every event's packet in the window");
+        check(bbm.conn_in >= 15 && bbm.conn_at_once == bbm.conn_in,
+              "the padded window alone: each event armed less than 625 us before its due time, the window open at once");
+        check(st->set_arr_min[FM1BLE_CONN_PAD] >= bbm.conn_off_min - 20 &&
+              st->set_arr_min[FM1BLE_CONN_PAD] <= bbm.conn_off_min + 20 &&
+              st->set_arr_max[FM1BLE_CONN_PAD] >= bbm.conn_off_max - 20 &&
+              st->set_arr_max[FM1BLE_CONN_PAD] <= bbm.conn_off_max + 20,
+              "the padded window armed late: the packets' positions counted from where the window opened");
+        if (bad)
+            fprintf(stderr, "  padded: PAL %d..%d us, model %lld..%lld us, %u of %u events opened at once\n",
+                    (int)st->set_arr_min[FM1BLE_CONN_PAD], (int)st->set_arr_max[FM1BLE_CONN_PAD],
+                    (long long)bbm.conn_off_min, (long long)bbm.conn_off_max, (unsigned)bbm.conn_at_once,
+                    (unsigned)bbm.conn_in);
         buf[0] = 0;
         cmd(0x200A, buf, 1);
         {

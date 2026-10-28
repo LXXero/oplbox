@@ -63,6 +63,10 @@ typedef struct {
     uint32_t one_chan;                  /* one-channel advertising events (hop 0): the shape the FM-1 never sent (122afe3) */
     int agc_n, agc_bad;                 /* the gain table's words written since 0x2FD98 = 0; how many differ from fm1ble_agc.h */
     uint32_t rx_deaf;                   /* requests the receiver did not hear: no gain table, or WINCNTL2 0 */
+    /* connection events whose packet fell inside the window: how many, how many of them were armed with the counter at
+     * 0 (the window open at the write), and the earliest and latest packet start after the window's start, in us */
+    uint32_t conn_in, conn_at_once;
+    int64_t conn_off_min, conn_off_max;
     int resp_pending;                   /* a connection event waits for T_IFS to send its response (conn_respond) */
     uint64_t resp_at;
 } bb_model;
