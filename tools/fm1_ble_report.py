@@ -360,7 +360,7 @@ def show_tx(c, out):
     """the TX side (pal_fm1.h, fm1ble.h FM1BLE_TX_*), for a report that has it"""
     nm = 4 if "pal_tx3_counts" in c else 3
     order = [c["pal_tx_order"] >> (4 * k) & 0xF for k in range(nm)]
-    print(f"  TX modes, one per connection in the order {', '.join(TX_NAMES[m] if m < nm else str(m) for m in order)}:", file=out)
+    print(f"  TX modes, one per connection in the order {', '.join(TX_NAMES[m] if m < len(TX_NAMES) else str(m) for m in order)}:", file=out)
     for k, what in enumerate(TX_MODES[:nm]):
         n, s_ = c[f"pal_tx{k}_counts"], c[f"pal_tx{k}_sent"]
         print(f"    {what}: {n & 0xFFFF} events, {n >> 16} received, TXTOG changed in {s_ & 0xFFFF}, {s_ >> 16} packets with "

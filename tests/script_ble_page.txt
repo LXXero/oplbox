@@ -1,6 +1,6 @@
 # t(ms) what ...   : the Bluetooth test page by the buttons: SAVE opens the WiFi page, HOME there opens the Bluetooth page, PLAY
 # starts the run (the 20 s wait for a central is cut short by HOST_BLE_CONNECT=1 in tests/run_host.sh), PLAY turns the
-# pages (all 33 and back to the first), SAVE leaves the Bluetooth page (back on the WiFi page's first screen), SAVE leaves that.
+# pages (all 40 and back to the first), SAVE leaves the Bluetooth page (back on the WiFi page's first screen), SAVE leaves that.
 200 btn 9
 300 btn 8
 400 btn 12
@@ -37,6 +37,13 @@
 5100 btn 12
 5170 btn 12
 5240 btn 12
-5500 btn 9
-5600 btn 9
-5700 end
+5310 btn 12
+5380 btn 12
+5450 btn 12
+5520 btn 12
+5590 btn 12
+5660 btn 12
+5730 btn 12
+6000 btn 9
+6100 btn 9
+6200 end

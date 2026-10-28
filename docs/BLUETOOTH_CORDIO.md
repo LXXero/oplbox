@@ -115,7 +115,25 @@ Cordio's PAL"):
   **Open:** on the model, a connection that follows one whose event ended by its deadline, or one with a left-out late
   response, receives and acknowledges the central's packets but does not pass its first ATT write to the host; it happens
   with fm1ble_op_stop as up to f0e6d08 too, and with the left-out response reported as sent [unexplained]. A run whose
-  later connections stay up and resolve GATT but never get MIDI in may be this.
+  later connections stay up and resolve GATT but never get MIDI in may be this. In round 4's test order (more connections
+  before it) the hung event's connection and the one after it both pass the ATT write, with the model's central as it was
+  and as round 4 changed it: not reproduced, cause still unknown. (Round 4's change to the central: it sent a newly queued
+  PDU under the SN of one not yet acknowledged, which a receiver drops as a repeat; it now sends the same PDU until it is
+  acknowledged, Vol 6 Part B 4.5.9.)
+- **a349877, the done-check after round 3 (2026-10-28):** two connections stayed up 6.6 and 10 s on intime and received
+  462 packets, and BlueZ never resolved GATT. The IR answers why: `__hw_tx_buf_proess` sets its header bit 9 when the TX
+  queue is not empty, which is MD, and `ble_hw_tx` puts that bit in TXDHDR bit 3; so TXDHDR (and RXDHDR, which the receive
+  path reads the same way) is the chip's layout, not the air's, and the chip keeps SN and NESN itself (bit 2 the slot's
+  SN, the slot TXTOG names sent until the central acknowledges it) [unchecked on the chip]. The PAL handed Cordio RXDHDR
+  bits 4-2 as MD, SN and NESN: Cordio read the central's MD (0) as its SN, took the first packet (LL_FEATURE_REQ) and
+  dropped every later one as a repeat. The fourth TX mode, arq (fm1ble.h FM1BLE_TX_ARQ, first in `PAL_FM1_TX_ORDER`),
+  lets the chip keep them: a response goes only into the slot TXTOG names, from that slot's own buffer, with bit 2 kept
+  and MD 0; the other slot gets an empty PDU at every arm; and the PAL gives Cordio an SN and NESN of its own making, from
+  Cordio's last response and the chip's toggles (pal_fm1.c "ARQ"). A mode is now kept only once Cordio took an L2CAP PDU
+  on it. The header trace (`trC_N`, LINK LAYER in the report) records, per packet, the chip's header bits and toggles and
+  what Cordio was told and answered, so the run says which reading of the bits holds. On the register model with the
+  chip's own ARQ (`hw_arq`) arq answers LL_FEATURE_REQ once and passes the ATT write with a lost response, a lost feature
+  response and a late one, and intime, jieli and air receive every packet and pass nothing, as a349877 did.
 
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ

@@ -122,13 +122,30 @@ check([s["result"] for s in old["steps"]][:2] == ["pass", "fail"] and br.air_tri
 
 raw = open(REPORT, "rb").read()
 rep = br.decode(raw)
-# f0e6d08's report: as many counters, the window probe's where the TX side's are now; told apart by its probe_delays word
+
+
+def cut(r, n):
+    """the report r with only its first n counters, as a firmware that sent n"""
+    at = 10 + int.from_bytes(r[8:10], "little")
+    k = r[at]
+    return r[:at] + bytes([n]) + r[at + 1:at + 1 + 4 * n] + r[at + 1 + 4 * k:]
+
+
+# f0e6d08's report: 192 counters, the window probe's where the TX side's are now; told apart by its probe_delays word.
+# a349877's: the same 192 with the TX side's, no header trace
+r192 = cut(raw, 192)
 k0 = 10 + int.from_bytes(raw[8:10], "little") + 1
 pd = k0 + 4 * br.COUNTERS_F0E6D08.index("probe_delays")
-old192 = br.decode(raw[:pd] + br.PROBE_DELAYS_F0E6D08.to_bytes(4, "little") + raw[pd + 4:])
+old192 = br.decode(r192[:pd] + br.PROBE_DELAYS_F0E6D08.to_bytes(4, "little") + r192[pd + 4:])
 check("probe_n" in old192["counters"] and "pal_stale_rx" not in old192["counters"] and
       old192["counters"]["probe_delays"] == br.PROBE_DELAYS_F0E6D08 and "pal_stale_rx" in rep["counters"],
       "f0e6d08's 192 counters read with its names (the window probe's), this firmware's with the TX side's")
+a349 = br.decode(r192)
+out = io.StringIO()
+br.show(a349, out)
+check(list(a349["counters"]) == br.COUNTERS[:192] and "LINK LAYER" not in out.getvalue() and
+      "TX modes, one per connection in the order arq, air, intime:" in out.getvalue() and len(br.COUNTERS) == 248,
+      f"a349877's 192 counters: the TX side's names, three TX modes, no link layer:\n{out.getvalue()[-3000:]}")
 
 # the report's text is what the pages drew, line for line in page order (the footers and blank lines left out)
 drawn = []
@@ -190,7 +207,9 @@ check(rc == 1 and "no Bluetooth test run" in err, f"--read before any run: exit 
 d = os.path.join(OUT, "ble_report")
 rc, out, err = tool(dev, "--run", "--wait", "3", "--out", d)
 check(rc == 0 and "Bluetooth test run 1" in out and "CONNECT  PASS" in out, f"--run: exit {rc} {err}")
-check("WINDOW PROBE" not in out and "TX modes, one per connection in the order intime, jieli, air:" in out and
+check("WINDOW PROBE" not in out and "TX modes, one per connection in the order arq, air, intime, jieli:" in out and
+      "    arq: the chip's SN and NESN (MD in TXDHDR bit 3), the slot TXTOG names only, Cordio's SN and NESN the PAL's: 12 "
+      "events, 10 received, TXTOG changed in 9, 0 packets with RXSTAT bit 8" in out and
       "    jieli: the IR's slot words (bit 2 the slot's, SN in bit 3), nothing written at the arm: 40 events, 38 received, "
       "TXTOG changed in 37, 2 packets with RXSTAT bit 8" in out and
       "under 50 us 30, 50-99 5, 100-149 2, 150 and more 1 (least 21 us); intime left out 0 (over 100 us)" in out and
@@ -205,6 +224,19 @@ check("connections: 2 started on the PAL, NimBLE 2 connects and 1 disconnects; k
       "37, stale 0, halted 0" in out and
       "(each connection runs one window setup, the next connection the next one)" in out,
       f"--run: each connection's summary:\n{out}")
+check("LINK LAYER (the PAL's header trace" in out and
+      "  HCI ACL: host to controller 3, controller to host 2; Number Of Completed Packets 2; NimBLE's ATT MTU 185, the "
+      "central's writes 1" in out and
+      "  ARQ: packets Cordio was told were repeats 1, responses that did not go in 1; at the end RXTOG 0001, TXTOG 0000" in out and
+      "  connection 1 (intime): the central's control PDUs FEATURE_REQ, VERSION_IND; its L2CAP PDUs Cordio took 0; Cordio's "
+      "non-empty responses put in 1; told not acknowledged 0; RXTOG changed 2" in out and
+      "  connection 2 (jieli): the central's control PDUs none; its L2CAP PDUs Cordio took 1; Cordio's non-empty responses "
+      "put in 0; told not acknowledged 3; RXTOG changed 38" in out and
+      "     0  03 LL_FEATURE_REQ         RT  ack new  09 empty" in out and
+      "     1  03 LL_VERSION_IND         RT  ack new  07 LL_FEATURE_RSP" in out and
+      "     2  01 empty                   crc --           05 empty (not put in)" in out and
+      "     0  02 L2CAP                  R-  nak new  01 empty" in out,
+      f"--run: the link layer:\n{out[out.find('LINK LAYER'):]}")
 check(open(wait_out).read() == "3\n", "--wait 3: the FM-1 was not told 3 s")
 check(open(os.path.join(d, "report.txt")).read() == rep["text"], "--out: report.txt is not the report's text")
 check(open(os.path.join(d, "report.bin"), "rb").read()[10:] == raw[10:], "--out: report.bin is not the report")
