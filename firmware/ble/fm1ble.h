@@ -210,12 +210,26 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
  *                      slots) or at a slot boundary of the baseband's own, either of which a 625 us pad only just covers
  *                      and Cordio's later windows (2 x the widening: 286 us after 14 missed events at a7c1738, tens of
  *                      us once in step) do not. 1250 us covers both, and the PAL's event log (pal_fm1.h) says where in
- *                      it the packet lands and when the hardware ended each event. */
+ *                      it the packet lands and when the hardware ended each event.
+ * At 5474159 (oplbox-ble-run-5474159-1) PAD received 2 of 9 events and WIDE 2 of 10, KEEP and WIDEN none: the central's
+ * packet came 31 us after dueUsec in one PAD event and was missed in three others where PAD's window should have held it,
+ * and WIDE's windows ended 262-846 us after dueUsec although WINCNTL2 asked for 5 ms. The next three each take one fact
+ * of the IR the setups above leave out, on PAD's shape, so a connection on each says which the chip needs:
+ *   FM1BLE_CONN_PADJ   as PAD, the counter written as __set_anchor_cnt writes it: the slots minus one (0 for 0), the bit
+ *                      offset (index 7) before it. op_arm writes the slots themselves: if the chip counts one more, as
+ *                      JieLi's write says, every window above opened a slot late (PAD's at dueUsec, the packet's edge);
+ *   FM1BLE_CONN_PADB   as PADJ, the bit offset with bit 15 set, as __hw_set_widen_drift writes index 7 in a connection
+ *                      (`last_bitoff | 0x8000`): without it the chip may ignore the offset and open at a slot boundary;
+ *   FM1BLE_CONN_PADW   as PADB, the window also in WINCNTL0/1, where __hw_set_widen_drift puts each connection event's
+ *                      window (WINCNTL2 holds le_hw_ioctrl's transmit window): every setup above leaves WINCNTL0 0x32. */
 #define FM1BLE_CONN_KEEP    0u
 #define FM1BLE_CONN_PAD     1u
 #define FM1BLE_CONN_WIDEN   2u
 #define FM1BLE_CONN_WIDE    3u
-#define FM1BLE_CONN_SETUPS  4u
+#define FM1BLE_CONN_PADJ    4u
+#define FM1BLE_CONN_PADB    5u
+#define FM1BLE_CONN_PADW    6u
+#define FM1BLE_CONN_SETUPS  7u
 #define FM1BLE_CONN_PAD_US  625u
 #define FM1BLE_CONN_WIDE_US 1250u
 void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup);
@@ -227,5 +241,10 @@ void fm1ble_op_stop(fm1ble *b);
 /* Reads and clears the pending flags of the operation in flight: FM1BLE_EV_DONE and FM1BLE_EV_RX, with the packet in
  * *p for RX. 0 when nothing is pending. Polled, or called from IRQ 29 / 45 (D.4). */
 uint32_t fm1ble_op_service(fm1ble *b, fm1ble_pkt *p);
+
+/* A register of the anchor file (D.2) as the chip reads it back: 0x2801C = index << 10 | hw id << 4 | 2, then 0x28024.
+ * JieLi's __get_clkn reads indices 0 and 0xE (the clock) and __hw_set_widen_drift index 7; what they hold when read is
+ * [measure on FM-1] (the test run's window probe records them). 0 before fm1ble_bb_init. */
+uint32_t fm1ble_anchor_rd(fm1ble *b, uint32_t index);
 
 #endif
