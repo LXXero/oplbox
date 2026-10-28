@@ -401,6 +401,58 @@ static void rx_setup(void)
         check(fm1ble_anchor_rd(&B, FM1BLE_AX_BITOFF) == 0x1234u && bb_model_reg(FM1BLE_BB_ANCHOR_CMD) == (FM1BLE_AX_BITOFF << 10 | 2u),
               "anchor_rd: the read command, the value from 0x28024");
     }
+    /* the TX modes (fm1ble.h FM1BLE_TX_*): a data PDU (LLID 2, NESN 1, SN 1, MD 1: header 0x1E) and an empty one */
+    {
+        static const uint8_t data[5] = { 0x1E, 3, 0xAA, 0xBB, 0xCC };
+        uint8_t *e = B.blk + B.entity;
+        fm1ble_op_chan(&B, 0x12345678u, 0x3A5C21u, 5);
+        fm1ble_op_conn_setup(&B, FM1BLE_CONN_PADW);
+        fm1ble_op_conn_begin(&B, FM1BLE_TX_AIR);
+        e[FM1BLE_E_TXDHDR0] = 0x05;                      /* bit 2 as the hardware might have left it */
+        check(fm1ble_op_conn(&B, 2000, 52) == FM1BLE_OK && e16(FM1BLE_E_TXDHDR0) == 1u && e16(FM1BLE_E_TXDHDR1) == 1u,
+              "AIR: an empty PDU (LLID 1, bits 4-2 clear) in both slots at the arm, as up to f0e6d08");
+        check(fm1ble_op_resp(&B, data, 5) == FM1BLE_OK && e16(FM1BLE_E_TXDHDR0) == (3u << 8 | 0x1Eu) &&
+              e16(FM1BLE_E_TXDHDR1) == (3u << 8 | 0x1Eu), "AIR: the response's header bits 4-0 as on the air, in both slots");
+        fm1ble_op_stop(&B);
+        /* JIELI: __hw_rx_buf_process's CONNECT_IND words, TXTOG 0 and 1 */
+        e[FM1BLE_E_TXTOG] = 0;
+        fm1ble_op_conn_begin(&B, FM1BLE_TX_JIELI);
+        check(e16(FM1BLE_E_TXDHDR0) == 1u && e16(FM1BLE_E_TXDHDR1) == 5u && e16(FM1BLE_E_TXAHDR0) == 0 && e16(FM1BLE_E_TXAHDR1) == 0 &&
+              e16(FM1BLE_E_TXPTR0) == e16(FM1BLE_E_TXPTR1) && e16(FM1BLE_E_TXPTR0) != 1u,
+              "JIELI begin, TXTOG 0: TXDHDR0 = 1, TXDHDR1 = 5 (bit 2 clear in the slot sent first), TXAHDR 0");
+        e[FM1BLE_E_TXTOG] = 1;
+        fm1ble_op_conn_begin(&B, FM1BLE_TX_JIELI);
+        check(e16(FM1BLE_E_TXDHDR0) == 5u && e16(FM1BLE_E_TXDHDR1) == 1u, "JIELI begin, TXTOG 1: TXDHDR0 = 5, TXDHDR1 = 1");
+        check(fm1ble_op_conn(&B, 2000, 52) == FM1BLE_OK && e16(FM1BLE_E_TXDHDR0) == 5u && e16(FM1BLE_E_TXDHDR1) == 1u,
+              "JIELI: the arm leaves the slots as they are");
+        check(fm1ble_op_resp(&B, data, 5) == FM1BLE_OK && e16(FM1BLE_E_TXDHDR0) == (3u << 8 | 4u | 8u | 0x10u | 2u) &&
+              e16(FM1BLE_E_TXDHDR1) == (3u << 8 | 8u | 0x10u | 2u) && B.tx_sn == 1u && !memcmp(B.blk + e16(FM1BLE_E_TXPTR0), data + 2, 3),
+              "JIELI: ble_hw_tx's TXDHDR, each slot's bit 2 kept, SN in bit 3, MD in bit 4, LLID; the payload");
+        fm1ble_op_stop(&B);
+        /* INTIME: an empty PDU repeating the last SN at the arm, bit 2 kept */
+        fm1ble_op_conn_begin(&B, FM1BLE_TX_INTIME);
+        check(B.tx_sn == 0 && e16(FM1BLE_E_TXDHDR0) == 5u && e16(FM1BLE_E_TXDHDR1) == 1u, "INTIME begin: the CONNECT_IND words, SN 0");
+        fm1ble_op_resp(&B, data, 5);
+        fm1ble_op_stop(&B);
+        check(fm1ble_op_conn(&B, 2000, 52) == FM1BLE_OK && e16(FM1BLE_E_TXDHDR0) == (4u | 8u | 1u) && e16(FM1BLE_E_TXDHDR1) == (8u | 1u),
+              "INTIME: at the next arm an empty PDU with the last SN (1), each slot's bit 2 kept");
+        e[FM1BLE_E_RXTOG] = 1;
+        e[FM1BLE_E_TXBUF0CNTL] = 1;
+        check(fm1ble_op_txstate(&B) == ((4u | 8u | 1u) | (8u | 1u) << 8 | FM1BLE_TXS_TXTOG | FM1BLE_TXS_RXTOG | FM1BLE_TXS_BUF0),
+              "txstate: TXDHDR0/1's low bytes, TXTOG, RXTOG and TXBUF0CNTL bit 0");
+        fm1ble_op_stop(&B);
+        /* the halt: the counter off, the idle wait, its flags cleared; a hardware that stays busy times out */
+        fm1ble_op_conn(&B, 2000, 52);
+        bbm.busy_reads = 5;
+        bbm.nlog = 0;
+        check(fm1ble_op_halt(&B) == FM1BLE_OK && !B.op_on && bbm.busy_reads == 0 && (bbm.ax[FM1BLE_AX_CNT_HI] & 0x8000u) == 0 &&
+              B.d.halts == 1 && B.d.halt_busy == 0 && bb_model_find(0, FM1BLE_BB_IRQ_CLR, 0x101u) >= 0,
+              "halt: the counter stopped, waited until the baseband went idle, its flags cleared");
+        bbm.never_idle = 1;
+        check(fm1ble_op_halt(&B) == FM1BLE_ETIMEOUT && B.d.halts == 2 && B.d.halt_busy == 1, "halt on a baseband that stays busy: it gives up, counted");
+        bbm.never_idle = 0;
+        fm1ble_op_conn_begin(&B, FM1BLE_TX_AIR);
+    }
 }
 
 /* ---- the test run ---- */

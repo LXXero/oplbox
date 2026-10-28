@@ -289,6 +289,8 @@ void bb_model_advance_us(uint64_t us)
 {
     static int in_event;                        /* a delay inside the handler moves the clock, never starts an event */
     uint64_t end = bbm.now_us + us;
+    if (bbm.tick)
+        bbm.tick();
     while (bbm.air && !in_event && ((bbm.resp_pending && bbm.resp_at <= end) ||
                                     (bbm.armed && bbm.armed_at_us + bbm.period_us <= end))) {
         if (bbm.resp_pending && (!bbm.armed || bbm.resp_at <= bbm.armed_at_us + bbm.period_us)) {

@@ -57,6 +57,34 @@ static void run_us(uint64_t us)
     }
 }
 
+/* what a test does to the k-th connection event since the attach, once, right after the PAL armed it (g_hook_ev: k,
+ * 0 none): a packet flag at once, before its window (H_STALE), a baseband that runs nothing for it and raises no flag
+ * (H_HANG), the main loop coming back 300 us late after its packet (H_LATE) */
+enum { H_NONE, H_STALE, H_HANG, H_LATE };
+static int g_hook, g_hook_done;
+static uint32_t g_hook_ev;
+static uint8_t g_tx_modes;              /* polled_run's pal_fm1_cfg tx_modes */
+
+static void hook(void)
+{
+    const pal_fm1_stats *st = pal_fm1_state();
+    if (g_hook == H_HANG && g_hook_done == 1 && st->conn_ops > g_hook_ev) {
+        bbm.silent = 0;                 /* the next event runs again */
+        g_hook_done = 2;
+    }
+    if (!g_hook || g_hook_done || st->conn_ops != g_hook_ev || !bbm.armed)
+        return;
+    g_hook_done = 1;
+    if (g_hook == H_STALE)
+        bb_model_rx(0, 0, (const uint8_t *)"", 0);
+    else if (g_hook == H_HANG)
+        bbm.silent = 1;
+    else if (g_hook == H_LATE) {
+        bbm.jump_reads = 2;
+        bbm.jump_us = 300;
+    }
+}
+
 /* polled as the FM-1 polls (no interrupt): the main loop comes back every step_us */
 static void run_polled_us(uint64_t us, uint32_t step_us)
 {
@@ -119,6 +147,7 @@ static uint32_t polled_run(fm1ble *b, int attach, int busy, uint8_t setups, int 
     pc.no_busy_wait = (uint8_t)!busy;
     pc.conn_setups = setups;
     pc.no_timer_lead = (uint8_t)!lead;
+    pc.tx_modes = g_tx_modes;
     if (attach)
         pal_fm1_attach(&pc);
     memset(&C, 0, sizeof C);
@@ -495,6 +524,66 @@ int main(void)
                             (int)st->set_arr_min[su], (int)st->set_arr_max[su], (long long)bbm.conn_off_min,
                             (long long)bbm.conn_off_max, (unsigned)bbm.conn_at_once, (unsigned)bbm.conn_in);
             }
+        }
+        /* the TX modes (fm1ble.h FM1BLE_TX_*), one connection each on a chip that puts in NESN itself (bb_model hw_nesn,
+         * the IR's ble_hw_tx keeping TXDHDR bit 2): data both ways, every response in time, the log's word d */
+        {
+            static const uint8_t M[3] = { FM1BLE_TX_INTIME, FM1BLE_TX_JIELI, FM1BLE_TX_AIR };
+            static const char *const what[3] = { "INTIME: a connection, data both ways, every response put in",
+                                                 "JIELI: a connection, data both ways", "AIR: a connection, data both ways" };
+            bbm.hw_nesn = 1;
+            for (i = 0; i < 3; i++) {
+                g_tx_modes = (uint8_t)(1u << M[i]);
+                missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+                check(h != 0xFFFF && missed == 0 && data_ok && st->conn_tx == M[i] && st->tx_rx[M[i]] >= 15 &&
+                      st->tx_rx[M[i]] == st->conn_rx && (st->tx_events[M[i]] & 0xFFFFu) == st->conn_ops &&
+                      st->resp_skipped == 0 && st->stale_rx == 0 && st->halts == 0 && (st->conn_sum[0][3] & 0xFu) == M[i] &&
+                      (st->conn_sum[0][3] >> 4 & 0xFFFu) >= 15u && (st->log[0][3] >> 22 & 3u) == M[i] && (st->log[1][3] >> 24) < 50u &&
+                      (st->first_rx_tx >> 31) == 1u && st->conn_txs == M[i], what[i]);
+            }
+            /* all three, the order: the first connection INTIME; it received, so the next keeps it */
+            g_tx_modes = 0;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            missed += polled_again(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(missed == 0 && data_ok && st->conns == 2 && st->good_tx == FM1BLE_TX_INTIME &&
+                  st->conn_txs == (FM1BLE_TX_INTIME | FM1BLE_TX_INTIME << 4),
+                  "the TX order: the first connection INTIME, kept by the next once it received PAL_FM1_GOOD packets");
+            /* a stale flag: a packet flag at once after the third event was armed, before its window could open; it is
+             * dropped, Cordio's anchor stays, the central's packets go on landing in the window */
+            g_tx_modes = 1u << FM1BLE_TX_INTIME;
+            bbm.tick = hook;
+            g_hook = H_STALE;
+            g_hook_ev = 3;
+            g_hook_done = 0;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(g_hook_done && h != 0xFFFF && missed == 0 && data_ok && st->stale_rx == 1 && (st->log[2][0] & 1u << 15) &&
+                  (st->conn_sum[0][3] >> 16 & 0xFFu) == 1u && st->conn_rx + 2u >= st->conn_ops,
+                  "a packet flag before the window could open: dropped as stale, the connection's windows still hold the packets");
+            /* a late response: the main loop comes back 300 us after the third event's packet; INTIME does not put
+             * Cordio's response in (the empty PDU repeating the last SN goes), Cordio is told it failed, data still flows */
+            g_hook = H_LATE;
+            g_hook_done = 0;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(g_hook_done && h != 0xFFFF && data_ok && st->resp_skipped == 1 && (st->resp_hist >> 24) >= 1u &&
+                  st->resp_us_max >= 300u && (st->log[2][3] >> 24) >= 150u,
+                  "a response too late for T_IFS: INTIME leaves it out, the connection and its data go on");
+            /* a hung event: the baseband runs nothing and raises no flag for the third event; it ends by its deadline, the
+             * driver is halted, the connection goes on. Last of the three, and its data path is not checked: on the model a
+             * connection after one whose event ended by its deadline, or after the late response above, loses the central's
+             * write to the host although its packets are received and acknowledged, with fm1ble_op_stop as up to f0e6d08
+             * as much as with the halt, and with the skipped response reported as sent [unexplained;
+             * docs/BLUETOOTH_CORDIO.md] */
+            g_hook = H_HANG;
+            g_hook_done = 0;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(g_hook_done == 2 && h != 0xFFFF && st->halts == 1 && st->halt_busy == 0 && B.d.halts >= 1 &&
+                  (st->log[2][0] & 1u << 11) && (st->conn_sum[0][3] >> 24) == 1u && st->stale_rx == 0 && st->conn_ops >= 15u &&
+                  st->conn_rx + 2u >= st->conn_ops && missed == 0,
+                  "an event the baseband never ends: halted at its deadline, the connection's later events receive");
+            g_hook = H_NONE;
+            bbm.tick = 0;
+            g_tx_modes = 0;
+            bbm.hw_nesn = 0;
         }
         buf[0] = 0;
         cmd(0x200A, buf, 1);

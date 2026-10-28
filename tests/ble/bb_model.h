@@ -80,6 +80,7 @@ typedef struct {
     int hw_nesn;
     uint8_t rx_sn;
     uint32_t jump_reads, jump_us, jump_left;
+    void (*tick)(void);                 /* set: called each time the clock is advanced (a test's hook inside a busy wait) */
 } bb_model;
 
 extern bb_model bbm;
