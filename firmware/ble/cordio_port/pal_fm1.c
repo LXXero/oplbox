@@ -14,7 +14,7 @@
  * completions:
  *   advertising:  the ADV PDU went (txCback) when a request came in or the event ended; the request (rxCback) with the
  *                 packet, or a timeout at the end; the SCAN_RSP Cordio then hands over (PalBbBleTxTifsData) goes into the
- *                 response buffer (kept for the next events), and its txCback comes at the end; a covered packet
+ *                 response buffer for the rest of the event, and its txCback comes at the end; a covered packet
  *                 completes the same way, at once when the event has already ended; a CONNECT_IND ends the event;
  *   connection:   the master's packet (rxCback), or a timeout at the end; the response goes into the response buffer
  *                 and its txCback comes at the end; a second receive in the same event times out (one exchange per event:
@@ -22,6 +22,10 @@
  * The response must be in its buffer before T_IFS (150 us) after the packet's end: pal_fm1_service has to run from the
  * receive interrupt (IRQ 29) for that, and from the main loop it is too late (counted: resp_late, and Cordio is told the
  * response failed). The baseband's interrupts are not attached in this version: everything runs from the main loop.
+ * So each advertising event is armed with the scan response already in its buffer: the one in Cordio's advertising
+ * operation (the BOD in progress, bb_ble_adv_slave.c sends the same buffer through PalBbBleTxTifsData), read when the
+ * event is armed. Cordio puts a scan response the host changed into that operation between events
+ * (lctr_isr_adv_slave.c), so the next event answers with the new one; nothing older is kept.
  *
  * Time: PalBbGetCurrentTime is the port's microsecond clock (TIMER4 on the FM-1), not the baseband's slot counter; an
  * operation is armed (due - now) from now. A packet's timestamp (its start, which Cordio uses to place a connection's
@@ -39,6 +43,8 @@
 #include "pal_radio.h"
 #include "pal_sys.h"
 #include "pal_timer.h"
+#include "bb_api.h"
+#include "bb_ble_api_op.h"
 #include "fm1ble.h"
 #include "fm1ble_port.h"
 #include "pal_fm1.h"
@@ -221,17 +227,35 @@ static int adv_covered(void)
     return 1;
 }
 
+/* The scan response of Cordio's advertising operation in progress, as it is now (*rsp NULL and 0 when it has none) */
+static uint16_t adv_rsp(const uint8_t **rsp)
+{
+    BbOpDesc_t *bod = BbGetCurrentBod();
+    const BbBleSlvAdvEvent_t *a;
+
+    *rsp = NULL;
+    if (!bod || !bod->prot.pBle || bod->prot.pBle->chan.opType != BB_BLE_OP_SLV_ADV_EVENT)
+        return 0;
+    a = &bod->prot.pBle->op.slvAdv;
+    if (!a->pTxRspBuf || !a->txRspLen)
+        return 0;
+    *rsp = a->pTxRspBuf;
+    return a->txRspLen;
+}
+
 void PalBbBleTxData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
 {
     uint8_t pdu[PDU_MAX];
-    uint16_t n = gather(descs, cnt, pdu);
+    uint16_t n = gather(descs, cnt, pdu), nrsp;
+    const uint8_t *rsp;
 
     if (g_chan >= 37 && g_chan <= 39 && adv_covered())
         return;
     op_begin(ADV_EVENT_US);
     g_wait = W_TX;
     g_aev = 0;
-    if (!n || g_chan < 37 || fm1ble_op_adv(g_cfg.b, delay_to_due(), pdu, n) != FM1BLE_OK) {
+    nrsp = adv_rsp(&rsp);
+    if (!n || g_chan < 37 || fm1ble_op_adv(g_cfg.b, delay_to_due(), pdu, n, rsp, nrsp) != FM1BLE_OK) {
         op_refused();                   /* a master's first transmit on a data channel is not built (peripheral only) */
         return;
     }

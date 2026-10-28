@@ -343,7 +343,7 @@ static void rx_setup(void)
     memset(&B, 0, sizeof B);
     fm1ble_radio_up(&B, 0, NULL);
     fm1ble_bb_init(&B, blk);
-    check(fm1ble_op_chan(&B, FM1BLE_ACCESS_ADV, 0x555555u, 37) == FM1BLE_OK && fm1ble_op_adv(&B, 1000, pdu, 8) == FM1BLE_OK &&
+    check(fm1ble_op_chan(&B, FM1BLE_ACCESS_ADV, 0x555555u, 37) == FM1BLE_OK && fm1ble_op_adv(&B, 1000, pdu, 8, NULL, 0) == FM1BLE_OK &&
           e16(FM1BLE_E_WINCNTL0) == 0x32u && e16(FM1BLE_E_WINCNTL2) == FM1BLE_ADV_WIN_US, "op_adv: WINCNTL0 and WINCNTL2 0x32");
     fm1ble_op_stop(&B);
     check(fm1ble_op_chan(&B, 0x12345678u, 0x3A5C21u, 5) == FM1BLE_OK && fm1ble_op_conn(&B, 1000, 3750) == FM1BLE_OK &&

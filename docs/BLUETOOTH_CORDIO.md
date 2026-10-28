@@ -53,8 +53,12 @@ Cordio's PAL"):
   local address from AdvA, FORMAT bit 2 last), the PDU in TX buffer 0 at the slot TXTOG names. Cordio's packets on the
   other two channels go in that event (`adv_covered`, counted as `pal_adv_covered`): they complete when it ends, at once
   if it already has. A request (SCAN_REQ, CONNECT_IND) received in the event completes the transmit and goes to Cordio's
-  receive callback; the SCAN_RSP Cordio then gives (`PalBbBleTxTifsData`) goes into TX buffer 1, which later events keep in
-  the other TX slot so the hardware can answer a SCAN_REQ by itself; a CONNECT_IND stops the event. No request: the
+  receive callback. Each event is armed with Cordio's scan response already in TX buffer 1, in the other TX slot, so the
+  hardware can answer a SCAN_REQ by itself: the one in Cordio's advertising operation in progress (`BbGetCurrentBod`,
+  `pTxRspBuf`, the buffer `bb_ble_adv_slave.c` hands to `PalBbBleTxTifsData`), read when the event is armed. Cordio puts a
+  scan response the host changed into that operation between events, so the next event answers with it; nothing is kept
+  from an earlier event. The SCAN_RSP Cordio gives after the request (`PalBbBleTxTifsData`) goes into TX buffer 1 for the
+  rest of the event; a CONNECT_IND stops the event. No request: the
   event's end completes the transmit and closes the receive window as a timeout. Until 122afe3 the PAL armed one
   one-channel event per packet (hop 0, a map of that channel alone): on the FM-1 none of those reached a central, and the
   ones on 38 and 39 never ended (docs/BLUETOOTH.md "The second FM-1 run").
@@ -72,8 +76,8 @@ Cordio's PAL"):
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ
 29). This build attaches no interrupt: everything runs from the main loop, so on the FM-1 a SCAN_RSP and every connection
-response are expected to come too late (the PAL counts them, `resp_late`, and tells Cordio the transmit failed; a scan
-response may still go out from TX buffer 1 if the hardware sends the last one written there). The host tests call the PAL
+response are expected to come too late (the PAL counts them, `resp_late`, and tells Cordio the transmit failed; the scan
+response the event was armed with goes out from TX buffer 1 if the hardware sends it by itself). The host tests call the PAL
 at once, as an interrupt within T_IFS would. Also unchecked: where the hardware's slot boundaries lie against the arming
 write (the model takes one at the write), state 7 with a fixed channel, how TXTOG changes in a connection, the data PDU header
 words, the receive window's unit, the RSSI (not read: Cordio is told 127, not available).
