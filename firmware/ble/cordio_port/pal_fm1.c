@@ -65,12 +65,13 @@
  * (the empty PDU repeating the last SN goes) and Cordio is told the transmit failed. The log's and the summaries' fourth
  * words say what the TX side did (pal_fm1.h).
  *
- * ARQ (fm1ble.h FM1BLE_TX_ARQ, since round 4 of the FM-1 Bluetooth goal). The chip keeps SN and NESN itself, and its
- * header words are not the air's (RXDHDR bit 3 is MD), so the PAL gives Cordio SN and NESN of its own making, from Cordio's
- * own state (the SN and NESN of the last response Cordio handed over) and the chip's toggles: a packet acknowledges
- * Cordio's last PDU when that PDU went into a slot and TXTOG has changed since (the chip moved to the other slot); it is new
- * when RXTOG changed at it, or when RXTOG has not moved yet in the connection (a chip whose RXTOG does not follow new
- * packets: every packet new). MD goes to Cordio as 1 (since round 6; up to 1b251ea as 0), so Cordio keeps a receive buffer
+ * ARQ (fm1ble.h FM1BLE_TX_ARQ, since round 4 of the FM-1 Bluetooth goal). The chip keeps SN and NESN itself (its TX
+ * header words are not the air's: TXDHDR bit 3 is MD), so the PAL gives Cordio SN and NESN of its own making, from Cordio's
+ * own state (the SN and NESN of the last response Cordio handed over), the chip's toggles and the central's SN: a packet
+ * acknowledges Cordio's last PDU when that PDU went into a slot and TXTOG has changed since (the chip moved to the other
+ * slot); it is new when its SN (RXDHDR bit 3, the air's layout) is the one the PAL expects next (pal_fm1.h PAL_FM1_SNX; up
+ * to 807d70f, when RXTOG changed at it, and at 807d70f RXTOG stayed at a new ATT request the chip acknowledged on the
+ * air). MD goes to Cordio as 1 (since round 6; up to 1b251ea as 0), so Cordio keeps a receive buffer
  * for a later packet in the same event, whichever RXDHDR bit is really the central's MD; an event with no later packet
  * ends with Cordio's receive timing out at the event's end. At 1b251ea BlueZ sent LL_LENGTH_REQ with MD set and its first
  * L2CAP PDU in the same event: the chip's ARQ acknowledged it on the air, but Cordio (told MD 0) had closed the event, so
@@ -164,9 +165,11 @@ static const uint8_t g_order_tx[FM1BLE_TX_MODES] = PAL_FM1_TX_ORDER;
 static uint8_t g_tx;
 static uint32_t g_txs0, g_csent, g_cstale, g_chalt;
 /* Cordio's SN and NESN (its last response's header), the chip's TXTOG when Cordio's last response went in and whether it
- * went in, RXTOG at the last packet and whether it has moved in the connection (ARQ above); the central's L2CAP PDUs Cordio
+ * went in, RXTOG at the last packet, the central's SN the PAL expects next (ARQ above); the central's L2CAP PDUs Cordio
  * took as new; the event's trace word (pal_fm1.h, NULL: none), the connection's trace words so far */
-static uint8_t g_csn, g_cnesn, g_tog_w, g_wrote, g_rxtog, g_rxmoved;
+static uint8_t g_csn, g_cnesn, g_tog_w, g_wrote, g_rxtog, g_rx_exp;
+/* the cross-check (pal_fm1.h PAL_FM1_SNX): a good packet came in the connection, a bad CRC since it, the central's NESN at it */
+static uint8_t g_pv, g_bad_since, g_nesn_p;
 static uint8_t g_held_later;            /* the held packet is a later one of its event (pal_fm1.h later_rx) */
 static uint32_t g_cl2, g_trn;
 static uint32_t *g_tr;
@@ -327,7 +330,8 @@ static void conn_start(void)
     g_tog_w = (t & FM1BLE_TXS_TXTOG) ? 1u : 0u;
     g_rxtog = (t & FM1BLE_TXS_RXTOG) ? 1u : 0u;
     g_wrote = 1;                                        /* the empty PDU in the slot sent first is Cordio's first */
-    g_rxmoved = 0;
+    g_rx_exp = 0;                                       /* the central's first SN is 0 (Vol 6 Part B 4.5.9) */
+    g_pv = g_bad_since = g_nesn_p = 0;
     g_cl2 = g_trn = 0;
     g_tr = NULL;
     g_aw = g_stuck = 0;
@@ -358,8 +362,9 @@ static void cap_add(uint8_t flags, uint8_t hdr, const uint8_t *payload, uint8_t 
 }
 
 /* ARQ: the chip's SN against the slots' bit 2 (pal_fm1.h PAL_FM1_ARQ_STUCK): at the first packet, TXTOG moved (it took the
- * central's NESN 0 as an acknowledgement); later, RXTOG moving and TXTOG not, PAL_FM1_ARQ_STUCK times in a row */
-static void arq_sn(uint8_t first, uint8_t tog, uint8_t rxch)
+ * central's NESN 0 as an acknowledgement); later, packets new by their SN and TXTOG not moving, PAL_FM1_ARQ_STUCK times in a
+ * row */
+static void arq_sn(uint8_t first, uint8_t tog, uint8_t snnew)
 {
     if (first) {
         if (tog != g_tog0) {
@@ -370,7 +375,7 @@ static void arq_sn(uint8_t first, uint8_t tog, uint8_t rxch)
     }
     if (tog != g_tog_p) {
         g_stuck = 0;
-    } else if (rxch && ++g_stuck >= PAL_FM1_ARQ_STUCK) {
+    } else if (snnew && ++g_stuck >= PAL_FM1_ARQ_STUCK) {
         fm1ble_op_arq_flip(g_cfg.b);
         g_st.sn_flips_stuck++;
         g_stuck = 0;
@@ -382,6 +387,40 @@ static uint32_t sat_add8(uint32_t w, uint32_t shift)    /* one more in an 8-bit 
     return (w >> shift & 0xFFu) < 0xFFu ? w + (1u << shift) : w;
 }
 
+/* One disagreement of the cross-check (pal_fm1.h PAL_FM1_SNX): counted in sn_x[i], kept while there is room */
+static void snx_add(uint32_t i, uint8_t h, uint8_t rxch, uint8_t tmoved, uint32_t which)
+{
+    uint32_t c = g_st.conns < 15u ? g_st.conns : 15u;
+    g_st.sn_x[i]++;
+    if (g_st.snx_n < PAL_FM1_SNX)
+        g_st.snx[g_st.snx_n++] = (g_cev & 0xFFFFu) | (uint32_t)(h & 0x1Fu) << 16 | (uint32_t)rxch << 21 |
+                                 (uint32_t)g_bad_since << 22 | (uint32_t)tmoved << 23 | c << 24 | which << 28;
+}
+
+/* ARQ: the central's SN against RXTOG, and its NESN against TXTOG (pal_fm1.h PAL_FM1_SNX); returns whether the packet is
+ * new by its SN, and changes the SN expected next when it is */
+static uint8_t arq_check(const fm1ble_pkt *p, uint8_t rxch, uint8_t tmoved)
+{
+    uint8_t h = p->hdr[0], sn = (uint8_t)(h >> 3 & 1u), nesn = (uint8_t)(h >> 2 & 1u), snnew = sn == g_rx_exp;
+    if (!p->ok) {
+        g_st.sn_x[rxch ? 2 : 3]++;
+        g_bad_since = 1;
+        return 0;
+    }
+    if (snnew && !rxch)
+        snx_add(0, h, rxch, tmoved, 0);
+    else if (!snnew && rxch)
+        snx_add(1, h, rxch, tmoved, 0);
+    if (g_pv && !g_bad_since && tmoved != (nesn != g_nesn_p))
+        snx_add(tmoved ? 4u : 5u, h, rxch, tmoved, 1);
+    if (snnew)
+        g_rx_exp ^= 1u;
+    g_pv = 1;
+    g_bad_since = 0;
+    g_nesn_p = nesn;
+    return snnew;
+}
+
 /* A connection packet: what the chip's toggles did, the header Cordio gets (ARQ: of the PAL's making, pal_fm1.c "ARQ"),
  * the trace and the connection's link-layer counts (pal_fm1.h) */
 static void conn_packet(const fm1ble_pkt *p)
@@ -390,6 +429,7 @@ static void conn_packet(const fm1ble_pkt *p)
     uint8_t tog = (x & FM1BLE_TXS_TXTOG) ? 1u : 0u, rxt = (x & FM1BLE_TXS_RXTOG) ? 1u : 0u;
     uint8_t moved = tog != g_tog_w, rxch = rxt != g_rxtog, llid = p->hdr[0] & 3u, h = p->hdr[0];
     uint8_t first = p->hdr[1] ? p->payload[0] : 0u, ack, isnew, first_pkt = g_first, tmoved = tog != g_tog_p;
+    uint8_t snnew = g_tx == FM1BLE_TX_ARQ ? arq_check(p, rxch, tmoved) : 0u;
     uint32_t sw = 0;
 
     if (g_tx == FM1BLE_TX_ARQ)          /* the slots before Cordio's response (pal_fm1.h PAL_FM1_FRAG word 1) */
@@ -398,7 +438,7 @@ static void conn_packet(const fm1ble_pkt *p)
     if (rxch && c)
         *c = sat_add8(*c, 24);
     if (p->ok && g_tx == FM1BLE_TX_ARQ) {
-        arq_sn(first_pkt, tog, rxch);
+        arq_sn(first_pkt, tog, snnew);
         if (first_pkt)                  /* the central's first NESN is 0: it acknowledges nothing (Vol 6 Part B 4.5.9) */
             ack = 0;
         else if (g_ahead)               /* ahead: TXTOG names the slot Cordio's PDU went into; that one is spent */
@@ -407,7 +447,7 @@ static void conn_packet(const fm1ble_pkt *p)
             ack = (uint8_t)(g_wrote && moved);
         if (g_ahead && ack)
             g_aw = 0;
-        isnew = (uint8_t)(rxch || !g_rxmoved);
+        isnew = snnew;
         if (!isnew)
             g_st.arq_dup++;
         h = (uint8_t)(llid | (ack ? g_csn ^ 1u : g_csn) << 2 | (isnew ? g_cnesn : g_cnesn ^ 1u) << 3 | 1u << 4);
@@ -417,8 +457,6 @@ static void conn_packet(const fm1ble_pkt *p)
         g_first = 0;
         g_tog_p = tog;
     }
-    if (rxch)
-        g_rxmoved = 1;
     g_rxtog = rxt;
     ack = (uint8_t)(((h >> 2) & 1u) != g_csn);
     isnew = (uint8_t)(((h >> 3) & 1u) == g_cnesn);

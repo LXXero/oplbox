@@ -196,6 +196,32 @@ Cordio's PAL"):
   was seen (its length, LLID, SN and first byte: the start's L2CAP length 25 or the continuation's first byte), so the
   next run shows what the chip had in the slot it sent. The capture's head (layout 2) carries each connection's MTU
   offered and settled on, and the trace.
+- **807d70f, the done-check after round 8 (2026-10-28, `~/oplbox-ble-runs/807d70f-1` on xryzen):** three connections on
+  padw arq ahead, 1141 of 1177 events received, 62 bad CRCs. The first connection settled ATT MTU 23, so nothing was
+  fragmented either way (the fragment trace stayed empty), and GATT discovery still stopped: ten requests answered, then
+  BlueZ's Read By Type 2803 over 000D-FFFF at event 33 came with RXTOG unmoved, the PAL told Cordio it was a repeat, and
+  no answer went. Its SN shows it was new: BlueZ's requests came every three events with SN 1 and 0 in turn (events 8 to
+  29), the one at event 33 had SN 1 after SN 0 at event 29 (one empty PDU repeated between), and BlueZ's next packets
+  (SN 0, then 1 with a CHANNEL_MAP_IND at event 35) show the chip had acknowledged it on the air. So reading (2) of
+  1907280 holds, without fragmentation: the chip's RXTOG does not follow what its ARQ takes as new. The header trace says
+  more: RXTOG moved at every packet with a bad CRC (5 of 5, among them a repeat), and in the second connection the
+  central's SN 0 after two bad-CRC repeats of SN 1 came with RXTOG unmoved too. RXDHDR is the air's layout in both
+  connections' traces (bit 3 alternating as the SN, bit 4 set only before a second packet in the event). Round 2 of the
+  resumed goal: the PAL judges new or repeat by the central's SN against the SN it expects next (0 at a connection's
+  start, changed at each new packet with a good CRC; a packet with a bad CRC changes nothing), as Vol 6 Part B 4.5.9
+  does, in place of RXTOG (pal_fm1.h PAL_FM1_SNX); the stuck-SN rule (PAL_FM1_ARQ_STUCK) counts packets new by their SN.
+  RXTOG is still read, for a cross-check: the packets at which RXTOG and the SN disagree, those at which TXTOG and the
+  central's NESN disagree on whether the central took the chip's last packet, the bad-CRC packets at which RXTOG moved
+  and did not, and the first five disagreements with their event, header and toggles (the capture's head, layout 3, 160
+  bytes; the report's PDU CAPTURE). The next run says whether the SN ever misleads (a chip that acknowledges a packet
+  with a bad CRC would make the central's next packet look like a repeat: counted there). And `fm1_ble_report.py` runs
+  btmon on the central's host (`sudo -n`, `--no-btmon` leaves it out) for BlueZ's side: its connection completions, the
+  ATT and L2CAP signalling PDUs each way and its disconnect reasons (CENTRAL'S HCI, `btmon.txt`), which no run had
+  before. On the model RXDHDR is now the air's layout (`bb_model` ir_rxdhdr keeps the IR's reading for the TX modes that
+  lost the link layer at a349877); with RXTOG held at a new ATT write (hold_l2), as at event 33, the write reaches the host
+  (up to 807d70f it was lost); with every fourth packet's CRC bad and RXTOG moving at it (crc_bad), as on the FM-1, data go
+  both ways and the SN and RXTOG agree; a chip that acknowledges a bad CRC (crc_ack) loses the next packet to Cordio, and
+  the cross-check counts and keeps it.
 
 **What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ
@@ -207,7 +233,7 @@ at once, as an interrupt within T_IFS would. Also unchecked: where the hardware'
 write (the model takes one at the write), state 7 with a fixed channel, how TXTOG changes in a connection, the data PDU header
 words, the receive window's unit, the RSSI (not read: Cordio is told 127, not available).
 
-**Tests.** `tests/ble_pal.c` (117 checks; `tests/ble_pal_mutants.py` catches 88 deliberate bugs in the PAL and the driver's
+**Tests.** `tests/ble_pal.c` (119 checks; `tests/ble_pal_mutants.py` catches 95 deliberate bugs in the PAL and the driver's
 operations; the model can count a slot more than op_arm writes, take the bit offset only with bit 15, and take the
 window from WINCNTL0 (`bb_model.h` cnt_jieli, bit15, win0), so each new setup is shown to receive on the chip it is for; the model sends a connection response from the TX slot as it is T_IFS after the packet, and a connection polled
 every 200 us, as on the FM-1, misses most events without the busy wait and none with it; with the padded window alone,
@@ -223,7 +249,7 @@ where the model opened it) and `tests/ble_stack.c` (26 checks): NimBLE over Cord
 | NimBLE host, port, glue, the driver, the stack's glue and the test run | 55,626 B | 14,403 B | object sizes, unlinked: an upper bound |
 | Cordio controller (70 objects with the glue) | 54,842 B | 475 B | object sizes, unlinked; its 3 KB heap is in the pool |
 | The chip's PAL (`pal_fm1.c`) | 1,334 B | 412 B | object size |
-| The app with all of it (WiFi stages 4-9, the pages, the stack) | 525,904 B of the 581,564 B slot | 93,764 B of 98,304 B | `./build.sh` |
+| The app with all of it (WiFi stages 4-9, the pages, the stack) | 539,452 B of the 581,564 B slot | 95,924 B of 98,304 B | `./build.sh` |
 
 The two heaps (Cordio's and `ble_libc.c`'s, 3 KB each) live in the pool, app.ld's zeroed region outside the 96 KB of
 `.data` and `.bss`; the baseband's RAM block stays in `.bss`, NimBLE's buffers (8 mbufs of 224 B) too.

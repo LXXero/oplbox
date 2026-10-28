@@ -84,8 +84,10 @@ typedef struct {
     uint8_t rx_sn;
     /* hw_arq: the chip keeps SN and NESN itself, as fm1ble.h FM1BLE_TX_ARQ reads the IR: TXDHDR bits 1-0 LLID, bit 2 the
      * slot's SN, bit 3 MD; a central's packet whose NESN differs from the SN of the slot TXTOG names acknowledges it and
-     * TXTOG changes (the other slot goes at T_IFS); one whose SN is rx_exp is new: rx_exp and RXTOG change; RXDHDR in the
-     * chip's layout (LLID, MD in bit 3, bits 2 and 4 clear); the response's NESN is rx_exp, nothing changes after it.
+     * TXTOG changes (the other slot goes at T_IFS); one whose SN is rx_exp is new: rx_exp and RXTOG change; RXDHDR bits
+     * 4-0 as on the air (LLID, NESN, SN, MD: the FM-1's header traces at 1b251ea and 807d70f; up to round 2 of the resumed
+     * goal the model wrote the IR's reading, MD in bit 3 and bits 2 and 4 clear); the response's NESN is rx_exp, nothing
+     * changes after it.
      * drop_rsp: the central does not hear every drop_rsp-th response (0: hears all), so it sends its packet again;
      * drop_data: it does not hear the first response with a payload (once); jump_drop: nor the response of the event the
      * clock jumps in (jump_us, once) */
@@ -95,6 +97,17 @@ typedef struct {
      * central's packet is acknowledged) but RXTOG does not change (once), so the PAL can only judge it a repeat: the shape
      * 1907280 may have had after NimBLE's fragmented response (pal_fm1.h PAL_FM1_CAP) */
     int hold_l2;
+    /* crc_bad (with hw_arq): every crc_bad-th packet of the central in a connection arrives with a bad CRC (RXSTAT 2, 0:
+     * none): the chip's ARQ leaves rx_exp and TXTOG alone, so the central hears its packet not acknowledged and sends it
+     * again, and RXTOG changes, as at every packet with a bad CRC in the FM-1's header trace at 807d70f (5 of 5) */
+    uint32_t crc_bad, crc_n;
+    /* crc_ack (with crc_bad): the chip's ARQ takes a packet with a bad CRC as it would a good one (the central's packet
+     * acknowledged, rx_exp changed when its SN is rx_exp), a chip whose ARQ does not look at the CRC [unchecked on the
+     * FM-1] */
+    int crc_ack;
+    /* ir_rxdhdr (with hw_arq): RXDHDR as the IR reads it (LLID, MD in bit 3, bits 2 and 4 clear), the model's layout up to
+     * round 2 of the resumed goal, for the TX modes that lost the link layer at a349877 */
+    int ir_rxdhdr;
     /* own_sn (with hw_arq): the chip judges an acknowledgement by an SN state of its own, arq_sn (it changes with TXTOG at
      * each one), not by the slot's bit 2, which stays the SN on the air; nothing resets it at a CONNECT_IND, so a test
      * sets arq_sn to what a last connection left (the second connection at e3d2a74). tx_latch_us (0: at T_IFS): the

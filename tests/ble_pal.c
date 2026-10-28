@@ -647,7 +647,7 @@ int main(void)
                     if (rsp9 && (w & 1u << 23))
                         acked = 1;
                 }
-                for (k = 0; k < PAL_FM1_TRACE_PER && (st->trace[0][k] & 0xFF1Fu) != 0x0803u; k++)
+                for (k = 0; k < PAL_FM1_TRACE_PER && (st->trace[0][k] & 0xFF03u) != 0x0803u; k++)
                     ;
                 check(k < PAL_FM1_TRACE_PER && (st->trace[0][k] & 1u << 5) && (st->trace[0][k] & 1u << 24) &&
                       (st->trace[0][k] & 3u << 21) == 3u << 21 && (st->trace[0][0] & 0x1Fu) == 1u && rsp9 == 1 && acked,
@@ -742,8 +742,9 @@ int main(void)
             bbm.tx_latch_us = 0;
             missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             check(h != 0xFFFF && missed == 0 && data_ok && g_feat_rsp == 1 && st->arq_unwritten == 0 && st->ahead_put >= 15u &&
-                  (st->ll_cnt[0] & 0xFFu) == 1u && st->sn_flips_first == 0 && st->sn_flips_stuck == 0,
-                  "ARQ ahead: LL_FEATURE_RSP once, the ATT write reaches the host, the chip's SN left alone");
+                  (st->ll_cnt[0] & 0xFFu) == 1u && st->sn_flips_first == 0 && st->sn_flips_stuck == 0 &&
+                  !st->sn_x[0] && !st->sn_x[1] && !st->sn_x[4] && !st->sn_x[5] && !st->snx_n,
+                  "ARQ ahead: LL_FEATURE_RSP once, the ATT write reaches the host, the chip's SN left alone, no disagreement");
             /* the PDU capture (pal_fm1.h PAL_FM1_CAP): the central's LL_FEATURE_REQ and ATT write as received, Cordio's
              * LL_FEATURE_RSP once (handed again unchanged: one entry), written ahead */
             {
@@ -769,20 +770,57 @@ int main(void)
             polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             check(!bbm.drop_data && h != 0xFFFF && data_ok && g_feat_rsp == 1 && cap_count(st, 1, 3, 0x09) == 1,
                   "ARQ ahead, the feature response not heard: sent again from its slot, heard once, captured once");
-            /* the chip takes the central's ATT write as new on the air but RXTOG does not move (bb_model hold_l2): the PAL
-             * tells Cordio it is a repeat, and the capture keeps it (bit 2 clear) once, after the feature request */
+            /* the chip takes the central's ATT write as new on the air but RXTOG does not move (bb_model hold_l2), as
+             * BlueZ's Read By Type request at 807d70f's event 33: new by its SN, so it reaches the host (up to 807d70f the
+             * PAL told Cordio it was a repeat and it was lost), captured once as new; the cross-check (pal_fm1.h
+             * PAL_FM1_SNX) counts and keeps it: new by the SN, RXTOG still, RXDHDR's LLID 2 */
             bbm.hold_l2 = 1;
             polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             {
                 int rep = 0, att = 0;
+                uint32_t w = st->snx[0];
                 for (k = 0; k < (int)st->cap_n; k++) {
                     const uint8_t *e = st->cap[k];
                     if (!(e[0] & 1u) && (e[1] & 3u) == 2u && e[2] == 12u && e[6] == 7u && e[10] == 0x52u)
                         *((e[0] & 4u) ? &att : &rep) += 1;
                 }
-                check(!bbm.hold_l2 && h != 0xFFFF && !data_ok && rep == 1 && att == 0 && st->arq_dup >= 1u,
-                      "ARQ ahead, an ATT write the chip takes without moving RXTOG: lost to the host, captured once as a repeat");
+                check(!bbm.hold_l2 && h != 0xFFFF && data_ok && g_feat_rsp == 1 && rep == 0 && att == 1 &&
+                      st->sn_x[0] == 1u && st->sn_x[1] == 0 && st->snx_n == 1u && (w >> 16 & 3u) == 2u &&
+                      !(w & 1u << 21) && (w >> 24 & 15u) == st->conns && !(w >> 28),
+                      "ARQ ahead, an ATT write the chip takes without moving RXTOG: new by its SN, it reaches the host once");
             }
+            /* every fourth packet of the central with a bad CRC (bb_model crc_bad), RXTOG moving at each as on the FM-1:
+             * the PAL leaves the SN it expects alone at them, the central's packet sent again is new once, nothing lost or
+             * doubled, and the SN and RXTOG agree at every good packet */
+            bbm.crc_bad = 4;
+            polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(h != 0xFFFF && data_ok && g_feat_rsp == 1 && st->sn_x[2] >= 3u && st->sn_x[3] == 0 &&
+                  st->sn_x[0] == 0 && st->sn_x[1] == 0 && st->snx_n == 0,
+                  "ARQ ahead, every fourth packet with a bad CRC and RXTOG moving at it: data both ways, SN and RXTOG agree");
+            /* a chip whose ARQ takes a packet with a bad CRC as a good one (bb_model crc_ack, every fourth): the central
+             * goes on to its next SN, the PAL (which leaves a bad packet out) takes the next packet as a repeat, so a PDU
+             * is lost to Cordio; the cross-check counts the repeats by the SN at which RXTOG moved, and the capture keeps
+             * the PDU as a repeat (its bytes differ from the last one's). The shape a bad CRC would have on the FM-1 if
+             * its ARQ did not look at the CRC [unchecked]: the next run's cross-check says whether it does */
+            run_us(2500000);
+            bbm.crc_bad = 4;
+            bbm.crc_n = 0;
+            bbm.crc_ack = 1;
+            polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            {
+                int rep = 0;
+                for (k = 0; k < (int)st->cap_n; k++)
+                    if (!(st->cap[k][0] & 1u) && (st->cap[k][0] & 2u) && !(st->cap[k][0] & 4u))
+                        rep++;
+                check(h != 0xFFFF && rep == 1 && st->sn_x[1] >= 1u && st->sn_x[0] == 0 && st->snx_n >= 1u &&
+                      (st->snx[0] & 1u << 21) && (st->snx[0] & 1u << 22) && st->arq_dup >= 1u,
+                      "ARQ ahead, a chip that acknowledges a bad CRC: the next packet a repeat by its SN, counted and captured");
+            }
+            bbm.crc_bad = 0;
+            run_us(2500000);
+            bbm.crc_ack = 0;
+            bbm.crc_bad = 0;
+            bbm.crc_n = 0;
             g_burst = 2;
             polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             check(h != 0xFFFF && data_ok && g_feat_rsp == 1 && st->later_given == st->later_rx,
@@ -819,8 +857,9 @@ int main(void)
             bbm.tick = 0;
             bbm.own_sn = 0;
             g_arq_ways = PAL_FM1_ARQ_TIFS;
-            /* on that chip INTIME, JIELI and AIR lose the link layer as the FM-1 did at a349877 (packets received, no
-             * GATT): Cordio reads the chip's MD bit as SN */
+            /* on that chip with RXDHDR as the IR reads it (bb_model ir_rxdhdr: MD in bit 3) INTIME, JIELI and AIR lose the
+             * link layer as the FM-1 did at a349877 (packets received, no GATT): Cordio reads the chip's MD bit as SN */
+            bbm.ir_rxdhdr = 1;
             {
                 static const uint8_t M[3] = { FM1BLE_TX_INTIME, FM1BLE_TX_JIELI, FM1BLE_TX_AIR };
                 for (i = 0; i < 3; i++) {
@@ -833,6 +872,7 @@ int main(void)
             }
             /* all four, the order: the first connection ARQ; L2CAP came through, so the next keeps it. Its two ways in
              * turn: the first ahead, the second in T_IFS (one ATT write: fewer than PAL_FM1_L2_GOOD L2CAP PDUs keep none) */
+            bbm.ir_rxdhdr = 0;
             g_tx_modes = 0;
             g_arq_ways = 0;
             missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
@@ -843,6 +883,7 @@ int main(void)
                   "the TX order: the first connection ARQ, kept by the next once L2CAP came through; ahead, then in T_IFS");
             /* packets alone do not keep a mode (a349877 kept INTIME on 462): INTIME's connection receives, no L2CAP gets
              * through, the next connection runs JIELI, the next of the order */
+            bbm.ir_rxdhdr = 1;
             g_tx_modes = (uint8_t)(1u << FM1BLE_TX_INTIME | 1u << FM1BLE_TX_JIELI);
             polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             run_us(2500000);
@@ -851,6 +892,7 @@ int main(void)
             check(st->conns == 2 && st->tx_rx[FM1BLE_TX_INTIME] >= 15u && st->good_tx == PAL_FM1_NO_SETUP &&
                   st->conn_txs == (FM1BLE_TX_INTIME | FM1BLE_TX_JIELI << 4),
                   "packets without L2CAP keep no TX mode: the next connection runs the next of the order");
+            bbm.ir_rxdhdr = 0;
             bbm.hw_arq = 0;
             g_feat = 0;
             bbm.hw_nesn = 1;

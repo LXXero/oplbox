@@ -101,7 +101,12 @@ static void conn_rx(const uint8_t *req, int r, uint64_t at)
     bbm.now_us = at + bb_model_air_us(r);
     air_rx(req, r, 0);
     bbm.rx_sn = (uint8_t)(req[0] >> 3 & 1u);
-    if (bbm.hw_arq) {                   /* the chip's ARQ (bb_model.h hw_arq) */
+    if (bbm.hw_arq && bbm.crc_bad && ++bbm.crc_n % bbm.crc_bad == 0) {     /* a bad CRC (bb_model.h crc_bad) */
+        air16w(FM1BLE_E_RXSTAT0, 2);
+        if (!bbm.crc_ack)
+            air16w(FM1BLE_E_RXTOG, air16(FM1BLE_E_RXTOG) ^ 1u);
+    }
+    if (bbm.hw_arq && (bbm.crc_ack || air16(FM1BLE_E_RXSTAT0) == 1u)) {   /* the chip's ARQ (bb_model.h hw_arq) */
         uint32_t s = air16(FM1BLE_E_TXTOG) & 1u, dh = air16(s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
         uint32_t mine = bbm.own_sn ? bbm.arq_sn : (dh >> 2 & 1u);     /* own_sn: the chip's state, not the slot's bit */
         if ((req[0] >> 2 & 1u) != mine) {
@@ -115,7 +120,8 @@ static void conn_rx(const uint8_t *req, int r, uint64_t at)
             else
                 air16w(FM1BLE_E_RXTOG, air16(FM1BLE_E_RXTOG) ^ 1u);
         }
-        air16w(FM1BLE_E_RXDHDR0, (uint32_t)req[1] << 8 | (req[0] & 3u) | (req[0] >> 1 & 8u));
+        if (bbm.ir_rxdhdr)
+            air16w(FM1BLE_E_RXDHDR0, (uint32_t)req[1] << 8 | (req[0] & 3u) | (req[0] >> 1 & 8u));
     }
     bbm.jump_left = bbm.jump_reads;
     bbm.resp_at = bbm.now_us + 150u;

@@ -256,10 +256,24 @@ check("PDU CAPTURE (what went each way" in out and
       "     1  01 empty                  R-  ack new  09 continuation" in out and
       "          slot 0: start 27 bytes, SN 0, first byte 25; the other slot LLID 1, SN 0; RXTOG 1; ahead" in out and
       "     4    2    32  central  02   11  --    ATT Read By Type Req: 000D-FFFF, type 2803  [Cordio was told: a repeat]"
-      in out,
+      in out and
+      "  RXTOG against the central's SN (the PAL goes by the SN): new by the SN with RXTOG still 1, a repeat by the SN with "
+      "RXTOG moved 0; bad CRC with RXTOG moved 5, still 0" in out and
+      "  TXTOG against the central's NESN (it took the chip's last packet): TXTOG moved with the NESN the same 0, the NESN "
+      "changed with TXTOG still 2" in out and
+      "    conn 1 ev    33  RXDHDR 0E (SN 1, NESN 1)  the SN against RXTOG: RXTOG still, TXTOG moved; a bad CRC since the "
+      "previous good packet" in out and
+      "    conn 2 ev    40  RXDHDR 05 (SN 0, NESN 1)  the NESN against TXTOG: RXTOG moved, TXTOG moved" in out,
       f"--run: the PDU capture:\n{out[out.find('PDU CAPTURE'):]}")
-check(rep["capture"] is not None and len(rep["capture"]) == 128 + 5 * 20 and
+check(rep["capture"] is not None and len(rep["capture"]) == 160 + 5 * 20 and
       [s["step"] for s in rep["steps"]] == br.STEPS, "the capture frame decoded apart from the steps")
+# a layout-2 capture (round 8, a 128-byte head: the report of 807d70f) reads as it did, without the cross-check
+cap2 = bytes([2]) + rep["capture"][1:128] + rep["capture"][160:]
+o2 = io.StringIO()
+br.show_capture({"capture": cap2}, o2)
+check("     4    2    32  central  02   11  --    ATT Read By Type Req: 000D-FFFF, type 2803  [Cordio was told: a repeat]"
+      in o2.getvalue() and "settled 185" in o2.getvalue() and "RXTOG against" not in o2.getvalue(),
+      f"a layout-2 capture:\n{o2.getvalue()}")
 # a layout-1 capture (round 7, a 16-byte head: the reports of 1907280 and before) reads as it did, no MTUs or trace
 cap1 = bytes([1, 1, 0x14, 1, 1, 0, 0xFF, 3, 1, 0, 0, 0, 2, 0, 3, 0,
               6, 2, 7, 4, 0, 1, 3, 0, 4, 0, 2, 5, 2, 0, 0, 0, 0, 0, 0, 0])
@@ -290,6 +304,24 @@ rc, out, err = tool(dev, "--run", "--wait", "3", "--timeout", "20", "--central",
 check(rc == 0 and "CENTRAL (tools/ble_central.py)" in out and "C2:46:4D:31:00:01  the stack (Cordio, NimBLE): seen" in out and
       "connect: yes; MIDI port: 128:0" in out, f"--central local: exit {rc} {err}\n{out}")
 check(os.path.exists(os.path.join(d, "central.json")) and "central.json" in out, "--central --out: central.json")
+check("CENTRAL'S HCI" not in out and "btmon.txt" not in out, f"--central local: no btmon unless --btmon\n{out}")
+# --btmon: btmon (the stand-in, through the stand-in sudo) during the run, BlueZ's side summed up and kept in btmon.txt
+rc, out, err = tool(dev, "--run", "--wait", "3", "--timeout", "20", "--central", "local", "--btmon", "--out", d)
+check(rc == 0 and f"CENTRAL'S HCI (btmon on local: BlueZ's side; all of it in {os.path.join(d, 'btmon.txt')})" in out and
+      "     23.812  LE Enhanced Connection Complete: Success (0x00), peer C2:46:4D:31:00:01 (Static)" in out and
+      "     23.912  BlueZ -> FM-1  ATT: Exchange MTU Request (0x02) len 2 | Client RX MTU: 517" in out and
+      "     23.950  FM-1 -> BlueZ  ATT: Exchange MTU Response (0x03) len 2 | Server RX MTU: 23" in out and
+      "     24.100  BlueZ -> FM-1  ATT: Read By Type Request (0x08) len 6 | Handle range: 0x000d-0xffff; Attribute type: "
+      "Characteristic (0x2803)" in out and
+      "     54.200  disconnected: Remote User Terminated Connection (0x13)" in out and
+      "Data Length" not in out[out.find("CENTRAL'S HCI"):] and "btmon.txt)" in out and
+      "Bluetooth monitor" in open(os.path.join(d, "btmon.txt")).read(),
+      f"--central local --btmon: exit {rc} {err}\n{out}")
+os.environ["FAKE_SUDO_DENY"] = "1"
+rc, out, err = tool(dev, "--run", "--wait", "3", "--timeout", "20", "--central", "local", "--btmon", "--out", d)
+del os.environ["FAKE_SUDO_DENY"]
+check(rc == 0 and "  btmon did not run: sudo: a password is required" in out and "connect: yes" in out,
+      f"--btmon where sudo asks for a password: the run goes on without it\n{out}")
 dev.stop()
 
 dev = PipeBackend("--serve-ble", REPORT, "edit")

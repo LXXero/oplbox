@@ -25,6 +25,11 @@ scan sends the SCAN_REQs the RX trials count), connects to the stack, sends
 a Note On (90 3C 64) through the ALSA sequencer port BlueZ makes and captures the FM-1's notification. Its findings are
 printed after the report and written to DIR/central.json. So one run on the bench checks all eight steps.
 
+With --central on another host, btmon runs there too (sudo -n, so a sudo that asks for a password skips it; --no-btmon
+leaves it out, --btmon runs it for --central local as well): BlueZ's side of the HCI while the run goes on, written to
+DIR/btmon.txt (or the system's temporary directory without --out) and summed up after the central's findings as
+CENTRAL'S HCI: each connection's completion, the ATT and L2CAP signalling PDUs each way, and each disconnection's reason.
+
 Exit codes: 0 done, 1 the FM-1 refused or has no report (no run since it started), 2 bad arguments, 3 FM-1 not found,
 4 no reply (connection lost, or a firmware without the Bluetooth report), 5 the run did not finish within --timeout.
 """
@@ -34,6 +39,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -127,9 +133,11 @@ LL_OPS = ["CONN_UPDATE_IND", "CHANNEL_MAP_IND", "TERMINATE_IND", "ENC_REQ", "ENC
           "LENGTH_REQ", "LENGTH_RSP", "PHY_REQ", "PHY_RSP", "PHY_UPDATE_IND", "MIN_USED_CHANNELS_IND"]
 LOG_NONE = 0x8000                        # pal_fm1.h PAL_FM1_LOG_NONE
 # the PDU capture (firmware/ble/fm1ble_test.h FM1BLE_CAP_*, since round 7): a frame after the steps', index len(STEPS);
-# its head by layout: 1 (round 7) 16 bytes, 2 (since round 8) 128: NimBLE's MTUs and the fragment trace (pal_fm1.h PAL_FM1_FRAG)
-CAP_HEADS = {1: 16, 2: 128}
+# its head by layout: 1 (round 7) 16 bytes, 2 (since round 8) 128: NimBLE's MTUs and the fragment trace (pal_fm1.h PAL_FM1_FRAG),
+# 3 (since round 2 of the resumed goal) 160: the SN and NESN cross-check (pal_fm1.h PAL_FM1_SNX)
+CAP_HEADS = {1: 16, 2: 128, 3: 160}
 FRAG = 12
+SNX = 5
 ATT_OPS = {0x01: "ATT Error Rsp", 0x02: "ATT Exchange MTU Req", 0x03: "ATT Exchange MTU Rsp", 0x04: "ATT Find Information Req",
            0x05: "ATT Find Information Rsp", 0x06: "ATT Find By Type Value Req", 0x07: "ATT Find By Type Value Rsp",
            0x08: "ATT Read By Type Req", 0x09: "ATT Read By Type Rsp", 0x0A: "ATT Read Req", 0x0B: "ATT Read Rsp",
@@ -531,6 +539,8 @@ def show_capture(rep, out):
             for i, (w, sw) in enumerate(words):
                 print(f"    {i:2d}  {trace_line(w)}", file=out)
                 print(f"          {slot_line(sw)}", file=out)
+    if c[0] >= 3:
+        show_snx(c, out)
     print("     # conn    ev  from     hdr len  side  what", file=out)
     for k in range(n):
         e = c[head + size * k:head + size * (k + 1)]
@@ -550,6 +560,28 @@ def show_capture(rep, out):
     print("  (from: Cordio+ written ahead; side: Cordio's response time after the packet was seen, or for the central's, "
           "RXTOG/TXTOG changed at it, + a later packet of its event; hdr: RXDHDR bits 4-0 as the chip wrote them, or "
           "Cordio's header bits 4-0; the first 14 payload bytes)", file=out)
+
+
+def snx_line(w):
+    """one disagreement of the cross-check (pal_fm1.h PAL_FM1_SNX)"""
+    h = w >> 16 & 0x1F
+    what = "the NESN against TXTOG" if w >> 28 & 1 else "the SN against RXTOG"
+    return (f"conn {w >> 24 & 15} ev {w & 0xFFFF:5d}  RXDHDR {h:02X} (SN {h >> 3 & 1}, NESN {h >> 2 & 1})  {what}: RXTOG "
+            f"{'moved' if w >> 21 & 1 else 'still'}, TXTOG {'moved' if w >> 23 & 1 else 'still'}"
+            f"{'; a bad CRC since the previous good packet' if w >> 22 & 1 else ''}")
+
+
+def show_snx(c, out):
+    """the cross-check of a layout-3 capture: the chip's toggles against the central's SN and NESN"""
+    x = [int.from_bytes(c[128 + 2 * k:130 + 2 * k], "little") for k in range(6)]
+    print(f"  RXTOG against the central's SN (the PAL goes by the SN): new by the SN with RXTOG still {x[0]}, a repeat by the "
+          f"SN with RXTOG moved {x[1]}; bad CRC with RXTOG moved {x[2]}, still {x[3]}", file=out)
+    print(f"  TXTOG against the central's NESN (it took the chip's last packet): TXTOG moved with the NESN the same {x[4]}, "
+          f"the NESN changed with TXTOG still {x[5]}", file=out)
+    words = [int.from_bytes(c[140 + 4 * k:144 + 4 * k], "little") for k in range(SNX)]
+    for w in words:
+        if w:
+            print(f"    {snx_line(w)}", file=out)
 
 
 def t16(v):
@@ -715,6 +747,89 @@ class Central:
                     "stderr": err.decode("utf-8", "replace")[-2000:]}
 
 
+class Btmon:
+    """btmon on the central's host (over ssh, or here for "local") in the background, its text into a file"""
+
+    def __init__(self, host, timeout, path):
+        cmd = ["sudo", "-n", "timeout", f"{timeout:g}", "btmon"]
+        argv = cmd if host == "local" else ["ssh", "-o", "BatchMode=yes", host, *cmd]
+        self.host, self.path = host, path
+        self.f = open(path, "wb")
+        self.p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=self.f, stderr=subprocess.PIPE)
+
+    def stop(self):
+        """stops it (its timeout stops it on the host if the ssh goes first); its stderr when it ended by itself"""
+        early = self.p.poll() is not None
+        if not early:
+            self.p.terminate()
+        try:
+            _, err = self.p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+            _, err = self.p.communicate()
+        self.f.close()
+        return err.decode("utf-8", "replace").strip() if early else ""
+
+
+BTMON_SHOW = 80
+
+
+def btmon_events(text):
+    """btmon's text -> [(seconds, what)]: connections completed, ATT and L2CAP signalling PDUs each way, disconnections"""
+    lines, ev, i = text.splitlines(), [], 0
+
+    def at(h):
+        try:
+            return float(h.split()[-1])
+        except (IndexError, ValueError):
+            return 0.0
+
+    def body(i):
+        """the indented lines after the header at i"""
+        j = i + 1
+        while j < len(lines) and lines[j].startswith(" "):
+            j += 1
+        return [l.strip() for l in lines[i + 1:j]]
+
+    def field(b, name):
+        return next((l[len(name) + 1:].strip() for l in b if l.startswith(name + ":")), "?")
+
+    while i < len(lines):
+        h = lines[i]
+        b = body(i)
+        if h.startswith(("> ACL Data RX", "< ACL Data TX")):
+            pdu = next((l for l in b if l.startswith(("ATT:", "LE L2CAP:", "L2CAP:"))), None)
+            if pdu:
+                more = b[b.index(pdu) + 1:b.index(pdu) + 4]
+                ev.append((at(h), ("FM-1 -> BlueZ  " if h[0] == ">" else "BlueZ -> FM-1  ") + pdu +
+                           (" | " + "; ".join(more) if more else "")))
+        elif h.startswith("> HCI Event: Disconnect Complete"):
+            ev.append((at(h), f"disconnected: {field(b, 'Reason')}"))
+        elif h.startswith("> HCI Event: LE Meta Event") and b and "Connection Complete" in b[0]:
+            ev.append((at(h), f"{b[0].split(' (')[0]}: {field(b, 'Status')}, peer {field(b, 'Peer address')}"))
+        i += 1
+    return ev
+
+
+def show_btmon(host, path, err, out):
+    print(f"\nCENTRAL'S HCI (btmon on {host}: BlueZ's side; all of it in {path})", file=out)
+    if err:
+        print(f"  btmon did not run: {err[-300:]}", file=out)
+        return
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            ev = btmon_events(f.read())
+    except OSError as e:
+        print(f"  btmon's text not read: {e}", file=out)
+        return
+    if not ev:
+        print("  no connection, ATT or disconnection in it", file=out)
+    for t, what in ev[:BTMON_SHOW]:
+        print(f"  {t:9.3f}  {what}", file=out)
+    if len(ev) > BTMON_SHOW:
+        print(f"  ({len(ev) - BTMON_SHOW} more in {path})", file=out)
+
+
 def show_central(c, out):
     print("\nCENTRAL (tools/ble_central.py)", file=out)
     if c.get("error"):
@@ -751,8 +866,13 @@ def run(a, backend, out):
     dev = up.find()
     if not dev:
         raise ReportError("notfound", str(fi.not_found(up)))
-    central = None
+    central = btmon = None
     try:
+        if a.run and a.central and (a.btmon or (a.central != "local" and a.btmon is None)):
+            if a.out:
+                os.makedirs(a.out, exist_ok=True)
+            path = os.path.join(a.out, "btmon.txt") if a.out else os.path.join(tempfile.gettempdir(), "fm1_btmon.txt")
+            btmon = Btmon(a.central, a.timeout + 30.0, path)
         if a.run and a.central:
             central = Central(a.central, a.timeout)
             time.sleep(DELAY["central"])             # scanning before the first trial's advertisements
@@ -771,6 +891,8 @@ def run(a, backend, out):
     c = central.result(a.timeout) if central else None
     if c is not None:
         show_central(c, shown)
+    if btmon:
+        show_btmon(btmon.host, btmon.path, btmon.stop(), shown)
     out.write(shown.getvalue())
     if a.out:
         write_out(a.out, rep, raw)
@@ -780,8 +902,8 @@ def run(a, backend, out):
         if c is not None:
             with open(os.path.join(a.out, "central.json"), "w") as f:
                 json.dump(c, f, indent=1)
-        print(f"-> {a.out} (report.txt, report.bin, counters.txt, summary.txt, {n} step files{', central.json' if c is not None else ''})",
-              file=out)
+        print(f"-> {a.out} (report.txt, report.bin, counters.txt, summary.txt, {n} step files{', central.json' if c is not None else ''}"
+              f"{', btmon.txt' if btmon else ''})", file=out)
     return 0
 
 
@@ -798,6 +920,8 @@ def main(argv=None, backend=None, out=sys.stdout):
     ap.add_argument("--port", metavar="NAME", help="MIDI port to use (part of its name)")
     ap.add_argument("--central", metavar="HOST", help="--run: run tools/ble_central.py on HOST over ssh ('local': here) "
                     "as the central meanwhile")
+    ap.add_argument("--btmon", action=argparse.BooleanOptionalAction, default=None,
+                    help="--central: run btmon (sudo -n) on the central's host meanwhile (default: on unless 'local')")
     a = ap.parse_args(argv)
     if not 0 <= a.wait <= WAIT_MAX:
         ap.error(f"--wait takes 0-{WAIT_MAX} seconds")
