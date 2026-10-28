@@ -85,11 +85,11 @@ check(r["connected"] and r["dropped"] is not None and r["port"] is None and len(
       "never came up on the FM-1's side: BlueZ dropped it" in r["errors"][0] and "before resolving" in r["errors"][0],
       f"dropped: {r}")
 check("dropped the connection" in err, "dropped: said on stderr")
-check(len(r["attempts"]) == 6 and all(t["connected"] and t["dropped"] is not None for t in r["attempts"]) and
-      cmds.count("connect C2:46:4D:31:00:01") == 6, f"dropped: connected again after each drop, 6 connects in all: {r['attempts']}")
+check(len(r["attempts"]) == 7 and all(t["connected"] and t["dropped"] is not None for t in r["attempts"]) and
+      cmds.count("connect C2:46:4D:31:00:01") == 7, f"dropped: connected again after each drop, 7 connects in all: {r['attempts']}")
 out = io.StringIO()
 br.show_central(r, out)
-check("GATT services resolved: no; dropped: after" in out.getvalue() and "attempt 6 at" in out.getvalue() and
+check("GATT services resolved: no; dropped: after" in out.getvalue() and "attempt 7 at" in out.getvalue() and
       "connected, GATT services not resolved, dropped after" in out.getvalue(), f"show_central, a drop:\n{out.getvalue()}")
 rc, r, cmds, sent, err = central("dropped", "--tries", "1")
 check(len(r["attempts"]) == 1 and cmds.count("connect C2:46:4D:31:00:01") == 1, f"dropped, --tries 1: one connect: {cmds}")

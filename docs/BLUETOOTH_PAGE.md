@@ -126,7 +126,7 @@ probe's (`probe_n`, `clk_idle_*` and `clk_arm_*` the anchor file read back, `prS
 delays and two windows, `probe_delays`, `probe_windows`). The window probe runs after the RX trials, before the stack,
 without a central: connection events on a data channel nobody sends on, so each ends where the chip closes its window;
 `fm1_ble_report.py` prints it as WINDOW PROBE. Each connection runs one window setup, the next connection the next one
-(pal_fm1.h PAL_FM1_SETUP_ORDER), and MIDI_IN waits through a central leaving while NimBLE has seen fewer than 6 connects,
+(pal_fm1.h PAL_FM1_SETUP_ORDER), and MIDI_IN waits through a central leaving while NimBLE has seen fewer than 7 connects,
 so a central that connects again tries the setups in turn. `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS, a table of the logged events) and with `--out`
 writes what it printed to summary.txt. `rf_common` is what the shared radio's init returned the first time (trial 1): a later power-up finds WiFi
 up and it returns 0 there. `fm1_ble_report.py` prints the RX trials decoded (RX TRIALS). Up to 122afe3 the firmware sent

@@ -191,7 +191,7 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
 /* A central that leaves during MIDI_IN (the connection dropped) may connect again: the step waits on while NimBLE has
  * seen fewer than FM1BLE_CONN_TRIES connects, within the step's wait. Each connection runs the PAL's next window setup
  * (pal_fm1.h), so a run whose central connects again (tools/ble_central.py --tries) tries them in turn. */
-#define FM1BLE_CONN_TRIES   6u
+#define FM1BLE_CONN_TRIES   7u
 
 enum { FM1BLE_IDLE, FM1BLE_RUNNING, FM1BLE_DONE };
 

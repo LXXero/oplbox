@@ -284,8 +284,8 @@ def main(argv=None):
     ap.add_argument("--stack", required=True, metavar="ADDR", help="the address the stack advertises from")
     ap.add_argument("--trials", default="", metavar="ADDR,...", help="more addresses to log (the air trials)")
     ap.add_argument("--timeout", type=float, default=120.0, metavar="S", help="the most it runs (default 120 s)")
-    ap.add_argument("--tries", type=int, default=6, metavar="N",
-                    help="connects in all when one drops before the MIDI port (default 6: the PAL's setups in turn)")
+    ap.add_argument("--tries", type=int, default=7, metavar="N",
+                    help="connects in all when one drops before the MIDI port (default 7: the PAL's setups in turn)")
     ap.add_argument("--json", action="store_true", help="the result as JSON on the last line of stdout")
     ap.add_argument("--bluetoothctl", default="bluetoothctl", help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
