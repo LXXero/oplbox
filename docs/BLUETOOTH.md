@@ -543,7 +543,7 @@ Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tes
    own receive setups (docs/BLUETOOTH_PAGE.md), and then brings up the stack
    on the radio of the trial that sent (`hci`, `connect`, `midi_in`, `midi_out`). `tests/ble_stack.c run` runs it on the air with the central: every step PASS.
    The host build's page and tool tests run a scripted fake (`tests/ble/fm1ble_test_host.c`).
-6. **Size: in the app.** The app links the test run, the driver, the PAL, Cordio, NimBLE and `ble_libc.c`: 529,328 B of
+6. **Size: in the app.** The app links the test run, the driver, the PAL, Cordio, NimBLE and `ble_libc.c`: 529,408 B of
    581,564 B and 94,084 B of 98,304 B of RAM (Cordio's 3 KB heap and the C library's 3 KB heap are in the pool, app.ld's
    zeroed region outside the 96 KB), with WiFi's stages 4-9 in the same image.
 
@@ -594,7 +594,8 @@ the event itself: hop 1 over the three channels, no bit offset, the local addres
 
 What changed: the PAL arms one hardware advertising event per Cordio event, through the same `adv_arm` as the driver's
 advertising, and Cordio's other two packets of the event go in it (docs/BLUETOOTH_CORDIO.md); the scan response Cordio
-gives stays in TX buffer 1 for the next events; a CONNECT_IND ends the event; a data PDU goes in both TX slots. The
+has (its advertising operation's scan response, read when the event is armed) goes in TX buffer 1 for that event, so a
+scan response the host changes goes out from the next event on; a CONNECT_IND ends the event; a data PDU goes in both TX slots. The
 register model now does what the chip did with one-channel events (on 37: ends, sends nothing; on 38, 39: never ends),
 so the PAL of 122afe3 fails the host tests the way it failed on the FM-1. Eight counters more (40, a fourteenth page):
 docs/BLUETOOTH_PAGE.md.

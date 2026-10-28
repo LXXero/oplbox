@@ -25,6 +25,7 @@ typedef struct {
     uint32_t adv_seen[3];               /* ADV_IND heard on 37, 38, 39 */
     uint32_t adv_from[256];             /* ADV_IND heard, by the first (least significant) byte of the advertiser address */
     uint32_t adv_short;                 /* ADV_IND too short for its address, or its length byte not the PDU's */
+    uint32_t adv_scan_rsp;              /* a SCAN_RSP sent where an advertising PDU belongs */
     uint8_t last_adv[40];
     int last_adv_n;
     uint8_t chan_order[16];

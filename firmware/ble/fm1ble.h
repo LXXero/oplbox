@@ -95,7 +95,6 @@ typedef struct {
     uint8_t rearm, hop;
     uint8_t op_on, op_chan, op_state;   /* fm1ble_op_*: an operation armed, its channel, its state code (2 or 7) */
     uint8_t op_slot;            /* the TX slot (TXTOG & 1 when armed) the advertising PDU went into; the response takes the other */
-    uint8_t op_rsp;             /* TX buffer 1 holds the scan response fm1ble_op_resp put in */
     uint8_t txpwr;              /* the transmit power level in both TXPWR words */
     uint8_t adv_type;           /* fm1ble_adv_start's PDU type, for re-pointing the buffers after each event */
     uint16_t slots;             /* the interval in slots, for re-arming */
@@ -179,16 +178,18 @@ int fm1ble_op_chan(fm1ble *b, uint32_t aa, uint32_t crc, uint8_t chan);
 void fm1ble_op_power(fm1ble *b, uint8_t level);
 /* An advertising event on 37, 38 and 39, its first packet in the slot delay_us falls in (whole 625 us slots, no bit
  * offset, as fm1ble_adv_start arms). The PDU (it starts with AdvA, which becomes the local address the hardware matches
- * requests against) goes into the TX slot TXTOG & 1 names (the one the hardware sends next); the other slot holds the
- * last scan response fm1ble_op_resp put in, or the PDU again until there is one. A channel must be set (37-39: which one
- * does not matter, the event covers all three). FM1BLE_ESTATE before fm1ble_bb_init or while fm1ble_adv_start's
- * advertising runs, FM1BLE_EARG for a data channel or a PDU under 8 or over 39 bytes. */
-int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n);
+ * requests against) goes into the TX slot TXTOG & 1 names (the one the hardware sends next); the other slot holds rsp,
+ * the scan response the hardware answers this event's SCAN_REQs with (TX buffer 1), or the PDU again when rsp is NULL or
+ * nrsp 0 and for ADV_NONCONN_IND. Each call takes the scan response as it is now: nothing is kept from an earlier event.
+ * A channel must be set (37-39: which one does not matter, the event covers all three). FM1BLE_ESTATE before
+ * fm1ble_bb_init or while fm1ble_adv_start's advertising runs, FM1BLE_EARG for a data channel or a PDU or scan response
+ * under 8 or over 39 bytes. */
+int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n, const uint8_t *rsp, uint16_t nrsp);
 /* A connection event as the peripheral on the channel set (0-36): listen from delay_us from now for window_us
  * (WINCNTL2, at most 65535; WINCNTL0 = FM1BLE_WIN0, as le_hw_ioctrl's __set_winsize writes them). */
 int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
-/* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event (kept for the next events' SCAN_REQs),
- * buffer 0 in both TX slots in a connection event. At most 37 bytes of payload (the buffers' size, E.4). */
+/* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event (for the rest of this event; the next
+ * fm1ble_op_adv puts in the scan response it is given), buffer 0 in both TX slots in a connection event. At most 37 bytes of payload (the buffers' size, E.4). */
 int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n);
 /* The event off: anchor counter stopped, the link's interrupts off. No wait (it may run from an interrupt). */
 void fm1ble_op_stop(fm1ble *b);

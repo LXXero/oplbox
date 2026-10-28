@@ -300,7 +300,6 @@ int fm1ble_bb_init(fm1ble *b, void *block)
     d->err = wait_idle();
     clr(FM1BLE_BB_IRQ_EN, BIT(HW_ID) | BIT(HW_ID + 8u));
     b->link_open = 1;
-    b->op_rsp = 0;
 
     d->bb[0] = rd(FM1BLE_BB_CON0);
     d->bb[1] = rd(FM1BLE_BB_T08);
@@ -422,7 +421,6 @@ int fm1ble_adv_start(fm1ble *b, const fm1ble_adv *a)
     if (a->type != 2)
         build_pdu(b, 1, 4, a->own_random, a->addr, a->rsp, a->nrsp);
     b->adv_type = a->type;
-    b->op_rsp = 0;                                   /* buffer 1 is this advertising's, not a PAL's scan response */
     adv_slots(b);                                    /* TXTOG may be odd from an earlier link: the slot it names */
     /* G 10: local address match enabled (OPTCNTL bit 4 cleared) */
     e16(b, FM1BLE_E_OPTCNTL, g16(b, FM1BLE_E_OPTCNTL) & ~BIT(4));
@@ -620,13 +618,15 @@ static void op_arm(fm1ble *b, uint32_t state, uint32_t delay_us)
     b->op_on = 1;
 }
 
-int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n)
+int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n, const uint8_t *rsp, uint16_t nrsp)
 {
     uint32_t i, type;
 
     if (!b->link_open || b->adv_on)
         return FM1BLE_ESTATE;
     if (b->op_chan < 37 || !pdu || n < 8 || n > OP_MAX_PDU || pdu[1] != n - 2u)
+        return FM1BLE_EARG;
+    if (rsp && nrsp && (nrsp < 8 || nrsp > OP_MAX_PDU || rsp[1] != nrsp - 2u))
         return FM1BLE_EARG;
     type = pdu[0] & 0xFu;
     /* fm1ble_adv_start's order: __set_local_addr from the PDU's AdvA (E.2: LOCALADR, FORMAT bit 3), G 2, G 5 (no filter:
@@ -642,11 +642,15 @@ int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n)
     e16(b, FM1BLE_E_RXPTR1, (uint32_t)b->rx[1] + FM1BLE_RX_HDR);
     e16(b, FM1BLE_E_RXSTAT0, 0);
     e16(b, FM1BLE_E_RXSTAT1, 0);
-    /* G 9: the PDU in buffer 0 at the slot the hardware sends next; the other slot holds the scan response the PAL put in
-     * (buffer 1) or, before it has one and for ADV_NONCONN_IND, the PDU again */
+    /* G 9: the PDU in buffer 0 at the slot the hardware sends next; the other slot holds this event's scan response
+     * (buffer 1) or, with none and for ADV_NONCONN_IND, the PDU again. Nothing is kept from an earlier event: the caller
+     * hands over the scan response as it is now, so a changed one goes out from the next event on */
     b->op_slot = (uint8_t)tx_next(b);                 /* the slot the hardware sends next */
     op_buf(b, 0, pdu, n, 1, b->op_slot);
-    tx_slot(b, b->op_slot ^ 1u, type == 2u || !b->op_rsp ? 0 : 1);
+    if (type != 2u && rsp && nrsp)
+        op_buf(b, 1, rsp, nrsp, 1, b->op_slot ^ 1u);
+    else
+        tx_slot(b, b->op_slot ^ 1u, 0);
     e16(b, FM1BLE_E_OPTCNTL, g16(b, FM1BLE_E_OPTCNTL) & ~BIT(4));         /* G 10: local address match on */
     fm1ble_port_sync();
     /* one event over 37, 38 and 39 (the hardware hops), the first one in the slot delay_us falls in, one-shot (an
@@ -680,10 +684,9 @@ int fm1ble_op_resp(fm1ble *b, const uint8_t *pdu, uint16_t n)
         return FM1BLE_ESTATE;
     if (!pdu || n < 2 || n > OP_MAX_PDU || pdu[1] != n - 2u)
         return FM1BLE_EARG;
-    if (b->op_state == FM1BLE_STATE_ADV) {
-        op_buf(b, 1, pdu, n, 1, b->op_slot ^ 1u);
-        b->op_rsp = 1;                               /* the next events answer a SCAN_REQ from buffer 1 at once */
-    } else
+    if (b->op_state == FM1BLE_STATE_ADV)
+        op_buf(b, 1, pdu, n, 1, b->op_slot ^ 1u);    /* for this event; the next fm1ble_op_adv takes the one it is given */
+    else
         op_buf(b, 0, pdu, n, 0, 0);
     fm1ble_port_sync();
     return FM1BLE_OK;
