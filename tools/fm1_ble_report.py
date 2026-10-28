@@ -64,10 +64,14 @@ COUNTERS = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common",
             "pal_set0_counts", "pal_set1_counts", "pal_set2_counts", "conn_acks",
             "pal_set0_arr", "pal_set1_arr", "pal_set2_arr", "conn_rx_words",
             "pal_set3_counts", "pal_set3_arr", "pal_cind_gap_us", "pal_log_n",
-            *[f"ev{k}_{w}" for k in range(12) for w in "abc"]]
+            *[f"ev{k}_{w}" for k in range(12) for w in "abc"],
+            *[f"pal_set{k}_{w}" for k in range(4, 7) for w in ("counts", "arr")], "pal_conns", "pal_good",
+            *[f"conn{k}_{w}" for k in range(8) for w in "abc"],
+            "nimble_conns", "probe_n", *[f"clk_{w}_{i}" for w in ("idle", "arm") for i in ("0", "e", "7", "10")],
+            *[f"pr{s}_{c}" for s in range(7) for c in "abcd"], "probe_delays", "probe_windows"]
 # up to 122afe3 the firmware sent the first 32 of these (pal_done_37-39 then counted the driver's one-channel events
-# that ended), up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80; a shorter report reads
-# with the first names
+# that ended), up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the
+# first 120; a shorter report reads with the first names
 # the 24 counters of the firmware at 48ea034 and before (the first FM-1 run); a pair is two 16-bit counts in one word, low
 # then high, which the tool splits
 COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "events", "rearms", "rx_packets", "rx_scan_req",
@@ -76,8 +80,10 @@ COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "event
                ("pal_resp_late", "pal_stuck"), "pal_timer_late_us"]
 HEX_COUNTERS = {"pending_last", "rx_hdr", "rx_stat", "air_trials", "txtog", "ram_end", "rx_win", "agc_ctl", "agc_rssi",
                 "conn_win", "rx_stat1", *[f"rxt{k}_{w}" for k in range(4) for w in ("counts", "stat", "pkt", "bytes")],
-                *[f"pal_set{k}_{w}" for k in range(4) for w in ("counts", "arr")], "conn_rx_words",
-                *[f"ev{k}_{w}" for k in range(12) for w in "abc"]}
+                *[f"pal_set{k}_{w}" for k in range(7) for w in ("counts", "arr")], "conn_rx_words",
+                *[f"ev{k}_{w}" for k in range(12) for w in "abc"], *[f"conn{k}_{w}" for k in range(8) for w in "abc"],
+                "nimble_conns", *[f"clk_{w}_{i}" for w in ("idle", "arm") for i in ("0", "e", "7", "10")],
+                *[f"pr{s}_{c}" for s in range(7) for c in "abcd"], "probe_delays", "probe_windows"}
 # the air trials (fm1ble_test.h): the driver's own ADV_IND from these addresses, then the stack's
 STACK_ADDR = "C2:46:4D:31:00:01"
 TRIALS = [("C2:46:4D:31:00:10", "variant 0 (no shared radio init), level 6"),
@@ -85,10 +91,13 @@ TRIALS = [("C2:46:4D:31:00:10", "variant 0 (no shared radio init), level 6"),
           ("C2:46:4D:31:00:12", "variant 1, level 11")]
 # the RX trials (fm1ble_test.h): the same ADV_IND on variant 1 at level 6, each with its own receive setup
 # the connection events' window setups (firmware/ble/fm1ble.h FM1BLE_CONN_*): up to a7c1738 the PAL moved to the next
-# after each missed event, since then after 3 in a row, in the order wide, pad, keep, widen (pal_fm1.h)
+# after each missed event, up to 5474159 after 3 in a row, in the order wide, pad, keep, widen; since then each
+# connection runs one, the next connection the next, in the order padw, padb, padj, pad, wide, keep, widen (pal_fm1.h)
 CONN_SETUPS = ["keep: as up to 58cadc5 (WIDEN at the open's 487 us)", "pad: no widening, 625 us earlier, 1250 us longer",
-               "widen: JieLi's (at the anchor, WIDEN half the window)", "wide: no widening, 1250 us earlier, 2500 us longer"]
-SETUP_NAMES = ["keep", "pad", "widen", "wide"]
+               "widen: JieLi's (at the anchor, WIDEN half the window)", "wide: no widening, 1250 us earlier, 2500 us longer",
+               "padj: as pad, the counter as JieLi writes it (slots - 1)", "padb: as padj, the bit offset with bit 15",
+               "padw: as padb, the window in WINCNTL0 too"]
+SETUP_NAMES = ["keep", "pad", "widen", "wide", "padj", "padb", "padw"]
 LOG_NONE = 0x8000                        # pal_fm1.h PAL_FM1_LOG_NONE
 RX_TRIALS = [("C2:46:4D:31:00:13", "RX 0: no gain table, WINCNTL2 0x32"),
              ("C2:46:4D:31:00:14", "RX 1: the gain table, WINCNTL2 0"),
@@ -293,8 +302,10 @@ def show_conn(rep, out):
     if "conn_rx_words" not in c:
         return
     log = "pal_log_n" in c
-    print("\nCONNECTION EVENTS (each runs one window setup; " +
-          ("3 missed in a row move to the next)" if log else "a missed one moves to the next)"), file=out)
+    per_conn = "conn0_a" in c
+    print("\nCONNECTION EVENTS (" + ("each connection runs one window setup, the next connection the next one)" if per_conn else
+          "each runs one window setup; " + ("3 missed in a row move to the next)" if log else "a missed one moves to the next)")),
+          file=out)
     for k, what in enumerate(CONN_SETUPS):
         if f"pal_set{k}_counts" not in c:
             continue
@@ -304,6 +315,8 @@ def show_conn(rep, out):
             line += f"; packets {s16(a & 0xFFFF)}..{s16(a >> 16)} us after the window's start"
         print(line, file=out)
     w = c["conn_rx_words"]
+    if per_conn:
+        show_conns(c, out)
     print(f"  in use at the end: setup {c['pal_conn_setup']}, {c['pal_setup_moves']} moves; busy waits {c['pal_busy_waits']} "
           f"(longest {c['pal_busy_us_max']} us); Cordio's response {c['pal_resp_us_max']} us after a packet at most "
           f"(T_IFS 150); late operations {c['pal_late_ops']}; bad CRC {c['pal_conn_rx_bad']}", file=out)
@@ -314,13 +327,65 @@ def show_conn(rep, out):
         show_log(c, out)
 
 
+def t16(v):
+    """a signed 16-bit time of the PAL's (LOG_NONE: none) -> int or None"""
+    return None if v == LOG_NONE else s16(v)
+
+
+def show_conns(c, out):
+    """the PAL's connection summaries (pal_fm1.h conn_sum) and NimBLE's connects"""
+    n = c["pal_conns"]
+    nc = c.get("nimble_conns", 0)
+    good = c.get("pal_good", 0xFF)
+    print(f"  connections: {n} started on the PAL, NimBLE {nc & 0xFFFF} connects and {nc >> 16} disconnects; kept setup: "
+          f"{SETUP_NAMES[good] if good < len(SETUP_NAMES) else 'none'}", file=out)
+    for k in range(min(n, 8)):
+        a, b, d = c[f"conn{k}_a"], c[f"conn{k}_b"], c[f"conn{k}_c"]
+        st = a & 0xF
+        line = f"  connection {k + 1}: {SETUP_NAMES[st] if st < len(SETUP_NAMES) else st}, {a >> 4 & 0xFFF} events, {a >> 16} received"
+        f0, f1 = t16(b & 0xFFFF), t16(b >> 16)
+        if f0 is not None:
+            line += f"; packets {f0} (first) and {f1} (last) us after dueUsec"
+        e0, e1 = t16(d & 0xFFFF), t16(d >> 16)
+        if e0 is not None:
+            line += f"; missed events ended {e0}..{e1} us after dueUsec"
+        print(line, file=out)
+
+
+def show_probe(rep, out):
+    """the window probe (fm1ble_test.h FM1BLE_PROBE_*), for a report that has it"""
+    c = rep["counters"]
+    if "probe_n" not in c or not c["probe_n"]:
+        return
+    d0, d1 = c["probe_delays"] & 0xFFFF, c["probe_delays"] >> 16
+    w0, w1 = c["probe_windows"] & 0xFFFF, c["probe_windows"] >> 16
+    print(f"\nWINDOW PROBE (no central: {c['probe_n']} connection events on a data channel, each setup at delays {d0} and "
+          f"{d1} us and windows {w0} and {w1} us; when the baseband's end flag came, us after the arm plus the delay, "
+          "earliest..latest of the repeats)", file=out)
+    print(f"  setup  d{d0} w{w0:<5d} d{d0} w{w1:<5d} d{d1} w{w0:<5d} d{d1} w{w1:<5d}", file=out)
+
+    def cell(v):
+        lo, hi = v & 0xFFFF, v >> 16
+        if lo == LOG_NONE:
+            return "-"
+        if lo == 0x7FFF:
+            return "never"
+        return f"{s16(lo)}..{s16(hi)}"
+    for st in range(7):
+        print(f"  {SETUP_NAMES[st]:5s} " + " ".join(f"{cell(c[f'pr{st}_{x}']):>12s}" for x in "abcd"), file=out)
+    for w in ("idle", "arm"):
+        print(f"  anchor file read back {'with no event' if w == 'idle' else 'an event armed'}, two reads "
+              f"600 us apart: " + ", ".join(f"index {i.upper() if i != '10' else '0x10'} {c[f'clk_{w}_{i}'] & 0xFFFF:04X} "
+                                          f"{c[f'clk_{w}_{i}'] >> 16:04X}" for i in ("0", "e", "7", "10")), file=out)
+
+
 def log_events(c):
     """the PAL's event log (pal_fm1.h): one dict per logged connection event"""
     evs = []
     for k in range(min(c["pal_log_n"], 12)):
         a, b, d = c[f"ev{k}_a"], c[f"ev{k}_b"], c[f"ev{k}_c"]
         rx, end = b & 0xFFFF, b >> 16
-        evs.append({"chan": a & 0x3F, "setup": a >> 6 & 3, "got": bool(a >> 8 & 1), "crc_ok": bool(a >> 9 & 1),
+        evs.append({"chan": a & 0x3F, "setup": (a >> 6 & 3) | (a >> 14 & 1) << 2, "got": bool(a >> 8 & 1), "crc_ok": bool(a >> 9 & 1),
                     "sent": bool(a >> 10 & 1), "deadline": bool(a >> 11 & 1), "cordio_went_on": bool(a >> 12 & 1),
                     "first": bool(a >> 13 & 1), "timeout_us": a >> 16, "delay_us": d & 0xFFFF, "rxdhdr": d >> 16,
                     "rx_us": None if rx == LOG_NONE else s16(rx), "end_us": None if end == LOG_NONE else s16(end)})
@@ -334,8 +399,8 @@ def show_log(c, out):
     if not evs:
         print("  no connection event logged", file=out)
         return
-    print(f"  the first {len(evs)} connection events (times in us from Cordio's dueUsec; end: when the hardware's flag came):",
-          file=out)
+    print(f"  the first {len(evs)} connection events" + (" (the first 4 of each connection)" if "conn0_a" in c else "") +
+          " (times in us from Cordio's dueUsec; end: when the hardware's flag came):", file=out)
     print("     # ch setup  armed timeout  packet     end  sent RXDHDR", file=out)
     for k, e in enumerate(evs):
         pkt = "-" if e["rx_us"] is None else f"{e['rx_us']}{'' if e['crc_ok'] else ' crc'}"
@@ -343,8 +408,8 @@ def show_log(c, out):
         hdr = f"{e['rxdhdr']:04X}" if e["got"] else "-"
         print(f"  {k:2d}{'*' if e['first'] else ' '} {e['chan']:2d} {SETUP_NAMES[e['setup']]:5s} {e['delay_us']:6d} {e['timeout_us']:7d}"
               f" {pkt:>7s} {end!s:>7s}  {'yes' if e['sent'] else 'no ':3s}  {hdr}", file=out)
-    print("  (* a connection's first event; the window a setup opens: keep at dueUsec, pad 625 us and wide 1250 us before "
-          "it, each that much longer on both sides; widen at dueUsec + half the timeout)", file=out)
+    print("  (* a connection's first event; the window a setup opens: keep at dueUsec, pad (padj, padb, padw) 625 us and "
+          "wide 1250 us before it, each that much longer on both sides; widen at dueUsec + half the timeout)", file=out)
 
 
 def show(rep, out):
@@ -362,6 +427,7 @@ def show(rep, out):
             print(f"  {addr}  {what}: {ev} events, {flips} TXTOG changes, {rx} received", file=out)
         print("  after the last trial: " + ", ".join(f"{k} {v:04X}" for k, v in t[1].items()), file=out)
     show_rx(rep, out)
+    show_probe(rep, out)
     show_conn(rep, out)
     if rep["cut_text"] or rep["cut_steps"]:
         print("(the FM-1 cut the report short: it did not fit its buffer)", file=out)
@@ -412,6 +478,14 @@ def show_central(c, out):
                   f"{'after %g s' % c['dropped'] if c.get('dropped') is not None else 'no'}", file=out)
         print(f"  connect: {'yes' if c['connected'] else 'no'}; MIDI port: {c.get('port') or 'none'}; Note On sent: "
               f"{'yes' if c.get('sent') else 'no'}; heard from the FM-1: {c.get('received') or 'nothing'}", file=out)
+    for k, t in enumerate(c.get("attempts", [])):
+        what = "connected" if t.get("connected") else "no connection"
+        if t.get("connected"):
+            what += f", GATT services {'resolved' if t.get('services') else 'not resolved'}"
+            what += f", dropped after {t['dropped']:g} s" if t.get("dropped") is not None else ", not dropped"
+        if t.get("error"):
+            what += f" ({t['error']})"
+        print(f"  attempt {k + 1} at {t.get('at', 0):.1f} s: {what}", file=out)
     for e in c.get("errors", []):
         print(f"  {e}", file=out)
 

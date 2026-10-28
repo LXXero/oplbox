@@ -22,7 +22,7 @@ import fm1_ble_report as br  # noqa: E402
 
 OUT = sys.argv[1]
 bad = []
-bc.STEP.update(connect=3.0, port=2.0, notify=3.0, settle=0.05, quit=2.0)
+bc.STEP.update(connect=3.0, port=2.0, notify=3.0, settle=0.05, quit=2.0, again=0.05)
 
 
 def check(ok, what):
@@ -85,9 +85,22 @@ check(r["connected"] and r["dropped"] is not None and r["port"] is None and len(
       "never came up on the FM-1's side: BlueZ dropped it" in r["errors"][0] and "before resolving" in r["errors"][0],
       f"dropped: {r}")
 check("dropped the connection" in err, "dropped: said on stderr")
+check(len(r["attempts"]) == 6 and all(t["connected"] and t["dropped"] is not None for t in r["attempts"]) and
+      cmds.count("connect C2:46:4D:31:00:01") == 6, f"dropped: connected again after each drop, 6 connects in all: {r['attempts']}")
 out = io.StringIO()
 br.show_central(r, out)
-check("GATT services resolved: no; dropped: after" in out.getvalue(), f"show_central, a drop:\n{out.getvalue()}")
+check("GATT services resolved: no; dropped: after" in out.getvalue() and "attempt 6 at" in out.getvalue() and
+      "connected, GATT services not resolved, dropped after" in out.getvalue(), f"show_central, a drop:\n{out.getvalue()}")
+rc, r, cmds, sent, err = central("dropped", "--tries", "1")
+check(len(r["attempts"]) == 1 and cmds.count("connect C2:46:4D:31:00:01") == 1, f"dropped, --tries 1: one connect: {cmds}")
+# the first two connections drop (the FM-1's first two window setups miss), the third comes up: the MIDI part runs on it
+rc, r, cmds, sent, err = central("dropfirst")
+check(r["connected"] and r["services"] and r["dropped"] is None and r["port"] == "128:0" and r["sent"] and len(r["received"]) == 1
+      and r["errors"] == [] and len(r["attempts"]) == 3 and [t["dropped"] is not None for t in r["attempts"]] == [True, True, False],
+      f"dropfirst: the third connect comes up and the Note On goes both ways: {r}")
+check(cmds.count("connect C2:46:4D:31:00:01") == 3, f"dropfirst: three connects: {cmds}")
+noservices_cmds = central("noservices")[2]
+check(noservices_cmds.count("disconnect C2:46:4D:31:00:01") >= 2, f"noservices: closed before connecting again: {noservices_cmds}")
 
 out = io.StringIO()
 with redirect_stdout(out), redirect_stderr(io.StringIO()):

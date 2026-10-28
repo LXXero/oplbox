@@ -5,7 +5,8 @@
 # not recorded. FAKE_BLUEZ_STATE: a directory for the commands and the "connected" port; FAKE_BLUEZ_MODE: ok, nostack
 # (the stack's address never heard, only a cached entry removed), nomidi (the services resolved, no sequencer port),
 # noconnect (the connection fails), noservices (connected, no GATT services ever resolved: the peripheral never answered),
-# dropped (connected, then Connected: no: what a central sees when the peripheral missed its CONNECT_IND).
+# dropped (connected, then Connected: no: what a central sees when the peripheral missed its CONNECT_IND), dropfirst
+# (the first two connects drop, the third comes up: the FM-1's third window setup receives).
 import os
 import sys
 st, mode = os.environ["FAKE_BLUEZ_STATE"], os.environ.get("FAKE_BLUEZ_MODE", "ok")
@@ -45,7 +46,8 @@ for line in sys.stdin:
             continue
         out(f"[\x1b[0;93mCHG\x1b[0m] Device {a} Connected: yes")
         out("Connection successful")
-        if mode == "dropped":
+        n = len([c for c in open(os.path.join(st, "cmds.txt")).read().split("\n") if c.startswith("connect ")])
+        if mode == "dropped" or (mode == "dropfirst" and n <= 2):
             out(f"[\x1b[0;93mCHG\x1b[0m] Device {a} Connected: no")
             continue
         if mode == "noservices":
