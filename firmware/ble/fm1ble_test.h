@@ -38,7 +38,7 @@ typedef struct {
     uint32_t ms;                /* milliseconds the step took, from the run's start to its end */
 } fm1ble_step;
 
-#define FM1BLE_N_CTR    264     /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
+#define FM1BLE_N_CTR    248     /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
 
 /* The counters, in the report's order. tools/fm1_ble_report.py has the same list (tests/ble_report_tool.py holds it to
  * FM1BLE_CTR_NAMES); the firmware at 48ea034 and before sent 24 others (the tool reads those by their count), up to
@@ -84,19 +84,20 @@ enum {
     FM1BLE_C_PAL_LOG_D,                             /* event k's word d: FM1BLE_C_PAL_LOG_D + k */
     FM1BLE_C_CONN_SUM_D = FM1BLE_C_PAL_LOG_D + 12,  /* connection k's word d: FM1BLE_C_CONN_SUM_D + k */
     FM1BLE_C_PAL_CFG = FM1BLE_C_CONN_SUM_D + 8, FM1BLE_C_PAL_TX_ORDER, FM1BLE_C_PAL_RESP_US_MIN,
-    FM1BLE_C_TRACE,                                 /* connection c's trace word n: FM1BLE_C_TRACE + 16c + n */
-    FM1BLE_C_CONN_OPS = FM1BLE_C_TRACE + 48,        /* connection k's: FM1BLE_C_CONN_OPS + k */
-    FM1BLE_C_CONN_LL = FM1BLE_C_CONN_OPS + 8,       /* connection k's: FM1BLE_C_CONN_LL + k */
-    FM1BLE_C_PAL_TX3_COUNTS = FM1BLE_C_CONN_LL + 8, FM1BLE_C_PAL_TX3_SENT, FM1BLE_C_PAL_ARQ_DUP, FM1BLE_C_PAL_ARQ_UNWRITTEN,
+    FM1BLE_C_TRACE,                                 /* connection c's trace word n: FM1BLE_C_TRACE + 20c + n */
+    FM1BLE_C_CONN_OPS = FM1BLE_C_TRACE + 40,        /* connection k's (the first 4): FM1BLE_C_CONN_OPS + k */
+    FM1BLE_C_CONN_LL = FM1BLE_C_CONN_OPS + 4,       /* connection k's (the first 4): FM1BLE_C_CONN_LL + k */
+    FM1BLE_C_PAL_TX3_COUNTS = FM1BLE_C_CONN_LL + 4, FM1BLE_C_PAL_TX3_SENT, FM1BLE_C_PAL_ARQ_DUP, FM1BLE_C_PAL_ARQ_UNWRITTEN,
     FM1BLE_C_STACK_ACL, FM1BLE_C_STACK_NOCP, FM1BLE_C_NIMBLE_MTU, FM1BLE_C_PAL_RXTOG
 };
 /* Since round 4 (the hardware's ARQ, fm1ble.h FM1BLE_TX_ARQ): trC_N the PAL's header trace (pal_fm1.h PAL_FM1_TRACE_*),
- * connection C's N-th connection event with a packet (0: none); connK_ops and connK_ll connection K's link-layer counts
- * (pal_fm1.h ll_ops, ll_cnt); pal_tx3_counts and pal_tx3_sent the fourth TX mode's (ARQ) as pal_txK_*; pal_arq_dup and
+ * connection C's N-th connection event with a packet (0: none); connK_ops and connK_ll the first four connections'
+ * link-layer counts (pal_fm1.h ll_ops, ll_cnt); pal_tx3_counts and pal_tx3_sent the fourth TX mode's (ARQ) as pal_txK_*; pal_arq_dup and
  * pal_arq_unwritten pal_fm1.h's arq_dup and arq_unwritten; stack_acl the HCI ACL packets the host sent the controller
  * (15-0) and the controller the host (31-16), each at most 65535 (did an ATT PDU reach NimBLE, did NimBLE answer);
  * stack_nocp the Number Of Completed Packets events; nimble_mtu NimBLE's ATT MTU (15-0) and the central's writes (31-16);
- * pal_rxtog RXTOG (15-0) and TXTOG (31-16) as the run's last poll read them (the connection's end). */
+ * pal_rxtog RXTOG (15-0) and TXTOG (31-16) as the run's last poll read them (the connection's end). 248 in all: the
+ * report's count is a byte. */
 /* the fifth to seventh setups' counters (pal_set4-6_counts/_arr) as the first four's; pal_conns the connections the PAL
  * started, pal_good the setup a connection received PAL_FM1_GOOD packets on (0xFF: none); connN_a/b/c the PAL's summary
  * of connection N (pal_fm1.h conn_sum); nimble_conns NimBLE's connects (bits 15-0) and disconnects (31-16).
@@ -175,18 +176,14 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
     "tr0_4", "tr0_5", "tr0_6", "tr0_7", \
     "tr0_8", "tr0_9", "tr0_10", "tr0_11", \
     "tr0_12", "tr0_13", "tr0_14", "tr0_15", \
+    "tr0_16", "tr0_17", "tr0_18", "tr0_19", \
     "tr1_0", "tr1_1", "tr1_2", "tr1_3", \
     "tr1_4", "tr1_5", "tr1_6", "tr1_7", \
     "tr1_8", "tr1_9", "tr1_10", "tr1_11", \
     "tr1_12", "tr1_13", "tr1_14", "tr1_15", \
-    "tr2_0", "tr2_1", "tr2_2", "tr2_3", \
-    "tr2_4", "tr2_5", "tr2_6", "tr2_7", \
-    "tr2_8", "tr2_9", "tr2_10", "tr2_11", \
-    "tr2_12", "tr2_13", "tr2_14", "tr2_15", \
+    "tr1_16", "tr1_17", "tr1_18", "tr1_19", \
     "conn0_ops", "conn1_ops", "conn2_ops", "conn3_ops", \
-    "conn4_ops", "conn5_ops", "conn6_ops", "conn7_ops", \
     "conn0_ll", "conn1_ll", "conn2_ll", "conn3_ll", \
-    "conn4_ll", "conn5_ll", "conn6_ll", "conn7_ll", \
     "pal_tx3_counts", "pal_tx3_sent", "pal_arq_dup", "pal_arq_unwritten", \
     "stack_acl", "stack_nocp", "nimble_mtu", "pal_rxtog"
 

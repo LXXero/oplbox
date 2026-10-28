@@ -98,14 +98,20 @@ static int c_conn(void *ctx, uint64_t t, uint32_t win, uint8_t chan, uint32_t aa
         C.aa_bad++;
         return 0;
     }
-    if (C.nq) {
-        pdu[0] = C.q[0][0];
-        pdu[1] = C.q[0][1];
-        memcpy(pdu + 2, C.q[0] + 2, pdu[1]);
-    } else {
-        pdu[0] = 1;                                          /* an empty PDU: LLID 1, length 0 */
-        pdu[1] = 0;
+    if (!C.inflight) {                                      /* a new PDU; one not acknowledged goes again as it was */
+        if (C.nq) {
+            memcpy(C.last, C.q[0], (size_t)(2 + C.q[0][1]));
+            C.last_data = 1;
+        } else {
+            C.last[0] = 1;                                   /* an empty PDU: LLID 1, length 0 */
+            C.last[1] = 0;
+            C.last_data = 0;
+        }
+        C.inflight = 1;
     }
+    pdu[0] = C.last[0];
+    pdu[1] = C.last[1];
+    memcpy(pdu + 2, C.last + 2, pdu[1]);
     pdu[0] = (uint8_t)((pdu[0] & 3u) | C.nesn << 2 | C.sn << 3);
     *at = a;
     return 2 + pdu[1];
@@ -119,10 +125,11 @@ static void c_conn_rsp(void *ctx, uint64_t t, const uint8_t *pdu, int n)
     if (nesn != C.sn) {                                     /* our packet was acknowledged (4.5.9) */
         C.acked++;
         C.sn ^= 1u;
-        if (C.nq) {
+        if (C.inflight && C.last_data && C.nq) {
             memmove(C.q, C.q + 1, sizeof C.q[0] * 15);
             C.nq--;
         }
+        C.inflight = 0;
     }
     if (sn == C.nesn) {                                     /* new data from the peripheral */
         C.nesn ^= 1u;

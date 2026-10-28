@@ -566,8 +566,11 @@ void fm1ble_op_power(fm1ble *b, uint8_t level)
  * advertising one into TX slot `slot` (tx_slot), a data one into slot k */
 static void op_buf(fm1ble *b, int k, const uint8_t *pdu, uint16_t n, int adv, uint32_t slot)
 {
-    uint8_t *t = b->blk + b->tx[k];
+    uint8_t *t;
     uint32_t len = n >= 2u ? pdu[1] : 0u;
+    if (!adv && b->conn_tx == FM1BLE_TX_ARQ)         /* ARQ: the buffer of the slot TXTOG names, the other one untouched */
+        k = (int)(g16(b, FM1BLE_E_TXTOG) & 1u);
+    t = b->blk + b->tx[k];
     memset(t, 0, FM1BLE_TX_SIZE);
     t[0x10] = n ? pdu[0] : 0;
     t[0x12] = (uint8_t)len;
@@ -578,11 +581,7 @@ static void op_buf(fm1ble *b, int k, const uint8_t *pdu, uint16_t n, int adv, ui
     } else if (b->conn_tx == FM1BLE_TX_ARQ) {
         /* fm1ble.h FM1BLE_TX_ARQ: only the slot TXTOG & 1 names, from its own buffer; TXDHDR = length << 8, bit 2 kept (the
          * slot's SN), the LLID; bit 3 (MD as __hw_tx_buf_proess fills it) and bit 4 left 0 */
-        uint32_t s = g16(b, FM1BLE_E_TXTOG) & 1u, off = s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0;
-        if ((uint32_t)k != s) {
-            memcpy(b->blk + b->tx[s], t, FM1BLE_TX_SIZE);
-            t = b->blk + b->tx[s];
-        }
+        uint32_t s = (uint32_t)k, off = s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0;
         e16(b, s ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0, (uint32_t)b->tx[s] + FM1BLE_TX_HDR);
         e16(b, s ? FM1BLE_E_TXAHDR1 : FM1BLE_E_TXAHDR0, 0);
         e16(b, off, len << 8 | (g16(b, off) & 4u) | (t[0x10] & 3u));

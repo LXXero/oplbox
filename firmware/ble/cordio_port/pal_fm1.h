@@ -94,8 +94,8 @@ typedef struct {
  * (15-8), the packets Cordio was told did not acknowledge its last PDU (23-16), RXTOG's changes (31-24), each at most 255.
  * arq_dup and arq_unwritten (ARQ only): packets Cordio was told were repeats (RXTOG unchanged once it had moved), and
  * responses that did not go in (too late, or after the event), so Cordio was told its PDU was not acknowledged. */
-#define PAL_FM1_TRACE_CONNS 3
-#define PAL_FM1_TRACE_PER   16
+#define PAL_FM1_TRACE_CONNS 2
+#define PAL_FM1_TRACE_PER   20
 
 typedef struct {
     uint32_t adv_ops, conn_ops;         /* Cordio's operations: advertising packets, connection events */

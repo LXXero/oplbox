@@ -252,7 +252,7 @@ static void counters(fm1ble_run *r)
     /* the header trace and the link layer (pal_fm1.h PAL_FM1_TRACE_*, fm1ble.h FM1BLE_TX_ARQ) */
     for (k = 0; k < PAL_FM1_TRACE_CONNS * PAL_FM1_TRACE_PER; k++)
         r->ctr[FM1BLE_C_TRACE + k] = p->trace[k / PAL_FM1_TRACE_PER][k % PAL_FM1_TRACE_PER];
-    for (k = 0; k < PAL_FM1_CONNS; k++) {
+    for (k = 0; k < 4u; k++) {
         r->ctr[FM1BLE_C_CONN_OPS + k] = p->ll_ops[k];
         r->ctr[FM1BLE_C_CONN_LL + k] = p->ll_cnt[k];
     }

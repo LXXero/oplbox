@@ -137,8 +137,10 @@ static void air_event(void)
                 bbm.now_us = t + bb_model_air_us(r);
                 air_rx(req, r, 1);
                 air_irq(1u << 8);
-                if ((req[0] & 0xFu) == 5u)       /* CONNECT_IND: advertising ends */
+                if ((req[0] & 0xFu) == 5u) {     /* CONNECT_IND: advertising ends */
+                    bbm.rx_exp = 0;
                     break;
+                }
                 if ((req[0] & 0xFu) == 3u) {     /* SCAN_REQ: the scan response T_IFS after it, from the other slot */
                     bbm.now_us += 150u;
                     n = air_tx((int)(s ^ 1u), 1, pdu);
@@ -177,6 +179,16 @@ static void air_event(void)
             bbm.now_us = at + bb_model_air_us(r);
             air_rx(req, r, 0);
             bbm.rx_sn = (uint8_t)(req[0] >> 3 & 1u);
+            if (bbm.hw_arq) {                   /* the chip's ARQ (bb_model.h hw_arq) */
+                uint32_t s = air16(FM1BLE_E_TXTOG) & 1u, dh = air16(s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0);
+                if ((req[0] >> 2 & 1u) != (dh >> 2 & 1u))
+                    air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
+                if ((req[0] >> 3 & 1u) == bbm.rx_exp) {
+                    bbm.rx_exp ^= 1u;
+                    air16w(FM1BLE_E_RXTOG, air16(FM1BLE_E_RXTOG) ^ 1u);
+                }
+                air16w(FM1BLE_E_RXDHDR0, (uint32_t)req[1] << 8 | (req[0] & 3u) | (req[0] >> 1 & 8u));
+            }
             bbm.jump_left = bbm.jump_reads;
             bbm.resp_at = bbm.now_us + 150u;
             bbm.resp_pending = 1;
@@ -202,12 +214,19 @@ static void conn_respond(void)
     if (bbm.resp_at > bbm.now_us)               /* a clock that jumped (jump_us) stays where it is */
         bbm.now_us = bbm.resp_at;
     n = air_tx(air16(FM1BLE_E_TXTOG) & 1, 0, pdu);
-    if (n && bbm.hw_nesn)
+    if (n && bbm.hw_arq)                        /* the air's header from the chip's: its SN and NESN, MD from bit 3 */
+        pdu[0] = (uint8_t)((pdu[0] & 3u) | bbm.rx_exp << 2 | (pdu[0] >> 2 & 1u) << 3 | (pdu[0] >> 3 & 1u) << 4);
+    else if (n && bbm.hw_nesn)
         pdu[0] = (uint8_t)((pdu[0] & ~4u) | (bbm.rx_sn ^ 1u) << 2);
-    if (n && a->conn_rsp)
+    bbm.rsp_n++;
+    if (bbm.drop_data && n > 2)
+        bbm.drop_data = 0;                      /* this one is not heard */
+    else if (bbm.drop_one)
+        bbm.drop_one = 0;
+    else if (n && a->conn_rsp && !(bbm.drop_rsp && bbm.rsp_n % bbm.drop_rsp == 0))
         a->conn_rsp(a->ctx, bbm.now_us, pdu, n);
     bbm.now_us += bb_model_air_us(n);
-    if (n)
+    if (n && !bbm.hw_arq)
         air16w(FM1BLE_E_TXTOG, air16(FM1BLE_E_TXTOG) ^ 1u);
     air_irq(1u);
 }
@@ -281,6 +300,8 @@ uint32_t fm1ble_port_now_us(void)
     if (bbm.jump_left && !--bbm.jump_left) {
         bbm.now_us += bbm.jump_us;
         bbm.jump_reads = 0;                     /* once */
+        bbm.drop_one = bbm.jump_drop;
+        bbm.jump_drop = 0;
     }
     return (uint32_t)bbm.now_us;
 }

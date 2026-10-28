@@ -39,6 +39,8 @@ typedef struct {
     uint64_t anchor0;                   /* the central's first anchor */
     uint32_t next_k, unmapped;
     uint8_t sn, nesn;
+    uint8_t last[40];                   /* the PDU last sent (LLID, length, payload), sent again until acknowledged (4.5.9) */
+    int inflight, last_data;            /* it was sent and not acknowledged yet; it is the queue's head (not an empty PDU) */
     uint8_t q[16][40];                  /* data PDUs to send (header byte LLID only, length, payload) */
     int nq;
     uint32_t events, heard, acked, chan_bad, aa_bad, data_in;

@@ -79,6 +79,16 @@ typedef struct {
      * jump_us forward at the jump_reads-th read of fm1ble_port_now_us (once; 0: never), a main loop that comes back late */
     int hw_nesn;
     uint8_t rx_sn;
+    /* hw_arq: the chip keeps SN and NESN itself, as fm1ble.h FM1BLE_TX_ARQ reads the IR: TXDHDR bits 1-0 LLID, bit 2 the
+     * slot's SN, bit 3 MD; a central's packet whose NESN differs from the SN of the slot TXTOG names acknowledges it and
+     * TXTOG changes (the other slot goes at T_IFS); one whose SN is rx_exp is new: rx_exp and RXTOG change; RXDHDR in the
+     * chip's layout (LLID, MD in bit 3, bits 2 and 4 clear); the response's NESN is rx_exp, nothing changes after it.
+     * drop_rsp: the central does not hear every drop_rsp-th response (0: hears all), so it sends its packet again;
+     * drop_data: it does not hear the first response with a payload (once); jump_drop: nor the response of the event the
+     * clock jumps in (jump_us, once) */
+    int hw_arq, drop_data, jump_drop, drop_one;
+    uint8_t rx_exp;
+    uint32_t drop_rsp, rsp_n;
     uint32_t jump_reads, jump_us, jump_left;
     void (*tick)(void);                 /* set: called each time the clock is advanced (a test's hook inside a busy wait) */
 } bb_model;
