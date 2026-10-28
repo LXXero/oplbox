@@ -31,13 +31,13 @@ unchanged; SAVE on the Bluetooth page returns to the WiFi page's first screen, S
 
 ## The page
 
-Thirty-three pages, PLAY turns them, the last one back to the first:
+Forty pages, PLAY turns them, the last one back to the first:
 
 | Page | Shows |
 | --- | --- |
 | 1 | the eight steps, one line each: name, PASS / FAIL / SKIP (`--` before it ran), the first 20 characters of the note |
 | 2-9 | one step each: the result and its time in ms, the note (two lines of 32 characters), how many bytes of evidence it kept and the first 40 of them, 10 to a line |
-| 10-33 | the 192 counters, 8 to a page, as 32-bit hex |
+| 10-40 | the 248 counters, 8 to a page, as 32-bit hex |
 
 A step that cannot run because an earlier one failed is SKIP, with the note `skipped: an earlier step failed`; with a
 wait of 0 the connect and MIDI steps are SKIP with `skipped: no wait for a central`. SAVE during a run leaves at once and
@@ -132,12 +132,21 @@ words), `pal_cfg`, `pal_tx_order` and `pal_resp_us_min`. Up to f0e6d08 those 39 
 `clk_*`, `prS_a..d`, `probe_delays`, `probe_windows`: connection events with no central, at two delays and two windows,
 where each setup's window ended); that run settled that only padw's window follows the register, so the stack now runs
 padw alone and the probe is gone; the tool reads a f0e6d08 report by its `probe_delays` word, always 1400 | 1800 << 16.
-Each connection runs one TX mode, the next connection the next one (pal_fm1.h PAL_FM1_TX_ORDER: intime, jieli, air),
-and MIDI_IN waits through a central leaving while NimBLE has seen fewer than 7 connects, so a central that connects
-again tries the modes in turn; a mode a connection received 8 packets on is kept. `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS, a table of the logged events) and with `--out`
+Each connection runs one TX mode, the next connection the next one (pal_fm1.h PAL_FM1_TX_ORDER: arq, air, intime,
+jieli), and MIDI_IN waits through a central leaving while NimBLE has seen fewer than 7 connects, so a central that
+connects again tries the modes in turn; a mode on which Cordio took an L2CAP PDU from the central is kept (up to a349877
+a mode a connection received 8 packets on was kept, and intime was kept with no GATT). Since a349877 (round 4 of the
+Bluetooth goal) the last 56: `trC_N` (the PAL's header trace, pal_fm1.h PAL_FM1_TRACE_*: the first 20 connection events
+with a packet of the first two connections, each the central's header as RXDHDR held it, its first payload byte, what the
+toggles did, what Cordio was told and Cordio's answer), `connK_ops` and `connK_ll` (the first four connections: the
+central's control opcodes; the L2CAP PDUs Cordio took, Cordio's non-empty responses put in, the packets that did not
+acknowledge Cordio's last PDU, RXTOG's changes), `pal_tx3_counts` and `pal_tx3_sent` (arq's, as `pal_txK_*`),
+`pal_arq_dup` and `pal_arq_unwritten`, `stack_acl` (HCI ACL host to controller and back: did an ATT PDU reach NimBLE),
+`stack_nocp`, `nimble_mtu` (NimBLE's ATT MTU, the central's writes) and `pal_rxtog`. The tool prints them as LINK LAYER.
+248 is near the most the report holds: its counter count is a byte. `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS, a table of the logged events) and with `--out`
 writes what it printed to summary.txt. `rf_common` is what the shared radio's init returned the first time (trial 1): a later power-up finds WiFi
 up and it returns 0 there. `fm1_ble_report.py` prints the RX trials decoded (RX TRIALS). Up to 122afe3 the firmware sent
-the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the first 120. The PAL runs from the main loop in this build and waits
+the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the first 120, up to a349877 the first 192. The PAL runs from the main loop in this build and waits
 through each connection event (docs/BLUETOOTH_CORDIO.md). The firmware at
 48ea034 and before sent 24 counters, the PAL's two to a word; the tool reads such a report by its count, with those names.
 

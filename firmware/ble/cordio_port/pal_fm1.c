@@ -64,6 +64,15 @@
  * In FM1BLE_TX_INTIME a response Cordio hands over more than PAL_FM1_TIFS_US after the packet was seen is not put in
  * (the empty PDU repeating the last SN goes) and Cordio is told the transmit failed. The log's and the summaries' fourth
  * words say what the TX side did (pal_fm1.h).
+ *
+ * ARQ (fm1ble.h FM1BLE_TX_ARQ, since round 4 of the FM-1 Bluetooth goal). The chip keeps SN and NESN itself, and its
+ * header words are not the air's (RXDHDR bit 3 is MD), so the PAL gives Cordio SN and NESN of its own making, from Cordio's
+ * own state (the SN and NESN of the last response Cordio handed over) and the chip's toggles: a packet acknowledges
+ * Cordio's last PDU when that PDU went into a slot and TXTOG has changed since (the chip moved to the other slot); it is new
+ * when RXTOG changed at it, or when RXTOG has not moved yet in the connection (a chip whose RXTOG does not follow new
+ * packets: every packet new). MD goes to Cordio as 0, one exchange per event. A response too late for T_IFS is not put in,
+ * and the next packet tells Cordio its PDU was not acknowledged, so it hands the same one again. The header trace and each
+ * connection's link-layer counts (pal_fm1.h PAL_FM1_TRACE_*) say, for every mode, what went each way.
  */
 #include <string.h>
 #include "wsf_types.h"
@@ -136,6 +145,12 @@ static const uint8_t g_order[FM1BLE_CONN_SETUPS] = PAL_FM1_SETUP_ORDER;
 static const uint8_t g_order_tx[FM1BLE_TX_MODES] = PAL_FM1_TX_ORDER;
 static uint8_t g_tx;
 static uint32_t g_txs0, g_csent, g_cstale, g_chalt;
+/* Cordio's SN and NESN (its last response's header), the chip's TXTOG when Cordio's last response went in and whether it
+ * went in, RXTOG at the last packet and whether it has moved in the connection (ARQ above); the central's L2CAP PDUs Cordio
+ * took as new; the event's trace word (pal_fm1.h, NULL: none), the connection's trace words so far */
+static uint8_t g_csn, g_cnesn, g_tog_w, g_wrote, g_rxtog, g_rxmoved;
+static uint32_t g_cl2, g_trn;
+static uint32_t *g_tr;
 
 enum { END_FLAG, END_DEADLINE, END_CORDIO };
 
@@ -230,12 +245,15 @@ static void sum_minmax(uint32_t *w, int32_t v)
 static void conn_start(void)
 {
     uint8_t s, x;
-    if (g_st.conns && g_cpk >= PAL_FM1_GOOD) {          /* the last connection received on its setup and mode: keep them */
+    uint32_t t;
+    if (g_st.conns && g_cpk >= PAL_FM1_GOOD)            /* the last connection received on its setup: keep it */
         g_st.good = g_set;
+    else if (g_st.conns && g_st.good != PAL_FM1_NO_SETUP)   /* the kept one failed a connection: back to the order */
+        g_st.good = PAL_FM1_NO_SETUP;
+    if (g_st.conns && g_cl2)                            /* L2CAP came through on the last connection's mode: keep it */
         g_st.good_tx = g_tx;
-    } else if (g_st.conns && g_st.good != PAL_FM1_NO_SETUP) {   /* the kept ones failed a connection: back to the orders */
-        g_st.good = g_st.good_tx = PAL_FM1_NO_SETUP;
-    }
+    else if (g_st.conns && g_st.good_tx != PAL_FM1_NO_SETUP)
+        g_st.good_tx = PAL_FM1_NO_SETUP;
     s = g_st.good != PAL_FM1_NO_SETUP ? (uint8_t)g_st.good : setup_nth(g_st.conns);
     x = g_st.good_tx != PAL_FM1_NO_SETUP ? (uint8_t)g_st.good_tx : tx_nth(g_st.conns);
     if (g_st.conns && s != g_set)
@@ -255,6 +273,61 @@ static void conn_start(void)
     g_st.conns++;
     g_cev = g_cpk = 0;
     g_csent = g_cstale = g_chalt = 0;
+    t = fm1ble_op_txstate(g_cfg.b);
+    g_csn = g_cnesn = 0;
+    g_tog_w = (t & FM1BLE_TXS_TXTOG) ? 1u : 0u;
+    g_rxtog = (t & FM1BLE_TXS_RXTOG) ? 1u : 0u;
+    g_wrote = 1;                                        /* the empty PDU in the slot sent first is Cordio's first */
+    g_rxmoved = 0;
+    g_cl2 = g_trn = 0;
+    g_tr = NULL;
+}
+
+static uint32_t sat_add8(uint32_t w, uint32_t shift)    /* one more in an 8-bit count of w */
+{
+    return (w >> shift & 0xFFu) < 0xFFu ? w + (1u << shift) : w;
+}
+
+/* A connection packet: what the chip's toggles did, the header Cordio gets (ARQ: of the PAL's making, pal_fm1.c "ARQ"),
+ * the trace and the connection's link-layer counts (pal_fm1.h) */
+static void conn_packet(const fm1ble_pkt *p)
+{
+    uint32_t x = fm1ble_op_txstate(g_cfg.b), k = g_st.conns - 1u, *c = k < PAL_FM1_CONNS ? &g_st.ll_cnt[k] : NULL;
+    uint8_t tog = (x & FM1BLE_TXS_TXTOG) ? 1u : 0u, rxt = (x & FM1BLE_TXS_RXTOG) ? 1u : 0u;
+    uint8_t moved = tog != g_tog_w, rxch = rxt != g_rxtog, llid = p->hdr[0] & 3u, h = p->hdr[0];
+    uint8_t first = p->hdr[1] ? p->payload[0] : 0u, ack, isnew;
+
+    if (rxch && c)
+        *c = sat_add8(*c, 24);
+    if (p->ok && g_tx == FM1BLE_TX_ARQ) {
+        ack = (uint8_t)(g_wrote && moved);
+        isnew = (uint8_t)(rxch || !g_rxmoved);
+        if (!isnew)
+            g_st.arq_dup++;
+        h = (uint8_t)(llid | (ack ? g_csn ^ 1u : g_csn) << 2 | (isnew ? g_cnesn : g_cnesn ^ 1u) << 3);
+        g_held_pdu[0] = h;
+    }
+    if (rxch)
+        g_rxmoved = 1;
+    g_rxtog = rxt;
+    ack = (uint8_t)(((h >> 2) & 1u) != g_csn);
+    isnew = (uint8_t)(((h >> 3) & 1u) == g_cnesn);
+    if (p->ok && k < PAL_FM1_CONNS) {
+        if (llid == 3u && p->hdr[1] && first < 32u)
+            g_st.ll_ops[k] |= 1u << first;
+        if (llid == 2u && p->hdr[1] && isnew)
+            *c = sat_add8(*c, 0);
+        if (!ack)
+            *c = sat_add8(*c, 16);
+    }
+    if (p->ok && llid == 2u && p->hdr[1] && isnew)
+        g_cl2++;
+    g_tr = NULL;
+    if (k < PAL_FM1_TRACE_CONNS && g_trn < PAL_FM1_TRACE_PER) {
+        g_tr = &g_st.trace[k][g_trn++];
+        *g_tr = (uint32_t)(p->hdr[0] & 0x1Fu) | (p->ok ? 1u << 5 : 0u) | (rxch ? 1u << 6 : 0u) | (moved ? 1u << 7 : 0u) |
+                (uint32_t)first << 8 | (p->ok && ack ? 1u << 23 : 0u) | (p->ok && isnew ? 1u << 24 : 0u);
+    }
 }
 
 static uint32_t sat(uint32_t v, uint32_t max) { return v > max ? max : v; }
@@ -473,6 +546,7 @@ void PalBbBleRxData(uint8_t *pBuf, uint16_t len)
     uint8_t first = g_kind != K_CONN;   /* after advertising: a new connection's first event */
     conn_end(END_CORDIO);               /* one still open (Cordio went on without its end): ended here */
     op_begin(g_rx_timeout + 2u * FM1BLE_CONN_WIDE_US);
+    g_tr = NULL;
     g_wait = W_RX;
     g_rxbuf = pBuf;
     g_rxlen = len;
@@ -525,6 +599,14 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
     uint16_t n = gather(descs, cnt, pdu);
 
     g_wait = W_TIFS_TX;
+    if (g_kind == K_CONN && n >= 2u) {          /* Cordio's SN and NESN now, and the trace (pal_fm1.h) */
+        g_csn = (uint8_t)(pdu[0] >> 3 & 1u);
+        g_cnesn = (uint8_t)(pdu[0] >> 2 & 1u);
+        if (g_tr)
+            *g_tr |= (uint32_t)(pdu[0] & 0x1Fu) << 16 | 1u << 21 | (uint32_t)(pdu[1] ? pdu[2] & 0x7Fu : 0u) << 25;
+    }
+    if (g_kind == K_CONN && g_tx == FM1BLE_TX_ARQ)
+        g_wrote = 0;                            /* until it goes in below */
     if (g_kind == K_CONN && g_conn_rx) {
         uint32_t lat = now() - g_rx_t, k = lat < 50u ? 0u : lat < 100u ? 1u : lat < 150u ? 2u : 3u;
         if (lat > g_st.resp_us_max)
@@ -535,15 +617,19 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
             g_st.resp_hist += 1u << (8u * k);
         if (g_log)
             g_log[3] = (g_log[3] & 0x00FFFFFFu) | sat(lat / 2u, 0xFFu) << 24;
-        if (g_tx == FM1BLE_TX_INTIME && lat > PAL_FM1_TIFS_US && !g_done) {   /* too late: what is in the slots goes */
-            g_st.resp_skipped++;
+        if ((g_tx == FM1BLE_TX_INTIME || g_tx == FM1BLE_TX_ARQ) && lat > PAL_FM1_TIFS_US && !g_done) {
+            g_st.resp_skipped++;                /* too late: what is in the slots goes */
             g_resp_late = 1;
+            if (g_tx == FM1BLE_TX_ARQ)
+                g_st.arq_unwritten++;
             return;
         }
     }
     if (g_done) {                       /* the event is over: too late for T_IFS */
         g_st.resp_late++;
         g_resp_late = 1;
+        if (g_kind == K_CONN && g_tx == FM1BLE_TX_ARQ)
+            g_st.arq_unwritten++;
         return;
     }
     if (!n || fm1ble_op_resp(g_cfg.b, pdu, n) != FM1BLE_OK) {
@@ -552,6 +638,16 @@ void PalBbBleTxTifsData(PalBbBleTxBufDesc_t descs[], uint8_t cnt)
         return;
     }
     g_st.resp_set++;
+    if (g_kind == K_CONN) {
+        if (g_tr)
+            *g_tr |= 1u << 22;
+        if (pdu[1] && g_st.conns - 1u < PAL_FM1_CONNS)
+            g_st.ll_cnt[g_st.conns - 1u] = sat_add8(g_st.ll_cnt[g_st.conns - 1u], 8);
+        if (g_tx == FM1BLE_TX_ARQ) {            /* in the slot TXTOG names: its change says the central took it */
+            g_wrote = 1;
+            g_tog_w = (fm1ble_op_txstate(g_cfg.b) & FM1BLE_TXS_TXTOG) ? 1u : 0u;
+        }
+    }
 }
 
 void PalBbBleCancelData(void)
@@ -642,6 +738,8 @@ void pal_fm1_service(void)
             g_held_ts = t - air_us(g_held_n);
             g_held = 1;
             progress = 1;
+            if (g_kind == K_CONN && g_conn_open)
+                conn_packet(&p);
             if (g_kind == K_CONN && g_conn_open) {
                 /* from the window's own start for this setup (g_win_early before g_due) */
                 int32_t arr = (int32_t)(g_held_ts - g_due) + (int32_t)g_win_early;

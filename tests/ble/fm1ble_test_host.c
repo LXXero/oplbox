@@ -86,7 +86,7 @@ static void finish(fm1ble_run *r, int i)
     case FM1BLE_STEP_ADV_AIR: note(s, "37 advertising events in 1 s"); r->ctr[FM1BLE_C_EVENTS] = 37; r->ctr[FM1BLE_C_TX_FLIPS] = 37;
         r->ctr[FM1BLE_C_AIR_TRIALS] = 7; r->ctr[FM1BLE_C_PAL_ADV_EVENTS] = 12;
         r->ctr[FM1BLE_C_PAL_CFG] = 100u | 400u << 16;
-        r->ctr[FM1BLE_C_PAL_TX_ORDER] = 2u | 1u << 4;
+        r->ctr[FM1BLE_C_PAL_TX_ORDER] = 3u | 0u << 4 | 2u << 8 | 1u << 12;
         r->ctr[FM1BLE_C_PAL_RESP_US_MIN] = 0xFFFFu;
         break;
     case FM1BLE_STEP_CONNECT:
@@ -117,6 +117,19 @@ static void finish(fm1ble_run *r, int i)
             r->ctr[FM1BLE_C_PAL_FIRST_RX_TX] = 0x01u | 0x05u << 8 | 1u << 16 | 1u << 31;
             r->ctr[FM1BLE_C_CONN_TXTOG] = 1u | 1u << 16; r->ctr[FM1BLE_C_CONN_TXDHDR] = 0x0905u | 0x0001u << 16;
             r->ctr[FM1BLE_C_CONN_TXBUF] = 1u | 0x8295u << 16;
+            /* the link layer (made up): the first connection's central asked LL_FEATURE_REQ and LL_VERSION_IND, Cordio
+             * answered the first, then a packet with a bad CRC whose answer did not go in; the second's one L2CAP PDU */
+            r->ctr[FM1BLE_C_TRACE] = 0x03u | 1u << 5 | 1u << 6 | 1u << 7 | 0x08u << 8 | 0x09u << 16 | 3u << 21 | 3u << 23;
+            r->ctr[FM1BLE_C_TRACE + 1] = 0x03u | 1u << 5 | 1u << 6 | 1u << 7 | 0x0Cu << 8 | 0x07u << 16 | 3u << 21 | 3u << 23 |
+                                         0x09u << 25;
+            r->ctr[FM1BLE_C_TRACE + 2] = 0x01u | 0x05u << 16 | 1u << 21;
+            r->ctr[FM1BLE_C_TRACE + 20] = 0x02u | 1u << 5 | 1u << 6 | 0x07u << 8 | 0x01u << 16 | 3u << 21 | 1u << 24;
+            r->ctr[FM1BLE_C_CONN_OPS] = 1u << 8 | 1u << 12; r->ctr[FM1BLE_C_CONN_LL] = 0u | 1u << 8 | 0u << 16 | 2u << 24;
+            r->ctr[FM1BLE_C_CONN_LL + 1] = 1u | 0u << 8 | 3u << 16 | 38u << 24;
+            r->ctr[FM1BLE_C_PAL_TX3_COUNTS] = 12u | 10u << 16; r->ctr[FM1BLE_C_PAL_TX3_SENT] = 9u;
+            r->ctr[FM1BLE_C_PAL_ARQ_DUP] = 1u; r->ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] = 1u;
+            r->ctr[FM1BLE_C_STACK_ACL] = 3u | 2u << 16; r->ctr[FM1BLE_C_STACK_NOCP] = 2u;
+            r->ctr[FM1BLE_C_NIMBLE_MTU] = 185u | 1u << 16; r->ctr[FM1BLE_C_PAL_RXTOG] = 1u;
         }
         break;
     case FM1BLE_STEP_MIDI_IN: { static const uint8_t m[] = { 0x81, 0x85, 0x90, 0x3C, 0x64 };

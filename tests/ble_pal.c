@@ -60,11 +60,13 @@ static void run_us(uint64_t us)
 /* what a test does to the k-th connection event since the attach, once, right after the PAL armed it (g_hook_ev: k,
  * 0 none): a packet flag at once, before its window (H_STALE), a baseband that runs nothing for it and raises no flag
  * (H_HANG), the main loop coming back 300 us late after its packet (H_LATE) */
-enum { H_NONE, H_STALE, H_HANG, H_LATE };
+enum { H_NONE, H_STALE, H_HANG, H_LATE, H_LATE_RSP, H_LATE_AFTER };
 static int g_hook, g_hook_done, g_hang_stuck;
+static uint32_t g_hook_mark;
 static uint32_t g_hook_ev;
 static uint64_t g_hang_t0;
 static uint8_t g_tx_modes;              /* polled_run's pal_fm1_cfg tx_modes */
+static int g_feat, g_feat_rsp;          /* polled_run: the central asks LL_FEATURE_REQ first; LL_FEATURE_RSPs it got */
 
 static void hook(void)
 {
@@ -78,7 +80,23 @@ static void hook(void)
         bbm.silent = 0;
         bb_model_pend(1u);
     }
-    if (!g_hook || g_hook_done || st->conn_ops != g_hook_ev || !bbm.armed)
+    /* ARQ: late in the event Cordio hands its first non-empty response in (H_LATE_RSP: the one after the central's
+     * LL_FEATURE_REQ), or in the second event after that response went in (H_LATE_AFTER: the chip back on its slot) */
+    if (g_hook == H_LATE_RSP && !g_hook_done && st->conns && (st->ll_ops[st->conns - 1u] & 1u << 8)) {
+        g_hook_done = 1;
+        bbm.jump_reads = 2;
+        bbm.jump_us = 300;
+    }
+    if (g_hook == H_LATE_AFTER && !g_hook_done && st->conns && (st->ll_cnt[st->conns - 1u] >> 8 & 0xFFu)) {
+        g_hook_done = 1;
+        g_hook_mark = st->conn_rx;
+    }
+    if (g_hook == H_LATE_AFTER && g_hook_done == 1 && st->conn_rx > g_hook_mark) {
+        g_hook_done = 2;
+        bbm.jump_reads = 2;
+        bbm.jump_us = 300;
+    }
+    if (g_hook >= H_LATE_RSP || !g_hook || g_hook_done || st->conn_ops != g_hook_ev || !bbm.armed)
         return;
     g_hook_done = 1;
     if (g_hook == H_STALE)
@@ -168,10 +186,17 @@ static uint32_t polled_run(fm1ble *b, int attach, int busy, uint8_t setups, int 
     *handle = k >= 0 ? (uint16_t)(g_ev[k][4] | g_ev[k][5] << 8) : 0xFFFF;
     {
         static const uint8_t att[] = { 0x07, 0x00, 0x04, 0x00, 0x52, 0x10, 0x00, 0x80, 0x80, 0x90, 0x3C, 0x64 };
+        static const uint8_t feat[] = { 0x08, 0xFF, 0x01, 0, 0, 0, 0, 0, 0 };   /* LL_FEATURE_REQ (Vol 6 Part B 2.4.2.10) */
         g_nacl = 0;
+        if (g_feat)
+            c_send(3, feat, sizeof feat);
         c_send(2, att, sizeof att);
         run_polled_us(200000, 200);
         *data_ok = C.connected && C.nq == 0 && g_nacl == 1 && g_acln[0] == 4 + sizeof att;
+        g_feat_rsp = 0;
+        for (k = 0; k < C.ngot; k++)
+            if ((C.got[k][0] & 3u) == 3u && C.got[k][2] == 0x09)
+                g_feat_rsp++;
     }
     if (C.connected) {
         c_send(3, (const uint8_t *)"\x02\x13", 2);
@@ -551,14 +576,105 @@ int main(void)
                       (st->conn_sum[0][3] >> 4 & 0xFFFu) >= 15u && (st->log[0][3] >> 22 & 3u) == M[i] && (st->log[1][3] >> 24) < 50u &&
                       (st->first_rx_tx >> 31) == 1u && st->conn_txs == M[i], what[i]);
             }
-            /* all three, the order: the first connection INTIME; it received, so the next keeps it */
-            bbm.hw_nesn = 1;
+            /* ARQ (fm1ble.h FM1BLE_TX_ARQ) on a chip that keeps SN and NESN itself (bb_model hw_arq, the IR's reading):
+             * the central's LL_FEATURE_REQ answered once, its ATT write to the host, the trace and the link-layer counts */
+            bbm.hw_nesn = 0;
+            bbm.hw_arq = 1;
+            g_feat = 1;
+            g_tx_modes = 1u << FM1BLE_TX_ARQ;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(h != 0xFFFF && missed == 0 && data_ok && g_feat_rsp == 1 && st->conn_tx == FM1BLE_TX_ARQ &&
+                  st->arq_dup == 0 && st->arq_unwritten == 0 && (st->ll_ops[0] & 1u << 0x08) && (st->ll_cnt[0] & 0xFFu) == 1u &&
+                  (st->ll_cnt[0] >> 8 & 0xFFu) >= 1u && (st->ll_cnt[0] >> 24) >= 15u && st->tx_rx[FM1BLE_TX_ARQ] >= 15u,
+                  "ARQ on a chip with its own SN and NESN: LL_FEATURE_RSP once, the ATT write reaches the host");
+            /* the trace: the first event's packet (the central's LL_FEATURE_REQ: LLID 3, opcode 8), new to Cordio, Cordio's
+             * response put in; later the feature response (opcode 9) goes in, and an event acknowledges it */
+            {
+                int rsp9 = 0, acked = 0;
+                for (k = 0; k < PAL_FM1_TRACE_PER; k++) {
+                    uint32_t w = st->trace[0][k];
+                    if ((w >> 16 & 3u) == 3u && (w >> 25) == 0x09u && (w & 1u << 22))
+                        rsp9++;
+                    if (rsp9 && (w & 1u << 23))
+                        acked = 1;
+                }
+                for (k = 0; k < PAL_FM1_TRACE_PER && (st->trace[0][k] & 0xFF1Fu) != 0x0803u; k++)
+                    ;
+                check(k < PAL_FM1_TRACE_PER && (st->trace[0][k] & 1u << 5) && (st->trace[0][k] & 1u << 24) &&
+                      (st->trace[0][k] & 3u << 21) == 3u << 21 && (st->trace[0][0] & 0x1Fu) == 1u && rsp9 == 1 && acked,
+                      "ARQ's trace: the feature request (LLID 3, opcode 8) new to Cordio, its answer put in once and acknowledged");
+            }
+            /* the central misses every fifth response: it sends the same packet again, Cordio is told it is a repeat (RXTOG
+             * unchanged), nothing is lost or doubled */
+            bbm.drop_rsp = 5;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(h != 0xFFFF && data_ok && g_feat_rsp == 1 && st->arq_dup >= 3u && st->arq_unwritten == 0,
+                  "ARQ, the central missing every fifth response: its repeats told to Cordio as repeats, nothing lost or doubled");
+            bbm.drop_rsp = 0;
+            /* the central misses the feature response itself: its next packet does not acknowledge it, Cordio is told so
+             * and hands it again into the slot the chip sends again */
+            bbm.drop_data = 1;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(!bbm.drop_data && h != 0xFFFF && data_ok && g_feat_rsp == 1,
+                  "ARQ, the feature response not heard: not acknowledged to Cordio, sent again, heard once");
+            /* the feature response too late for T_IFS: not put in, Cordio told its PDU went unacknowledged when the chip
+             * moves on (the empty PDU went), it hands it again; and once more with that empty PDU not heard either (the
+             * chip stays on its slot: TXTOG differs from where Cordio's last PDU went, which never went in) */
+            bbm.tick = hook;
+            for (i = 0; i < 2; i++) {
+                g_hook = H_LATE_RSP;
+                g_hook_done = 0;
+                bbm.jump_drop = i;
+                missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+                check(g_hook_done && h != 0xFFFF && data_ok && g_feat_rsp == 1 && st->arq_unwritten == 1u && st->resp_skipped == 1u,
+                      i ? "ARQ, the feature response late and the empty PDU sent in its place not heard: handed again, heard once"
+                        : "ARQ, the feature response too late for T_IFS: left out, handed again, heard once");
+            }
+            /* late two events after it went in: the chip moves back to the slot that held it, which the arm emptied, so
+             * the central does not get it a second time */
+            g_hook = H_LATE_AFTER;
+            g_hook_done = 0;
+            missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            check(g_hook_done == 2 && h != 0xFFFF && data_ok && g_feat_rsp == 1 && st->arq_unwritten == 1u,
+                  "ARQ, a response late two events after the feature response: the emptied slot goes, no second copy");
+            g_hook = H_NONE;
+            bbm.tick = 0;
+            /* on that chip INTIME, JIELI and AIR lose the link layer as the FM-1 did at a349877 (packets received, no
+             * GATT): Cordio reads the chip's MD bit as SN */
+            {
+                static const uint8_t M[3] = { FM1BLE_TX_INTIME, FM1BLE_TX_JIELI, FM1BLE_TX_AIR };
+                for (i = 0; i < 3; i++) {
+                    g_tx_modes = (uint8_t)(1u << M[i]);
+                    polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+                    check(h != 0xFFFF && !(data_ok && g_feat_rsp == 1) && (st->ll_cnt[0] & 0xFFu) == 0u &&
+                          st->tx_rx[M[i]] >= 15u, "on the chip's ARQ the earlier TX modes receive, but the data do not get through");
+                    run_us(2500000);                     /* Cordio never took the central's LL_TERMINATE_IND: supervision */
+                }
+            }
+            /* all four, the order: the first connection ARQ; L2CAP came through, so the next keeps it */
             g_tx_modes = 0;
             missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             missed += polled_again(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
-            check(missed == 0 && data_ok && st->conns == 2 && st->good_tx == FM1BLE_TX_INTIME &&
-                  st->conn_txs == (FM1BLE_TX_INTIME | FM1BLE_TX_INTIME << 4),
-                  "the TX order: the first connection INTIME, kept by the next once it received PAL_FM1_GOOD packets");
+            check(missed == 0 && data_ok && st->conns == 2 && st->good_tx == FM1BLE_TX_ARQ &&
+                  st->conn_txs == (FM1BLE_TX_ARQ | FM1BLE_TX_ARQ << 4),
+                  "the TX order: the first connection ARQ, kept by the next once L2CAP came through");
+            /* packets alone do not keep a mode (a349877 kept INTIME on 462): INTIME's connection receives, no L2CAP gets
+             * through, the next connection runs JIELI, the next of the order */
+            g_tx_modes = (uint8_t)(1u << FM1BLE_TX_INTIME | 1u << FM1BLE_TX_JIELI);
+            polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            run_us(2500000);
+            polled_again(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
+            run_us(2500000);
+            check(st->conns == 2 && st->tx_rx[FM1BLE_TX_INTIME] >= 15u && st->good_tx == PAL_FM1_NO_SETUP &&
+                  st->conn_txs == (FM1BLE_TX_INTIME | FM1BLE_TX_JIELI << 4),
+                  "packets without L2CAP keep no TX mode: the next connection runs the next of the order");
+            bbm.hw_arq = 0;
+            g_feat = 0;
+            bbm.hw_nesn = 1;
+            {
+                static const uint8_t ord[FM1BLE_TX_MODES] = PAL_FM1_TX_ORDER;
+                check(ord[0] == FM1BLE_TX_ARQ && ord[1] == FM1BLE_TX_AIR, "PAL_FM1_TX_ORDER: ARQ, then AIR");
+            }
             /* a stale flag: a packet flag at once after the third event was armed, before its window could open; it is
              * dropped, Cordio's anchor stays, the central's packets go on landing in the window */
             g_tx_modes = 1u << FM1BLE_TX_INTIME;

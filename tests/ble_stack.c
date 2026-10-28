@@ -196,7 +196,7 @@ static int test_run(void)
     int k;
     bb_model_reset();
     bbm.air = &AIR;
-    bbm.hw_nesn = 1;                                 /* the first connection runs FM1BLE_TX_INTIME: bit 2 is the chip's */
+    bbm.hw_arq = 1;                                  /* the first connection runs FM1BLE_TX_ARQ: SN and NESN are the chip's */
     g_run = 1;
     C.scan_all = 1;
     fm1ble_test_begin(&R, 0, 4000);
@@ -248,18 +248,26 @@ static int test_run(void)
     check(R.ctr[FM1BLE_C_PAL_CONNS] == 1 && (R.ctr[FM1BLE_C_CONN_SUM] & 0xFu) == FM1BLE_CONN_PADW &&
           (R.ctr[FM1BLE_C_CONN_SUM] >> 16) == R.ctr[FM1BLE_C_PAL_CONN_RX] && (R.ctr[FM1BLE_C_NIMBLE_CONNS] & 0xFFFFu) == 1 &&
           R.ctr[FM1BLE_C_CONN_SUM + 3] == 0, "the connection's summary: padw, its packets; one connect");
-    check(R.ctr[FM1BLE_C_PAL_CONN_TXS] == FM1BLE_TX_INTIME && (R.ctr[FM1BLE_C_CONN_SUM_D] & 0xFu) == FM1BLE_TX_INTIME &&
-          (R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_INTIME] >> 16) == R.ctr[FM1BLE_C_PAL_CONN_RX] &&
-          (R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_INTIME] & 0xFFFFu) == R.ctr[FM1BLE_C_PAL_CONN_OPS] &&
-          R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_JIELI] == 0 && R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_AIR] == 0,
-          "the connection ran the first TX mode of the order (INTIME), its events and packets counted under it");
+    check(R.ctr[FM1BLE_C_PAL_CONN_TXS] == FM1BLE_TX_ARQ && (R.ctr[FM1BLE_C_CONN_SUM_D] & 0xFu) == FM1BLE_TX_ARQ &&
+          (R.ctr[FM1BLE_C_PAL_TX3_COUNTS] >> 16) == R.ctr[FM1BLE_C_PAL_CONN_RX] &&
+          (R.ctr[FM1BLE_C_PAL_TX3_COUNTS] & 0xFFFFu) == R.ctr[FM1BLE_C_PAL_CONN_OPS] &&
+          R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_INTIME] == 0 && R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_JIELI] == 0 &&
+          R.ctr[FM1BLE_C_PAL_TX_COUNTS + FM1BLE_TX_AIR] == 0,
+          "the connection ran the first TX mode of the order (ARQ), its events and packets counted under it");
+    /* the link layer: L2CAP through both ways (NimBLE's GATT), the trace's first word the connection's first packet, no
+     * response left out */
+    check((R.ctr[FM1BLE_C_CONN_LL] & 0xFFu) >= 3u && (R.ctr[FM1BLE_C_CONN_LL] >> 8 & 0xFFu) >= 3u &&
+          (R.ctr[FM1BLE_C_TRACE] & 1u << 5) && (R.ctr[FM1BLE_C_TRACE] & 3u << 21) == 3u << 21 &&
+          R.ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] == 0 && (R.ctr[FM1BLE_C_STACK_ACL] & 0xFFFFu) >= 3u &&
+          (R.ctr[FM1BLE_C_STACK_ACL] >> 16) >= 3u && (R.ctr[FM1BLE_C_NIMBLE_MTU] >> 16) >= 1u,
+          "the link layer's counters: L2CAP both ways on ARQ, the trace, ACL to and from NimBLE, the central's write");
     check(R.ctr[FM1BLE_C_PAL_STALE_RX] == 0 && R.ctr[FM1BLE_C_PAL_HALTS] == 0 && R.ctr[FM1BLE_C_PAL_RESP_SKIPPED] == 0 &&
           (R.ctr[FM1BLE_C_PAL_RESP_HIST] & 0xFFu) > 0 && R.ctr[FM1BLE_C_PAL_RESP_US_MIN] < 50u &&
           (R.ctr[FM1BLE_C_PAL_FIRST_RX_TX] >> 31) == 1u,
           "TX side: nothing stale or halted, every response in time (under 50 us on the model), the first packet's TX words");
-    check((R.ctr[FM1BLE_C_PAL_LOG_D] >> 22 & 3u) == FM1BLE_TX_INTIME && (R.ctr[FM1BLE_C_PAL_LOG_D] >> 24) < 25u &&
+    check((R.ctr[FM1BLE_C_PAL_LOG_D] >> 22 & 3u) == FM1BLE_TX_ARQ && (R.ctr[FM1BLE_C_PAL_LOG_D] >> 24) < 25u &&
           R.ctr[FM1BLE_C_PAL_CFG] == (PAL_FM1_TIFS_US | PAL_FM1_STALE_US << 16) &&
-          R.ctr[FM1BLE_C_PAL_TX_ORDER] == (FM1BLE_TX_INTIME | FM1BLE_TX_JIELI << 4 | FM1BLE_TX_AIR << 8),
+          R.ctr[FM1BLE_C_PAL_TX_ORDER] == (FM1BLE_TX_ARQ | FM1BLE_TX_AIR << 4 | FM1BLE_TX_INTIME << 8 | FM1BLE_TX_JIELI << 12),
           "the event log's word d: the mode and Cordio's response; the PAL's budgets and order in the counters");
     check(ble_nimble_state()->disconnects == 1, "the run closed the connection before turning the radio off");
     printf("ble_stack run: %d checks, %s (steps' ms: hci %u, connect %u, midi_in %u, midi_out %u)\n", checks, bad ? "FAILED" : "all passed",
@@ -284,6 +292,7 @@ int main(int argc, char **argv)
     bb_model_reset();
     check(fm1ble_radio_up(&B, 0, NULL) == FM1BLE_OK && fm1ble_bb_init(&B, blk) == FM1BLE_OK, "the driver comes up on the model");
     bbm.air = &AIR;
+    bbm.hw_arq = 1;                                  /* the first connection runs FM1BLE_TX_ARQ: SN and NESN are the chip's */
     memset(&pc, 0, sizeof pc);
     pc.b = &B;
     pal_fm1_attach(&pc);

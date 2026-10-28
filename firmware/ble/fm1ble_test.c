@@ -223,7 +223,7 @@ static void counters(fm1ble_run *r)
     r->ctr[FM1BLE_C_PAL_HALTS] = sat16(p->halts) | sat16(p->halt_busy) << 16;
     r->ctr[FM1BLE_C_PAL_RESP_SKIPPED] = p->resp_skipped;
     r->ctr[FM1BLE_C_PAL_RESP_HIST] = p->resp_hist;
-    for (k = 0; k < FM1BLE_TX_MODES; k++) {
+    for (k = 0; k < 3u; k++) {
         r->ctr[FM1BLE_C_PAL_TX_COUNTS + k] = sat16(p->tx_events[k]) | sat16(p->tx_rx[k]) << 16;
         r->ctr[FM1BLE_C_PAL_TX_SENT + k] = sat16(p->tx_sent[k]) | sat16(p->tx_acks[k]) << 16;
     }
@@ -249,6 +249,26 @@ static void counters(fm1ble_run *r)
         r->ctr[FM1BLE_C_PAL_TX_ORDER] = o;
     }
     r->ctr[FM1BLE_C_PAL_RESP_US_MIN] = p->resp_us_min;
+    /* the header trace and the link layer (pal_fm1.h PAL_FM1_TRACE_*, fm1ble.h FM1BLE_TX_ARQ) */
+    for (k = 0; k < PAL_FM1_TRACE_CONNS * PAL_FM1_TRACE_PER; k++)
+        r->ctr[FM1BLE_C_TRACE + k] = p->trace[k / PAL_FM1_TRACE_PER][k % PAL_FM1_TRACE_PER];
+    for (k = 0; k < 4u; k++) {
+        r->ctr[FM1BLE_C_CONN_OPS + k] = p->ll_ops[k];
+        r->ctr[FM1BLE_C_CONN_LL + k] = p->ll_cnt[k];
+    }
+    r->ctr[FM1BLE_C_PAL_TX3_COUNTS] = sat16(p->tx_events[FM1BLE_TX_ARQ]) | sat16(p->tx_rx[FM1BLE_TX_ARQ]) << 16;
+    r->ctr[FM1BLE_C_PAL_TX3_SENT] = sat16(p->tx_sent[FM1BLE_TX_ARQ]) | sat16(p->tx_acks[FM1BLE_TX_ARQ]) << 16;
+    r->ctr[FM1BLE_C_PAL_ARQ_DUP] = p->arq_dup;
+    r->ctr[FM1BLE_C_PAL_ARQ_UNWRITTEN] = p->arq_unwritten;
+    {
+        const fm1ble_stack_info *si = fm1ble_stack_state();
+        const ble_nimble_status *ns = ble_nimble_state();
+        r->ctr[FM1BLE_C_STACK_ACL] = sat16(si->acl_in) | sat16(si->acl_out) << 16;
+        r->ctr[FM1BLE_C_STACK_NOCP] = si->nocp;
+        r->ctr[FM1BLE_C_NIMBLE_MTU] = sat16(ns->mtu) | sat16(ns->writes) << 16;
+    }
+    if (g_b.blk)
+        r->ctr[FM1BLE_C_PAL_RXTOG] = ew(FM1BLE_E_RXTOG) | ew(FM1BLE_E_TXTOG) << 16;
 }
 
 /* the addresses: made-up static random ones (the FM-1 has no device address: docs/BLUETOOTH_RADIO.md PalCfgLoadData),

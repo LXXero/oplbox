@@ -566,8 +566,11 @@ void fm1ble_op_power(fm1ble *b, uint8_t level)
  * advertising one into TX slot `slot` (tx_slot), a data one into slot k */
 static void op_buf(fm1ble *b, int k, const uint8_t *pdu, uint16_t n, int adv, uint32_t slot)
 {
-    uint8_t *t = b->blk + b->tx[k];
+    uint8_t *t;
     uint32_t len = n >= 2u ? pdu[1] : 0u;
+    if (!adv && b->conn_tx == FM1BLE_TX_ARQ)         /* ARQ: the buffer of the slot TXTOG names, the other one untouched */
+        k = (int)(g16(b, FM1BLE_E_TXTOG) & 1u);
+    t = b->blk + b->tx[k];
     memset(t, 0, FM1BLE_TX_SIZE);
     t[0x10] = n ? pdu[0] : 0;
     t[0x12] = (uint8_t)len;
@@ -575,6 +578,14 @@ static void op_buf(fm1ble *b, int k, const uint8_t *pdu, uint16_t n, int adv, ui
         memcpy(t + FM1BLE_TX_HDR, pdu + 2, len);
     if (adv) {
         tx_slot(b, slot, k);
+    } else if (b->conn_tx == FM1BLE_TX_ARQ) {
+        /* fm1ble.h FM1BLE_TX_ARQ: only the slot TXTOG & 1 names, from its own buffer; TXDHDR = length << 8, bit 2 kept (the
+         * slot's SN), the LLID; bit 3 (MD as __hw_tx_buf_proess fills it) and bit 4 left 0 */
+        uint32_t s = (uint32_t)k, off = s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0;
+        e16(b, s ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0, (uint32_t)b->tx[s] + FM1BLE_TX_HDR);
+        e16(b, s ? FM1BLE_E_TXAHDR1 : FM1BLE_E_TXAHDR0, 0);
+        e16(b, off, len << 8 | (g16(b, off) & 4u) | (t[0x10] & 3u));
+        (void)slot;
     } else if (b->conn_tx != FM1BLE_TX_AIR) {
         /* ble_hw_tx's TXDHDR (fm1ble.h FM1BLE_TX_JIELI): bit 2 kept per slot, SN in bit 3, MD in bit 4, LLID in 1-0 */
         uint32_t s, h = t[0x10], dh;
@@ -704,6 +715,13 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
     } else if (b->conn_tx == FM1BLE_TX_INTIME) {     /* an empty PDU with the last SN: a repeat to the central */
         uint8_t e[2] = { (uint8_t)(1u | (uint32_t)b->tx_sn << 3), 0 };
         op_buf(b, 0, e, 2, 0, 0);
+    } else if (b->conn_tx == FM1BLE_TX_ARQ) {
+        /* ARQ: the slot the hardware sends after the central's next acknowledgement gets an empty PDU, so an ack never
+         * sends that slot's older PDU again as new; the slot TXTOG names keeps what it holds (sent, not yet acknowledged) */
+        uint32_t s = (g16(b, FM1BLE_E_TXTOG) & 1u) ^ 1u, off = s ? FM1BLE_E_TXDHDR1 : FM1BLE_E_TXDHDR0;
+        memset(b->blk + b->tx[s], 0, FM1BLE_TX_SIZE);
+        e16(b, s ? FM1BLE_E_TXPTR1 : FM1BLE_E_TXPTR0, (uint32_t)b->tx[s] + FM1BLE_TX_HDR);
+        e16(b, off, (g16(b, off) & 4u) | 1u);
     }                                                /* JIELI: the slots keep the last response (the same SN) */
     /* the windows as le_hw_ioctrl's __set_winsize writes them: WINCNTL0 0x32, the time the receiver listens in WINCNTL2
      * (taken as us from its uses; up to 3b39ab4 the window went into WINCNTL0 and WINCNTL2 stayed 0) */
@@ -751,8 +769,9 @@ void fm1ble_op_conn_begin(fm1ble *b, uint8_t tx_mode)
     /* __hw_rx_buf_process on a CONNECT_IND (fm1ble.h FM1BLE_TX_JIELI): two empty PDUs, bit 2 clear in the one sent first */
     tog = (g16(b, FM1BLE_E_TXTOG) & 1u) << 2;
     memset(b->blk + b->tx[0], 0, FM1BLE_TX_SIZE);
+    memset(b->blk + b->tx[1], 0, FM1BLE_TX_SIZE);
     e16(b, FM1BLE_E_TXPTR0, (uint32_t)b->tx[0] + FM1BLE_TX_HDR);
-    e16(b, FM1BLE_E_TXPTR1, (uint32_t)b->tx[0] + FM1BLE_TX_HDR);
+    e16(b, FM1BLE_E_TXPTR1, (uint32_t)b->tx[b->conn_tx == FM1BLE_TX_ARQ ? 1 : 0] + FM1BLE_TX_HDR);   /* ARQ: a buffer each */
     e16(b, FM1BLE_E_TXAHDR0, 0);
     e16(b, FM1BLE_E_TXAHDR1, 0);
     e16(b, FM1BLE_E_TXDHDR0, tog | 1u);
