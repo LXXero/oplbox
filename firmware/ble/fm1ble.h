@@ -202,12 +202,22 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
  *                      push the window past the packet;
  *   FM1BLE_CONN_WIDEN  JieLi's shape: the counter at the window's middle (Cordio's anchor: its window is the anchor
  *                      minus the widening, twice the widening long), WIDEN = half the window (__set_widen: slots in
- *                      WIDEN0, the rest | 0x5000 in WIDEN1), WINCNTL2 = window_us. */
+ *                      WIDEN0, the rest | 0x5000 in WIDEN1), WINCNTL2 = window_us;
+ *   FM1BLE_CONN_WIDE   as PAD with FM1BLE_CONN_WIDE_US on each side: the counter that much earlier, the window 2 x that
+ *                      longer. At a7c1738 only PAD received (1 event of 6, the packet 221 us after Cordio's window start,
+ *                      in a window that was still the wide unsynchronised one), KEEP and WIDEN 0 of 5: so op_arm's counter
+ *                      may open the window a slot late (JieLi's __set_anchor_cnt writes the slots minus one, op_arm the
+ *                      slots) or at a slot boundary of the baseband's own, either of which a 625 us pad only just covers
+ *                      and Cordio's later windows (2 x the widening: 286 us after 14 missed events at a7c1738, tens of
+ *                      us once in step) do not. 1250 us covers both, and the PAL's event log (pal_fm1.h) says where in
+ *                      it the packet lands and when the hardware ended each event. */
 #define FM1BLE_CONN_KEEP    0u
 #define FM1BLE_CONN_PAD     1u
 #define FM1BLE_CONN_WIDEN   2u
-#define FM1BLE_CONN_SETUPS  3u
+#define FM1BLE_CONN_WIDE    3u
+#define FM1BLE_CONN_SETUPS  4u
 #define FM1BLE_CONN_PAD_US  625u
+#define FM1BLE_CONN_WIDE_US 1250u
 void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup);
 /* The packet the hardware sends after T_IFS: TX buffer 1 in an advertising event (for the rest of this event; the next
  * fm1ble_op_adv puts in the scan response it is given), buffer 0 in both TX slots in a connection event. At most 37 bytes of payload (the buffers' size, E.4). */

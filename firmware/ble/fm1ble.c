@@ -684,6 +684,11 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
         e16(b, FM1BLE_E_WIDEN0, w / 625u);
         e16(b, FM1BLE_E_WIDEN1, (w % 625u) | 0x5000u);
         delay_us += w;
+    } else if (b->conn_setup == FM1BLE_CONN_WIDE) {  /* as PAD, FM1BLE_CONN_WIDE_US each side */
+        e16(b, FM1BLE_E_WIDEN0, 0);
+        e16(b, FM1BLE_E_WIDEN1, 0x5000u);
+        delay_us = delay_us > FM1BLE_CONN_WIDE_US ? delay_us - FM1BLE_CONN_WIDE_US : 0u;
+        window_us += 2u * FM1BLE_CONN_WIDE_US;
     }
     e16(b, FM1BLE_E_WINCNTL0, FM1BLE_WIN0);
     e16(b, FM1BLE_E_WINCNTL1, 0);

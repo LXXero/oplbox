@@ -2673,9 +2673,9 @@ static void wifi_page(void)
  * evidence and the counters, 17 pages; its report (ble_sysex.c) is those pages' text, then the counters and the steps'
  * raw bytes. Built like the WiFi page's: a run asked for over USB opens it and starts as PLAY does. */
 #define BLE_CTR_PAGES (FM1BLE_N_CTR / 8u)        /* 8 counters a page */
-#define BLE_PAGES (1u + FM1BLE_STEPS + BLE_CTR_PAGES)   /* 1 list, 8 steps, 8 of counters: 17 */
-#define BLE_TEXT_MAX 6144u                       /* 3072 cut the FM-1's report at 122afe3 (13 pages); 3351 for 14 at 3b39ab4;
-                                                    4190 for 17 at 58cadc5, so about 4700 for 19 */
+#define BLE_PAGES (1u + FM1BLE_STEPS + BLE_CTR_PAGES)   /* 1 list, 8 steps, 15 of counters: 24 */
+#define BLE_TEXT_MAX 8192u                       /* 3072 cut the FM-1's report at 122afe3 (13 pages); 3351 for 14 at 3b39ab4;
+                                                    4190 for 17 at 58cadc5, 4757 for 19 at a7c1738, so about 6100 for 24 */
 #define BLE_REPORT_MAX (WR_HEAD + BLE_TEXT_MAX + 2u + 4u * FM1BLE_N_CTR + FM1BLE_STEPS * (6u + FM1BLE_RAW))
 static uint8_t ble_rep[BLE_REPORT_MAX] __attribute__((section(".pool")));
 static fm1ble_run ble_run __attribute__((section(".pool")));

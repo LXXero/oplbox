@@ -27,6 +27,7 @@ Exit codes: 0 done, 1 the FM-1 refused or has no report (no run since it started
 4 no reply (connection lost, or a firmware without the Bluetooth report), 5 the run did not finish within --timeout.
 """
 import argparse
+import io
 import json
 import os
 import subprocess
@@ -61,9 +62,12 @@ COUNTERS = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common",
             "pal_busy_waits", "pal_busy_us_max", "pal_resp_us_max", "pal_conn_rx_bad",
             "pal_conn_setup", "pal_setup_moves", "pal_late_ops", "conn_flips",
             "pal_set0_counts", "pal_set1_counts", "pal_set2_counts", "conn_acks",
-            "pal_set0_arr", "pal_set1_arr", "pal_set2_arr", "conn_rx_words"]
+            "pal_set0_arr", "pal_set1_arr", "pal_set2_arr", "conn_rx_words",
+            "pal_set3_counts", "pal_set3_arr", "pal_cind_gap_us", "pal_log_n",
+            *[f"ev{k}_{w}" for k in range(12) for w in "abc"]]
 # up to 122afe3 the firmware sent the first 32 of these (pal_done_37-39 then counted the driver's one-channel events
-# that ended), up to 3b39ab4 the first 40, up to 58cadc5 the first 64; a shorter report reads with the first names
+# that ended), up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80; a shorter report reads
+# with the first names
 # the 24 counters of the firmware at 48ea034 and before (the first FM-1 run); a pair is two 16-bit counts in one word, low
 # then high, which the tool splits
 COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "events", "rearms", "rx_packets", "rx_scan_req",
@@ -72,16 +76,20 @@ COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "event
                ("pal_resp_late", "pal_stuck"), "pal_timer_late_us"]
 HEX_COUNTERS = {"pending_last", "rx_hdr", "rx_stat", "air_trials", "txtog", "ram_end", "rx_win", "agc_ctl", "agc_rssi",
                 "conn_win", "rx_stat1", *[f"rxt{k}_{w}" for k in range(4) for w in ("counts", "stat", "pkt", "bytes")],
-                *[f"pal_set{k}_{w}" for k in range(3) for w in ("counts", "arr")], "conn_rx_words"}
+                *[f"pal_set{k}_{w}" for k in range(4) for w in ("counts", "arr")], "conn_rx_words",
+                *[f"ev{k}_{w}" for k in range(12) for w in "abc"]}
 # the air trials (fm1ble_test.h): the driver's own ADV_IND from these addresses, then the stack's
 STACK_ADDR = "C2:46:4D:31:00:01"
 TRIALS = [("C2:46:4D:31:00:10", "variant 0 (no shared radio init), level 6"),
           ("C2:46:4D:31:00:11", "variant 1 (shared radio init first), level 6"),
           ("C2:46:4D:31:00:12", "variant 1, level 11")]
 # the RX trials (fm1ble_test.h): the same ADV_IND on variant 1 at level 6, each with its own receive setup
-# the connection events' window setups (firmware/ble/fm1ble.h FM1BLE_CONN_*): the PAL moves to the next after a missed event
+# the connection events' window setups (firmware/ble/fm1ble.h FM1BLE_CONN_*): up to a7c1738 the PAL moved to the next
+# after each missed event, since then after 3 in a row, in the order wide, pad, keep, widen (pal_fm1.h)
 CONN_SETUPS = ["keep: as up to 58cadc5 (WIDEN at the open's 487 us)", "pad: no widening, 625 us earlier, 1250 us longer",
-               "widen: JieLi's (at the anchor, WIDEN half the window)"]
+               "widen: JieLi's (at the anchor, WIDEN half the window)", "wide: no widening, 1250 us earlier, 2500 us longer"]
+SETUP_NAMES = ["keep", "pad", "widen", "wide"]
+LOG_NONE = 0x8000                        # pal_fm1.h PAL_FM1_LOG_NONE
 RX_TRIALS = [("C2:46:4D:31:00:13", "RX 0: no gain table, WINCNTL2 0x32"),
              ("C2:46:4D:31:00:14", "RX 1: the gain table, WINCNTL2 0"),
              ("C2:46:4D:31:00:15", "RX 2: the gain table, WINCNTL2 0x32 (JieLi's)"),
@@ -284,8 +292,12 @@ def show_conn(rep, out):
     c = rep["counters"]
     if "conn_rx_words" not in c:
         return
-    print("\nCONNECTION EVENTS (each runs one window setup; a missed one moves to the next)", file=out)
+    log = "pal_log_n" in c
+    print("\nCONNECTION EVENTS (each runs one window setup; " +
+          ("3 missed in a row move to the next)" if log else "a missed one moves to the next)"), file=out)
     for k, what in enumerate(CONN_SETUPS):
+        if f"pal_set{k}_counts" not in c:
+            continue
         n, a = c[f"pal_set{k}_counts"], c[f"pal_set{k}_arr"]
         line = f"  setup {k} {what}: {n & 0xFFFF} events, {n >> 16} received"
         if n >> 16:
@@ -298,6 +310,41 @@ def show_conn(rep, out):
     print(f"  the hardware: TXTOG changed after {c['conn_flips']} connection events; {c['conn_acks']} packets with RXSTAT "
           f"bit 8; the last packet RXSTAT {w & 0xFFFF:04X}, RXDHDR {w >> 16:04X} (length {w >> 24}, NESN {w >> 18 & 1}, "
           f"SN {w >> 19 & 1}, MD {w >> 20 & 1})", file=out)
+    if log:
+        show_log(c, out)
+
+
+def log_events(c):
+    """the PAL's event log (pal_fm1.h): one dict per logged connection event"""
+    evs = []
+    for k in range(min(c["pal_log_n"], 12)):
+        a, b, d = c[f"ev{k}_a"], c[f"ev{k}_b"], c[f"ev{k}_c"]
+        rx, end = b & 0xFFFF, b >> 16
+        evs.append({"chan": a & 0x3F, "setup": a >> 6 & 3, "got": bool(a >> 8 & 1), "crc_ok": bool(a >> 9 & 1),
+                    "sent": bool(a >> 10 & 1), "deadline": bool(a >> 11 & 1), "cordio_went_on": bool(a >> 12 & 1),
+                    "first": bool(a >> 13 & 1), "timeout_us": a >> 16, "delay_us": d & 0xFFFF, "rxdhdr": d >> 16,
+                    "rx_us": None if rx == LOG_NONE else s16(rx), "end_us": None if end == LOG_NONE else s16(end)})
+    return evs
+
+
+def show_log(c, out):
+    print(f"  the CONNECT_IND was seen {c['pal_cind_gap_us']} us after the PAL last looked (its timestamp, which places the "
+          f"first window, is up to that late)", file=out)
+    evs = log_events(c)
+    if not evs:
+        print("  no connection event logged", file=out)
+        return
+    print(f"  the first {len(evs)} connection events (times in us from Cordio's dueUsec; end: when the hardware's flag came):",
+          file=out)
+    print("     # ch setup  armed timeout  packet     end  sent RXDHDR", file=out)
+    for k, e in enumerate(evs):
+        pkt = "-" if e["rx_us"] is None else f"{e['rx_us']}{'' if e['crc_ok'] else ' crc'}"
+        end = "deadline" if e["deadline"] else "cordio" if e["cordio_went_on"] else "-" if e["end_us"] is None else e["end_us"]
+        hdr = f"{e['rxdhdr']:04X}" if e["got"] else "-"
+        print(f"  {k:2d}{'*' if e['first'] else ' '} {e['chan']:2d} {SETUP_NAMES[e['setup']]:5s} {e['delay_us']:6d} {e['timeout_us']:7d}"
+              f" {pkt:>7s} {end!s:>7s}  {'yes' if e['sent'] else 'no ':3s}  {hdr}", file=out)
+    print("  (* a connection's first event; the window a setup opens: keep at dueUsec, pad 625 us and wide 1250 us before "
+          "it, each that much longer on both sides; widen at dueUsec + half the timeout)", file=out)
 
 
 def show(rep, out):
@@ -392,17 +439,21 @@ def run(a, backend, out):
     if want is not None and rep["run"] != want:
         raise ReportError("refused", f"run {want} did not start (EDIT pressed on the FM-1?): the FM-1 holds run "
                                      f"{rep['run']}'s report")
-    show(rep, out)
+    shown = io.StringIO()
+    show(rep, shown)
     c = central.result(a.timeout) if central else None
     if c is not None:
-        show_central(c, out)
+        show_central(c, shown)
+    out.write(shown.getvalue())
     if a.out:
         write_out(a.out, rep, raw)
+        with open(os.path.join(a.out, "summary.txt"), "w") as f:      # what this printed: the event log's table with it
+            f.write(shown.getvalue())
         n = sum(1 for st in rep["steps"] if st["data"])
         if c is not None:
             with open(os.path.join(a.out, "central.json"), "w") as f:
                 json.dump(c, f, indent=1)
-        print(f"-> {a.out} (report.txt, report.bin, counters.txt, {n} step files{', central.json' if c is not None else ''})",
+        print(f"-> {a.out} (report.txt, report.bin, counters.txt, summary.txt, {n} step files{', central.json' if c is not None else ''})",
               file=out)
     return 0
 

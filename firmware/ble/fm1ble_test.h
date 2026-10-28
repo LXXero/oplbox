@@ -38,13 +38,14 @@ typedef struct {
     uint32_t ms;                /* milliseconds the step took, from the run's start to its end */
 } fm1ble_step;
 
-#define FM1BLE_N_CTR    80      /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
+#define FM1BLE_N_CTR    120     /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
 
 /* The counters, in the report's order. tools/fm1_ble_report.py has the same list (tests/ble_report_tool.py holds it to
  * FM1BLE_CTR_NAMES); the firmware at 48ea034 and before sent 24 others (the tool reads those by their count), up to
  * 122afe3 the first 32 of these, with pal_done_37-39 counting the driver's one-channel events that ended, up to 3b39ab4
- * the first 40, up to 58cadc5 the first 64. The RX trials' four each (rxtN_*) and the receive setup the stack ran on
- * follow, then the connection events' (pal_fm1.h: the busy wait, the window setups; fm1ble.h's connection words). */
+ * the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80. The RX trials' four each (rxtN_*) and the receive
+ * setup the stack ran on follow, then the connection events' (pal_fm1.h: the busy wait, the window setups; fm1ble.h's
+ * connection words), then the fourth setup's, the CONNECT_IND's poll gap and the PAL's event log (evN_a/b/c). */
 enum {
     FM1BLE_C_RADIO_REGS_OK, FM1BLE_C_RADIO_REGS_BAD, FM1BLE_C_VARIANT, FM1BLE_C_RF_COMMON,
     FM1BLE_C_EVENTS, FM1BLE_C_TX_FLIPS, FM1BLE_C_RX_PACKETS, FM1BLE_C_RX_SCAN_REQ,
@@ -64,12 +65,15 @@ enum {
     FM1BLE_C_PAL_SET_COUNTS,                        /* setup k's: FM1BLE_C_PAL_SET_COUNTS + k */
     FM1BLE_C_CONN_ACKS = FM1BLE_C_PAL_SET_COUNTS + 3,
     FM1BLE_C_PAL_SET_ARR,                           /* setup k's: FM1BLE_C_PAL_SET_ARR + k */
-    FM1BLE_C_CONN_RX_WORDS = FM1BLE_C_PAL_SET_ARR + 3
+    FM1BLE_C_CONN_RX_WORDS = FM1BLE_C_PAL_SET_ARR + 3,
+    FM1BLE_C_PAL_SET3_COUNTS, FM1BLE_C_PAL_SET3_ARR, FM1BLE_C_PAL_CIND_GAP_US, FM1BLE_C_PAL_LOG_N,
+    FM1BLE_C_PAL_LOG                                /* event k's word w (0-2, a-c): FM1BLE_C_PAL_LOG + 3k + w */
 };
 /* the connection events' counters: pal_setN_counts = setup N's events (bits 15-0) and packets received (31-16), each at
  * most 65535; pal_setN_arr = the earliest (bits 15-0) and latest (31-16) packet start after the window's start, us, as
  * signed 16-bit (0 with no packet); conn_rx_words = the last connection packet's RXSTAT (15-0, bit 8 "acknowledges ours")
- * and RXDHDR (31-16) */
+ * and RXDHDR (31-16); pal_set3_* the same for the fourth setup (FM1BLE_CONN_WIDE); pal_cind_gap_us pal_fm1.h's cind_gap_us;
+ * pal_log_n the connection events logged and evN_a, evN_b, evN_c event N's three words (pal_fm1.h PAL_FM1_LOG) */
 /* an RX trial's counters: counts = events (bits 7-0), TXTOG changes (15-8), packets received (23-16), SCAN_REQs (31-24),
  * each at most 255; stat = the first packet's RXSTAT (15-0) and RXAHDR (31-16), or with none the words RXSTAT0 and RXAHDR0
  * as the trial left them; pkt = that packet's RXDHDR (15-0), the RX buffer it was in (23-16) and LASTCHMAP's low byte
@@ -95,7 +99,17 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
     "pal_busy_waits", "pal_busy_us_max", "pal_resp_us_max", "pal_conn_rx_bad", \
     "pal_conn_setup", "pal_setup_moves", "pal_late_ops", "conn_flips", \
     "pal_set0_counts", "pal_set1_counts", "pal_set2_counts", "conn_acks", \
-    "pal_set0_arr", "pal_set1_arr", "pal_set2_arr", "conn_rx_words"
+    "pal_set0_arr", "pal_set1_arr", "pal_set2_arr", "conn_rx_words", \
+    "pal_set3_counts", "pal_set3_arr", "pal_cind_gap_us", "pal_log_n", \
+    "ev0_a", "ev0_b", "ev0_c", "ev1_a", \
+    "ev1_b", "ev1_c", "ev2_a", "ev2_b", \
+    "ev2_c", "ev3_a", "ev3_b", "ev3_c", \
+    "ev4_a", "ev4_b", "ev4_c", "ev5_a", \
+    "ev5_b", "ev5_c", "ev6_a", "ev6_b", \
+    "ev6_c", "ev7_a", "ev7_b", "ev7_c", \
+    "ev8_a", "ev8_b", "ev8_c", "ev9_a", \
+    "ev9_b", "ev9_c", "ev10_a", "ev10_b", \
+    "ev10_c", "ev11_a", "ev11_b", "ev11_c"
 
 /* The air trials (adv_air): the driver's own ADV_IND, each trial from its own static random address, so a central's
  * scan (tools/ble_central.py) says which one reached the air. Trial 0: without the shared radio's init (variant 0), at

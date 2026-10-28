@@ -200,6 +200,15 @@ static void counters(fm1ble_run *r)
     }
     r->ctr[FM1BLE_C_CONN_ACKS] = d->conn_acks;
     r->ctr[FM1BLE_C_CONN_RX_WORDS] = (uint32_t)d->conn_stat | (uint32_t)d->conn_dhdr << 16;
+    r->ctr[FM1BLE_C_PAL_SET3_COUNTS] = sat16(p->set_events[3]) | sat16(p->set_rx[3]) << 16;
+    r->ctr[FM1BLE_C_PAL_SET3_ARR] = s16(p->set_arr_min[3]) | s16(p->set_arr_max[3]) << 16;
+    r->ctr[FM1BLE_C_PAL_CIND_GAP_US] = p->cind_gap_us;
+    r->ctr[FM1BLE_C_PAL_LOG_N] = p->log_n;
+    for (k = 0; k < PAL_FM1_LOG; k++) {
+        r->ctr[FM1BLE_C_PAL_LOG + 3u * k] = p->log[k][0];
+        r->ctr[FM1BLE_C_PAL_LOG + 3u * k + 1u] = p->log[k][1];
+        r->ctr[FM1BLE_C_PAL_LOG + 3u * k + 2u] = p->log[k][2];
+    }
 }
 
 /* the addresses: made-up static random ones (the FM-1 has no device address: docs/BLUETOOTH_RADIO.md PalCfgLoadData),
