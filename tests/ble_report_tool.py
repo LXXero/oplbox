@@ -374,16 +374,19 @@ rc, out, err = tool(dev, "--run")
 check(rc == 1 and "EDIT" in err, f"--run in EDIT: exit {rc} {err}")
 dev.stop()
 
-# The FM-1 refuses the run after the report was read (EDIT): the central started for it is stopped too.
+# start() said run 999 started, but the report read afterwards holds another run (refused after the read):
+# the central started for it is stopped too.
 central_process = LiveProcess()
-dev = PipeBackend("--serve-ble", REPORT, "edit")
+dev = PipeBackend("--serve-ble", REPORT)
 try:
+    tool(dev, "--run")                                   # the FM-1 now holds run 1's report
     br.Central = TrackedCentral
+    br.start = lambda *args: 999
     rc, out, err = tool(dev, "--run", "--central", "local")
 finally:
     dev.stop()
-    br.Central = old_central
-check(rc == 1 and "EDIT" in err and central_process.killed and central_process.waited,
+    br.Central, br.start = old_central, old_start
+check(rc == 1 and "run 999 did not start" in err and central_process.killed and central_process.waited,
       f"--run refused after the read leaves the central alive: exit {rc}, killed={central_process.killed}, "
       f"waited={central_process.waited}, error={err}")
 
