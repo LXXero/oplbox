@@ -1,13 +1,25 @@
 # Bluetooth LE MIDI on code OPLBOX can ship
 
 OPLBOX is GPL-3.0-only. The goal here is BLE MIDI: the FM-1 shows up as a Bluetooth MIDI device to a Mac, an iPhone,
-a Windows PC or an Android phone, and MIDI flows both ways beside USB and TRS. This file is stage 0, the map, in
-the same shape as `docs/WIFI.md`: what the SDK's Bluetooth libraries are, what is known about their licence, what
-the controller's hardware looks like from the SDK's own C sources, which host stacks could sit on top, what it all
-costs against OPLBOX's free space, and a plan in stages small enough for one task each.
+a Windows PC or an Android phone, and MIDI flows both ways beside USB and TRS.
 
-Read on 2026-10-25. "[unchecked]" marks what nobody has verified. This is evidence, not a legal opinion. Nothing
-below was run on an FM-1.
+**Where it stands (2026-10-28).** The Bluetooth in the firmware is Arm/Packetcraft Cordio's LE link layer as the
+controller (Apache-2.0, built from source, vendored unchanged in `firmware/ble/cordio/`), on our own radio driver and PAL
+(`firmware/ble/fm1ble.c`, `firmware/ble/cordio_port/pal_fm1.c`), with Apache NimBLE as the host (`firmware/ble/nimble/`)
+and our own BLE-MIDI service. No JieLi Bluetooth archive (`btctrler.a`, `btstack.a`, `crypto_toolbox_Osize.a`) is linked
+by any build file; `tools/ble_ir.py` reads `btctrler.a` from the user's own SDK only to check the facts in
+docs/BLUETOOTH_RADIO.md, and the shared radio's power-up that JieLi's `wf_rf_common_init` does is OPLBOX's own
+(`firmware/hal/fm1ble_port_bsp.c`). BLE MIDI ran on xero's FM-1 at f6ee032 (2026-10-28) with BlueZ on xlap as the
+central: all eight steps of the Bluetooth test run passed, the connection held, BlueZ resolved the GATT services and a
+Note On went each way ("The runs after 122afe3" below). Still open: connections from a Mac, an iPhone or an Android
+phone (stage 5; none is recorded), WiFi and Bluetooth together (stage 6), pairing (stage 7).
+
+From "Licence provenance" to "fm1-radio's notes 01-06 as prior art", and the plan's stages as first written, this file
+is stage 0, the map [history], read on 2026-10-25 when JieLi's `btctrler.a` was the only controller in sight, in the same
+shape as `docs/WIFI.md`: what the SDK's Bluetooth libraries are, what is known about their licence, what the controller's
+hardware looks like from the SDK's own C sources, which host stacks could sit on top, what it all costs against OPLBOX's
+free space, and a plan in stages small enough for one task each. "[unchecked]" marks what nobody has verified. This is
+evidence, not a legal opinion. Nothing in the map was run on an FM-1.
 
 | Source | Version read |
 | --- | --- |
@@ -24,22 +36,28 @@ at `-Os -ffunction-sections` (the flags `tools/build.py` uses). The commands are
 
 ## Short answer
 
-- **Controller.** JieLi's `btctrler.a` is the only Bluetooth controller we have. It is binary only and speaks
-  standard HCI through a function-call transport, so any HCI host can sit on top of it. Its licence label (Apache-2.0
-  on the SDK's root `LICENSE`) is as unproven as the WiFi libraries' (see "Licence provenance"). Writing our own
-  controller needs the baseband's registers, which no SDK C source defines: that is a large job with a lot of
-  FM-1 time, and it is not planned here.
-- **Host.** JieLi's `btstack.a` uses the public API names of BlueKitchen's BTstack, whose licence is not
-  GPL-compatible. Do not use it. Recommended: **Apache NimBLE's host, peripheral-only, pairing off at first**
-  (Apache-2.0, compatible with GPL-3.0), with the BLE-MIDI service written by us. Measured: 41 KB of code and 6 KB of
-  static RAM before linking. A hand-written minimal ATT/GATT host would be smaller (about 4 KB, an estimate) and is the
-  fallback.
-- **Cost.** fm1-radio measured JieLi's whole BLE stack at +124 KB of code. OPLBOX has 238,772 B free, and the WiFi
-  plan targets under 120 KB. Both together do not fit unless one of them shrinks (see "Flash and RAM").
-- **Blocker for shipping.** A GPL-3.0 binary that contains the controller archive cannot offer its source. The
-  diagnostic and host stages need no decision. Shipping it needs xero's decision (options in "Open questions").
+- **Controller.** Cordio's LE link layer, built from source (Apache-2.0, compatible with GPL-3.0-only when its LICENSE
+  and NOTICE are kept), on a radio driver and PAL we wrote from facts (docs/BLUETOOTH_RADIO.md, docs/BLUETOOTH_CORDIO.md).
+  xero decided on 2026-10-27 that no JieLi binary goes in the image; JieLi's `btctrler.a` is not linked.
+- **Host.** Apache NimBLE's host, peripheral-only, pairing off (Apache-2.0), with the BLE-MIDI service written by us.
+  JieLi's `btstack.a` (BTstack-shaped, not GPL-compatible) is not used.
+- **Cost.** The app links the test run, the driver, the PAL, Cordio, NimBLE and `ble_libc.c` beside WiFi's stages 4-9
+  ("Cordio path as built" 6; docs/BLUETOOTH_CORDIO.md "Size").
+- **No licence decision is pending for Bluetooth.** Nothing links `btctrler.a`, `btstack.a` or `crypto_toolbox_Osize.a`,
+  so whether OPLBOX may ship them (the old gate below) does not come up. The findings about those archives are kept as
+  history.
+
+What the map said on 2026-10-25 [history, superseded by the above]: JieLi's `btctrler.a` was the only controller we had,
+binary only, speaking standard HCI through a function-call transport, with an Apache-2.0 label as unproven as the WiFi
+libraries'; our own controller needed the baseband's registers, which no SDK C source defines, and was not planned;
+NimBLE's host was recommended (41 KB of code and 6 KB of static RAM, unlinked), with a hand-written minimal ATT/GATT host
+as the fallback; fm1-radio measured JieLi's whole BLE stack at +124 KB against OPLBOX's 238,772 B free; and shipping a
+binary with the controller archive in it needed xero's decision.
 
 ## Licence provenance
+
+[history] Read for the stage 0 map on 2026-10-25. No build links these archives now (see the top of this file); the
+findings stay because fm1-radio and fm1-base link them, and for "Open questions".
 
 ### What the SDK says
 
@@ -322,6 +340,12 @@ here. Read for what carries over.
 One task per stage, each on its own branch, merged before the next begins unless marked parallel. "Host" is what a host
 test proves. "FM-1" is what needs xero to flash a build and read numbers off the screen.
 
+Status (2026-10-28): stages 1, 2 and 3 are done (stage 3 as "Cordio path as built" 1). The gate is closed: no JieLi
+controller is linked, so there is nothing to decide. Stages 4 and 5 were done on Cordio's controller in place of
+JieLi's: the start-up, advertising, a connection, GATT and MIDI both ways ran on the FM-1 with BlueZ on xlap as the
+central ("The runs after 122afe3"); stage 5's Mac, iPhone and Android connections are not recorded as done. Stages 6
+and 7 are open. The stage texts below are the plan as first written [history], with notes where it changed.
+
 ### Stage 1: HCI packet layer and a fake controller (host only)
 
 - `firmware/ble/hci.c`/`hci.h`: encode and decode command, event and ACL packets for the commands listed under "Estimated: our own
@@ -370,9 +394,9 @@ packet handler `hci_host_receive(type, packet, size)`, the shape of the controll
   `tests/ble_mutants.py`: 18 deliberate bugs in `hci.c`, all caught.
 - **Size**: 3,017 B of code and read-only data, no static RAM (the `hci_host` struct, about 1 KB, is the caller's).
   Compiled by `./build.sh` with the app's flags, not linked.
-- **Untested on hardware.** Nothing here has talked to `btctrler.a`. Stage 4 shows whether its answers match: the same
-  opcodes accepted, how many command credits it gives, its LE buffer size and count, whether it sends LE Meta events
-  after these masks, and whether it calls back inside `send_packet`.
+- **Untested on hardware** against `btctrler.a`, and it will not be: stage 4 was to check its answers (the opcodes
+  accepted, its command credits, its LE buffer size and count, LE Meta events after these masks, callbacks inside
+  `send_packet`), but the controller is now Cordio's ("Cordio path as built") [history].
 - Not in stage 1: LE Connection Update from the peripheral (the L2CAP connection parameter request is stage 3's),
   encryption events, random addresses, extended advertising.
 
@@ -391,15 +415,18 @@ packet handler `hci_host_receive(type, packet, size)`, the shape of the controll
 - **Host**: NimBLE against stage 1's fake controller: advertise, accept a connection, discover the MIDI service,
   notify and write. Size recorded by `tools/build.py`, unlinked, as for `firmware/wifi/`.
 
-### Gate: the controller licence (no code; xero decides)
+### Gate: the controller licence [closed]
 
-- Whether OPLBOX may ship a binary containing `btctrler.a`, `wl_rf_common.a`, `cpu.a` and `crypto_toolbox_Osize.a`,
-  or only builds that link them from the user's own SDK (fm1-radio's way), or neither. Diagnostic builds in stages 4-6
-  are never shipped, so they need no decision.
+- Was: whether OPLBOX may ship a binary containing `btctrler.a`, `wl_rf_common.a`, `cpu.a` and `crypto_toolbox_Osize.a`,
+  or only builds that link them from the user's own SDK (fm1-radio's way), or neither.
+- Closed without that decision: on 2026-10-27 xero decided no JieLi binary goes in the image, the controller became
+  Cordio's ("Cordio path as built"), and no build file links any of those archives (the only one named by a script is
+  `wl_rf_common.a`, in `tests/run_host.sh`, a host-only check of the generated WiFi tables).
 
 ### Stage 4: controller start-up on the FM-1 (needs FM-1)
 
-- A diagnostic build that starts JieLi's controller on the cooperative scheduler pattern of fm1-radio's shim (written
+- Done on Cordio's controller instead (the test run's radio, block, hci and adv steps; "Cordio path as built" 5). As
+  first planned [history]: a diagnostic build that starts JieLi's controller on the cooperative scheduler pattern of fm1-radio's shim (written
   by us; fm1-base's `ble/shim` as reference under MPL-2.0), the trim code in `.ram_code`, audio muted during start.
   The setup page shows: did `wf_rf_common_init` return, the trim result, the HCI reset response, `LE Read Buffer Size`
   (the controller's real ACL buffer size and count), and the crash note fm1-radio built (if it crashes).
@@ -407,7 +434,11 @@ packet handler `hci_host_receive(type, packet, size)`, the shape of the controll
 
 ### Stage 5: advertise, connect, exchange MIDI (needs FM-1)
 
-- Stage 3's host on stage 4's controller: advertise "OPLBOX" with the service UUID, connect from a Mac, an iPhone and
+- Done with BlueZ on xlap as the central: at f6ee032 the connection held, GATT services resolved and a Note On went
+  each way ("The runs after 122afe3"). Not recorded: a connection from a Mac, an iPhone or an Android phone, the
+  connection interval and latency they settle on, and dropped notes. BLE MIDI is not yet wired into the app's MIDI
+  paths (keys and the arp out, USB and TRS in): only the Bluetooth test run calls `ble_midi_get`. Those stay open.
+- As first planned: stage 3's host on stage 4's controller: advertise "OPLBOX" with the service UUID, connect from a Mac, an iPhone and
   an Android phone (one each, or what xero has), echo notes both ways, record connection interval, latency and
   dropped notes; wire the notes into the existing MIDI paths (keys and the arp out, USB and TRS in).
 - **FM-1**: xero connects the devices and reports. Pairing stays off; if an iPhone needs bonding, stage 5 says so.
@@ -423,11 +454,12 @@ packet handler `hci_host_receive(type, packet, size)`, the shape of the controll
 - Only if a phone insists. NimBLE's Security Manager with an AES and AES-CMAC provider (BearSSL's AES is already in
   `firmware/wifi/bearssl/`), just-works legacy pairing first, the bond in the settings sector.
 
-### Not planned: our own controller
+### Our own controller [superseded]
 
-- Needs the baseband's register map and the RF sequences for LE: no source shows them, only field names in the
-  archive's debug information. It would be measured on the FM-1 with the stock controller running as a reference.
-  Revisit if the licence gate says no.
+- The map did not plan one: it needs the baseband's register map and the RF sequences for LE, which no source shows,
+  only field names in the archive's debug information [history]. What was built instead is Cordio's link layer from
+  source on our own radio driver, from facts read out of the archives' IR (docs/BLUETOOTH_RADIO.md), without JieLi's
+  controller running as a reference ("Cordio path as built").
 
 ### Order and what runs in parallel
 
@@ -495,7 +527,8 @@ Decision (xero, 2026-10-27): no JieLi binary in the image. The controller is Arm
 functions. Apache-2.0 is compatible with GPL-3.0-only when LICENSE and NOTICE are kept. The chip's radio driver is
 ours, clean-room, from facts only.
 
-Status of the six steps (2026-10-27). **Nothing below ran on an FM-1.** Host tests: `tests/run_host.sh`.
+Status of the six steps as of 2026-10-27, before the first FM-1 run [history]; the runs since are in "The first FM-1
+run", "The second FM-1 run" and "The runs after 122afe3". Host tests: `tests/run_host.sh`.
 
 1. **NimBLE host, peripheral-only, no pairing: done and host-tested.** `firmware/ble/nimble/` (129 files, unchanged, commit
    e00b85cc, `README.md` and `SHA256SUMS`), our polled port (`ble_nimble_npl.c`, `nimble_port/`), the transport as a function
@@ -601,7 +634,7 @@ register model now does what the chip did with one-channel events (on 37: ends, 
 so the PAL of 122afe3 fails the host tests the way it failed on the FM-1. Eight counters more (40, a fourteenth page):
 docs/BLUETOOTH_PAGE.md.
 
-### The next FM-1 run
+### The next FM-1 run [history: the plan after 122afe3]
 
 From xryzen, the FM-1 on its USB, xlap as the central (a few metres away is enough):
 
@@ -629,18 +662,38 @@ where the packets started in it, how long Cordio took to answer against T_IFS, w
 and the central's packets carried RXSTAT bit 8). Events that receive and a connection that still drops point at the
 response: its header (SN and NESN in TXDHDR, which JieLi writes differently: bit 2 per TX slot) or its timing.
 
+### The runs after 122afe3
+
+From 2026-10-27 the control session ran the test run after each round of work, with the FM-1 on xryzen's USB and BlueZ
+on xlap as the central (`--central xlap`). The raw runs are kept on xryzen in `~/oplbox-ble-runs/<commit>-1` (not in the
+repo). docs/BLUETOOTH_CORDIO.md "The chip's PAL" records each run up to 807d70f and what changed after it: the PAL's
+advertising through one hardware event per Cordio event, the receiver's gain table and window setups, the busy wait
+through each connection event, the TX modes and the chip's own ARQ, and new-or-repeat judged by the central's SN in
+place of RXTOG (f55cda4).
+
+- **956029a** (`~/oplbox-ble-runs/956029a-1`): all eight steps PASS. The central connected once, sent its Note On
+  (`midi_in`) and heard the FM-1's (`midi_out`: "Note on 0, note 60, velocity 100"), but BlueZ never said
+  ServicesResolved: yes: the run closed the link (LL_TERMINATE_IND) right after MIDI_OUT, 0.85 s into the connection,
+  while BlueZ was still in its discovery (77d267d's message). 77d267d keeps the connection up after MIDI_OUT for the
+  central to close, at most 15 s (fm1ble_test.h `FM1BLE_HOLD_MS`), and `ble_central.py` reads on for up to 10 s for
+  ServicesResolved before it disconnects.
+- **f6ee032** (`~/oplbox-ble-runs/f6ee032-1`, 2026-10-28): all eight steps PASS. One connection, not dropped; GATT
+  services resolved 0.86 s after the connect; the Note On 90 3C 64 went in and the FM-1's Note On came back
+  ("Note on 0, note 60, velocity 100"). This was the done-check of the Momentum goal "connect, midi_in and midi_out all
+  PASS on the board".
+
 ## Open questions
 
-- Whether OPLBOX may ship the controller binary (the gate above); and who to ask. Who would answer for JieLi is
-  not known.
-- Whether the controller accepts a plain host-side `send_packet` without JieLi's OS (stage 4 answers it).
+- [closed] Whether OPLBOX may ship the controller binary: no JieLi controller is linked (the gate above).
+- [closed] Whether JieLi's controller accepts a plain host-side `send_packet` without JieLi's OS: it is not used.
 - What coexistence index 8 is, and what the 46-entry priority tables encode. They are constants in `cpu.a`'s IR; the
   same rule as WIFI.md's tables applies (facts only, no translated code).
-- How much of the 124 KB belongs to the controller and how much to JieLi's host (a link map would say).
+- [history] How much of the 124 KB belongs to JieLi's controller and how much to its host. Not needed now.
+- Which Macs, iPhones and Android phones connect, and how they behave: no run with one is recorded in the repo.
 - Whether an iPhone connects without bonding (fm1-radio found a Mac does).
 - Whether an iPhone or a Mac wants more than the specification says: whether they need the connection interval at
   the 11.25 ms Apple's guidelines may ask for (not read), whether they read the characteristic before they write,
-  and how they react to a notification with a timestamp in the past (stage 5).
+  and how they react to a notification with a timestamp in the past (stage 5, still open).
 - Whether the licence finding about `crypto_toolbox_Osize.a` (GPL-2.0-or-later headers beside the archive) should be
   passed on to fm1-radio's and fm1-base's authors, as WIFI.md asks of the WiFi finding.
 
