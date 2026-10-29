@@ -374,6 +374,19 @@ rc, out, err = tool(dev, "--run")
 check(rc == 1 and "EDIT" in err, f"--run in EDIT: exit {rc} {err}")
 dev.stop()
 
+# The FM-1 refuses the run after the report was read (EDIT): the central started for it is stopped too.
+central_process = LiveProcess()
+dev = PipeBackend("--serve-ble", REPORT, "edit")
+try:
+    br.Central = TrackedCentral
+    rc, out, err = tool(dev, "--run", "--central", "local")
+finally:
+    dev.stop()
+    br.Central = old_central
+check(rc == 1 and "EDIT" in err and central_process.killed and central_process.waited,
+      f"--run refused after the read leaves the central alive: exit {rc}, killed={central_process.killed}, "
+      f"waited={central_process.waited}, error={err}")
+
 
 # --btmon when start() or read() fails: the run ends with the stand-in btmon (which runs until it is stopped) stopped
 class Kept(br.Btmon):
