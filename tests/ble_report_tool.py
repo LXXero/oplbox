@@ -16,6 +16,7 @@ import io
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -299,7 +300,8 @@ check(rc == 0 and "Bluetooth test run 2" in out, f"--read after the runs: exit {
 # --central local: the central (tools/ble_central.py, on the stand-in BlueZ tools) during the run, its result in the output
 os.environ.update(FAKE_BLUEZ_STATE=os.path.join(OUT, "fake_bluez_report"), FAKE_BLUEZ_MODE="ok",
                   PATH=os.path.join(ROOT, "tests/ble/fake_bluez") + os.pathsep + os.environ["PATH"])
-os.makedirs(os.environ["FAKE_BLUEZ_STATE"], exist_ok=True)
+shutil.rmtree(os.environ["FAKE_BLUEZ_STATE"], ignore_errors=True)    # a run before this one leaves its port and commands
+os.makedirs(os.environ["FAKE_BLUEZ_STATE"])
 rc, out, err = tool(dev, "--run", "--wait", "3", "--timeout", "20", "--central", "local", "--out", d)
 check(rc == 0 and "CENTRAL (tools/ble_central.py)" in out and "C2:46:4D:31:00:01  the stack (Cordio, NimBLE): seen" in out and
       "connect: yes; MIDI port: 128:0" in out, f"--central local: exit {rc} {err}\n{out}")
