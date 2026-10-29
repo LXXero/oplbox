@@ -893,6 +893,9 @@ def run(a, backend, out):
     if want is not None and rep["run"] != want:
         if btmon:
             btmon.stop()
+        if central and central.p.poll() is None:  # nor the central, which would scan on until its --timeout
+            central.p.kill()
+            central.p.wait()
         raise ReportError("refused", f"run {want} did not start (EDIT pressed on the FM-1?): the FM-1 holds run "
                                      f"{rep['run']}'s report")
     shown = io.StringIO()

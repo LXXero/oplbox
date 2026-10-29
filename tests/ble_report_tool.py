@@ -16,6 +16,7 @@ import io
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -299,7 +300,8 @@ check(rc == 0 and "Bluetooth test run 2" in out, f"--read after the runs: exit {
 # --central local: the central (tools/ble_central.py, on the stand-in BlueZ tools) during the run, its result in the output
 os.environ.update(FAKE_BLUEZ_STATE=os.path.join(OUT, "fake_bluez_report"), FAKE_BLUEZ_MODE="ok",
                   PATH=os.path.join(ROOT, "tests/ble/fake_bluez") + os.pathsep + os.environ["PATH"])
-os.makedirs(os.environ["FAKE_BLUEZ_STATE"], exist_ok=True)
+shutil.rmtree(os.environ["FAKE_BLUEZ_STATE"], ignore_errors=True)    # a run before this one leaves its port and commands
+os.makedirs(os.environ["FAKE_BLUEZ_STATE"])
 rc, out, err = tool(dev, "--run", "--wait", "3", "--timeout", "20", "--central", "local", "--out", d)
 check(rc == 0 and "CENTRAL (tools/ble_central.py)" in out and "C2:46:4D:31:00:01  the stack (Cordio, NimBLE): seen" in out and
       "connect: yes; MIDI port: 128:0" in out, f"--central local: exit {rc} {err}\n{out}")
@@ -373,6 +375,22 @@ dev = PipeBackend("--serve-ble", REPORT, "edit")
 rc, out, err = tool(dev, "--run")
 check(rc == 1 and "EDIT" in err, f"--run in EDIT: exit {rc} {err}")
 dev.stop()
+
+# start() said run 999 started, but the report read afterwards holds another run (refused after the read):
+# the central started for it is stopped too.
+central_process = LiveProcess()
+dev = PipeBackend("--serve-ble", REPORT)
+try:
+    tool(dev, "--run")                                   # the FM-1 now holds run 1's report
+    br.Central = TrackedCentral
+    br.start = lambda *args: 999
+    rc, out, err = tool(dev, "--run", "--central", "local")
+finally:
+    dev.stop()
+    br.Central, br.start = old_central, old_start
+check(rc == 1 and "run 999 did not start" in err and central_process.killed and central_process.waited,
+      f"--run refused after the read leaves the central alive: exit {rc}, killed={central_process.killed}, "
+      f"waited={central_process.waited}, error={err}")
 
 
 # --btmon when start() or read() fails: the run ends with the stand-in btmon (which runs until it is stopped) stopped
