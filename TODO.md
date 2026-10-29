@@ -626,7 +626,7 @@ PMK time, the EAPOL frames seen, the key tables read back and what the MAC decry
 and 39 counters. Host-tested (`tests/wifi_wpa.c` 73 checks, eight key-table mutants caught; the simulator against a
 WPA2 AP in the register model; the tool's `--psk-file` / `--psk-from-nm`). **Not run on an FM-1 yet.**
 
-**Open.** The FM-1 run (`python3 tools/fm1_wifi_report.py --ssid TESTWPA2 --psk-from-nm <connection> --run --out
+**Open.** The FM-1 run (`python3 tools/fm1_wifi_report.py --ssid YOURNET --psk-from-nm <connection> --run --out
 DIR`): whether the key tables read back, whether the MAC encrypts with WIV 0 and counts the PN itself, whether its
 RXD bits are rt2800usb's, the PMK time that sets `WPA_PMK_STEP`. The PMK cache is in RAM (the settings sector is stage
 9's); no PMF, WPA3 or TKIP.

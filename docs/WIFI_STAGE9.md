@@ -15,7 +15,7 @@ not this.
 From the computer the FM-1 is plugged into, as for stage 8, plus `--ping`:
 
 ```
-python3 tools/fm1_wifi_report.py --ssid TESTWPA2 --psk-file FILE --run --ping --out wifi-ip
+python3 tools/fm1_wifi_report.py --ssid YOURNET --psk-file FILE --run --ping --out wifi-ip
 ```
 
 The network and passphrase go over exactly as in stage 8 (SysEx 0x64, RAM only, never printed or in the report).

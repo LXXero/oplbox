@@ -1,6 +1,6 @@
 # WiFi stage 8: joining a WPA2 network
 
-Stage 8 of docs/WIFI.md's plan, on the WiFi test page: the run joins a WPA2-PSK network (xero's TESTWPA2) instead of
+Stage 8 of docs/WIFI.md's plan, on the WiFi test page: the run joins a WPA2-PSK network (your WPA2 network, `YOURNET` below) instead of
 an open OPLBOX hotspot, runs the 4-way handshake, loads the agreed keys into the MAC's key tables so CCMP runs in
 hardware, stays joined 2 s, leaves and joins again. **None of it has run on an FM-1 yet**; everything below was
 checked on the host only (`tests/run_host.sh`), against the register model and its made-up WPA2 access point.
@@ -10,10 +10,10 @@ checked on the host only (`tests/run_host.sh`), against the register model and i
 From the computer the FM-1 is plugged into (xlap), in the oplbox checkout:
 
 ```
-python3 tools/fm1_wifi_report.py --ssid TESTWPA2 --psk-from-nm <connection> --run --out wifi-wpa2
+python3 tools/fm1_wifi_report.py --ssid YOURNET --psk-from-nm <connection> --run --out wifi-wpa2
 ```
 
-`<connection>` is the NetworkManager connection that holds TESTWPA2's passphrase (`nmcli connection show` lists them;
+`<connection>` is the NetworkManager connection that holds your network's passphrase (`nmcli connection show` lists them;
 `nmcli -s` needs the right to read secrets, so run it as the desktop user). Or put the passphrase on the first line of
 `~/.config/oplbox/wifi.psk`, `chmod 600` it, and leave out `--psk-from-nm` (`--psk-file FILE` for another file). The
 tool sends the network, starts a run (the sound stops; EDIT must be closed), waits for it, prints the report and
@@ -96,7 +96,7 @@ SURVEY  OK 13 OF 13 CH
 LINK    OK
 PASSIVE OK 12 NETWORKS
 ACTIVE  OK 12 ANSWERS
-JOIN    OK AID 1                  FAIL NO TESTWPA2 / TESTWPA2 IS WPA / NO CCMP GROUP / MFP REQUIRED / AUTH ... / ASSOC ...
+JOIN    OK AID 1                  FAIL NO YOURNET / YOURNET IS WPA / NO CCMP GROUP / MFP REQUIRED / AUTH ... / ASSOC ...
 4-WAY   OK 37 MS                  ms from the association to msg 4 sent. FAIL NO MSG 1 / NO MSG 3 / DEAUTH n (the AP's
                                   reason: 15 is its 4-way timeout, a wrong passphrase) / MIC / RSNE / ... (what
                                   wpa_eapol.c refused) / KEYS TIMEOUT (a key table write) / PTK READBACK
@@ -109,7 +109,7 @@ Page 10 is the join in detail as before, headed with the network's name. Page 11
 
 ```
 WPA2                 11/11
-NETWORK TESTWPA2
+NETWORK YOURNET
 PMK  1234 MS                      how long the PMK's steps took (or CACHED): the number that sets WPA_PMK_STEP
 EAPOL IN 3 OUT 3 REFUSED 0        EAPOL frames from and to the AP, and those wpa_eapol.c refused
 SEEN M1 M2 M3 M4 G1 G2            the handshake's messages either way
