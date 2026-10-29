@@ -265,7 +265,7 @@ next run (numbers little-endian):
 | 1 | flags: bit 0 the text was cut short, bit 1 counters or steps were |
 | 2 | the run's number |
 | 2 | T, then T bytes of text: every line pages 1-12 show (not the `PLAY: PAGE n` footers), a blank line between pages, then `STEPS IN FULL: NAME, RESULT, MS, NOTE` and one line per step with its whole note, then `ADDRESS` (the controller's, `00:00:00:00:00:00` before the HCI step) |
-| 1 | K, then K 32-bit counters (192 since 5474159's 120): `tools/fm1_ble_report.py` and `fm1ble_ctr_name` name them |
+| 1 | K, then K 32-bit counters (192 since 5838183's 120): `tools/fm1_ble_report.py` and `fm1ble_ctr_name` name them |
 | 1 | S, then S frames: the steps (8): the step (0 radio ... 7 midi_out), its result (0 not run, 1 pass, 2 fail, 3 skip), the evidence bytes it had (16 bits) and kept (16 bits, the same, at most 48), then those bytes; since round 7, after a connection, a ninth with index 8: the PDU capture (`fm1ble_test.h` `FM1BLE_CAP_*`, at most 656 bytes) |
 
 The tool prints the text and the counters; `--out DIR` writes `report.txt`, `report.bin`, `counters.txt`,

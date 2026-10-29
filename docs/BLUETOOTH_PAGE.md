@@ -4,7 +4,7 @@ Step 5 of docs/BLUETOOTH.md "Cordio path as built": a page on the FM-1, a USB Sy
 so the control session reads what the Bluetooth stack did on the device without a photo, one result line per step with its
 raw evidence. It follows the WiFi test page (docs/WIFI_STAGE4.md, docs/WIFI_STAGE8.md) in everything but the radio.
 
-**One run on an FM-1 so far** (48ea034, docs/BLUETOOTH.md "The first FM-1 run"): the page, the report and the tool
+**One run on an FM-1 so far** (c9b4e78, docs/BLUETOOTH.md "The first FM-1 run"): the page, the report and the tool
 worked over USB; the tool printed the counters under wrong names, fixed since. The page, the report and the tool are
 tested on the host (`tests/run_host.sh`)
 against a scripted run, `tests/ble/fm1ble_test_host.c`, whose numbers and bytes are made up. The run the firmware links
@@ -107,7 +107,7 @@ them), `pal_conn_timeout_us` (Cordio's receive timeout for the last connection e
 last RX trial). The last 16 are the connection events' (docs/BLUETOOTH_CORDIO.md, `pal_fm1.h`): `pal_busy_waits` and
 `pal_busy_us_max` (events waited through, the longest wait), `pal_resp_us_max` (the most us from a packet seen to Cordio's
 response put in; T_IFS is 150), `pal_conn_rx_bad` (packets with a bad CRC), `pal_conn_setup` and `pal_setup_moves` (the
-window setup in use at the end, how often a connection started on another setup than the last one did; up to 5474159 how
+window setup in use at the end, how often a connection started on another setup than the last one did; up to 5838183 how
 often missed events moved to the next), `pal_late_ops` (operations armed after their
 due time), `conn_flips` (connection events after which TXTOG had changed), `pal_setN_counts` (setup N's events in 15-0,
 packets received in 31-16), `conn_acks` (connection packets with RXSTAT bit 8), `pal_setN_arr` (the earliest and latest
@@ -117,7 +117,7 @@ packet's RXSTAT in 15-0, RXDHDR in 31-16). After them: `pal_set3_counts` and `pa
 connection's first window, can be that late), `pal_log_n` (connection events logged) and the PAL's event log, `evN_a`,
 `evN_b`, `evN_c` for the first 4 events of each connection, 12 in all (pal_fm1.h PAL_FM1_LOG: channel, setup, flags
 and Cordio's receive timeout; the packet's start and the hardware's end flag in us from Cordio's dueUsec; the arm delay
-and the packet's RXDHDR; up to 5474159 the first 12 events, the setup in bits 7-6 alone). Then (fm1ble_test.h says each
+and the packet's RXDHDR; up to 5838183 the first 12 events, the setup in bits 7-6 alone). Then (fm1ble_test.h says each
 word's layout): `pal_set4..6_counts` and `_arr` (padj, padb, padw: fm1ble.h FM1BLE_CONN_*), `pal_conns` and `pal_good`
 (connections the PAL started; the setup a connection received 8 packets on, which every later connection runs, 0xFF for
 none), `connN_a/b/c` (the first 8 connections: setup, events, packets; the first and last packet's start; the earliest
@@ -128,14 +128,14 @@ halt), `pal_resp_skipped` and `pal_resp_hist` (intime's responses left out; Cord
 `pal_txK_counts` and `pal_txK_sent` (per TX mode: events, packets, events in which TXTOG changed, packets with RXSTAT bit
 8), `pal_good_tx`, `pal_conn_txs`, `pal_first_rx_tx` (the TX words when the first connection packet came), `conn_txtog`,
 `conn_txdhdr`, `conn_txbuf` (the TX words at the end), `evN_d` and `connN_d` (the event log's and the summaries' fourth
-words), `pal_cfg`, `pal_tx_order` and `pal_resp_us_min`. Up to f0e6d08 those 39 were the window probe's (`probe_n`,
+words), `pal_cfg`, `pal_tx_order` and `pal_resp_us_min`. Up to 9c47113 those 39 were the window probe's (`probe_n`,
 `clk_*`, `prS_a..d`, `probe_delays`, `probe_windows`: connection events with no central, at two delays and two windows,
 where each setup's window ended); that run settled that only padw's window follows the register, so the stack now runs
-padw alone and the probe is gone; the tool reads a f0e6d08 report by its `probe_delays` word, always 1400 | 1800 << 16.
+padw alone and the probe is gone; the tool reads a 9c47113 report by its `probe_delays` word, always 1400 | 1800 << 16.
 Each connection runs one TX mode, the next connection the next one (pal_fm1.h PAL_FM1_TX_ORDER: arq, air, intime,
 jieli), and MIDI_IN waits through a central leaving while NimBLE has seen fewer than 7 connects, so a central that
-connects again tries the modes in turn; a mode on which Cordio took an L2CAP PDU from the central is kept (up to a349877
-a mode a connection received 8 packets on was kept, and intime was kept with no GATT). Since a349877 (round 4 of the
+connects again tries the modes in turn; a mode on which Cordio took an L2CAP PDU from the central is kept (up to 2e6d430
+a mode a connection received 8 packets on was kept, and intime was kept with no GATT). Since 2e6d430 (round 4 of the
 Bluetooth goal) the last 56: `trC_N` (the PAL's header trace, pal_fm1.h PAL_FM1_TRACE_*: the first 20 connection events
 with a packet of the first two connections, each the central's header as RXDHDR held it, its first payload byte, what the
 toggles did, what Cordio was told and Cordio's answer), `connK_ops` and `connK_ll` (the first four connections: the
@@ -146,10 +146,10 @@ connection event and the ones given to Cordio), `stack_acl` (HCI ACL host to con
 `stack_nocp`, `nimble_mtu` (NimBLE's ATT MTU, the central's writes) and `pal_rxtog`. The tool prints them as LINK LAYER.
 248 is near the most the report holds: its counter count is a byte. `fm1_ble_report.py` prints them decoded (CONNECTION EVENTS, a table of the logged events) and with `--out`
 writes what it printed to summary.txt. `rf_common` is what the shared radio's init returned the first time (trial 1): a later power-up finds WiFi
-up and it returns 0 there. `fm1_ble_report.py` prints the RX trials decoded (RX TRIALS). Up to 122afe3 the firmware sent
-the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the first 120, up to a349877 the first 192. The PAL runs from the main loop in this build and waits
+up and it returns 0 there. `fm1_ble_report.py` prints the RX trials decoded (RX TRIALS). Up to 6d8b497 the firmware sent
+the first 32, and `pal_done_37..39` counted the driver's one-channel events that ended; up to 3b39ab4 the first 40, up to 43817aa the first 64, up to fcbfd86 the first 80, up to 5838183 the first 120, up to 2e6d430 the first 192. The PAL runs from the main loop in this build and waits
 through each connection event (docs/BLUETOOTH_CORDIO.md). The firmware at
-48ea034 and before sent 24 counters, the PAL's two to a word; the tool reads such a report by its count, with those names.
+c9b4e78 and before sent 24 counters, the PAL's two to a word; the tool reads such a report by its count, with those names.
 
 The host build's scripted run (`tests/ble/fm1ble_test_host.c`) has the firmware's counter names and made-up values; only
 the page and the tool are tested with it. The firmware's run is tested on the register model (`tests/ble_radio.c`) and on

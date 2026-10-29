@@ -371,7 +371,7 @@ static void build_pdu(fm1ble *b, int k, uint8_t type, uint8_t txadd, const uint8
  * random delay on events (index 8) when asked, the channel index (hop increment 1, the map's two ends, the first channel,
  * bit 14), interrupts on (clear first), the first event armed `slots0` slots ahead (1: the next slot), FORMAT bit 2 last.
  * fm1ble_adv_start's advertising and the PAL's advertising events (fm1ble_op_adv) both arm this way: the sequence a central
- * heard from the FM-1 at 122afe3 (trials 1 and 2), where the PAL's own one-channel events (hop 0) were never heard. */
+ * heard from the FM-1 at 6d8b497 (trials 1 and 2), where the PAL's own one-channel events (hop 0) were never heard. */
 static void adv_arm(fm1ble *b, uint32_t map, uint32_t slots, int random_slot, uint32_t slots0)
 {
     uint32_t first = (map & 1u) ? 37u : (map & 2u) ? 38u : 39u;
@@ -734,7 +734,7 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us)
     }                                                /* JIELI: the slots keep the last response (the same SN) */
     /* the windows as le_hw_ioctrl's __set_winsize writes them: WINCNTL0 0x32, the time the receiver listens in WINCNTL2
      * (taken as us from its uses; up to 3b39ab4 the window went into WINCNTL0 and WINCNTL2 stayed 0) */
-    if (b->conn_setup == FM1BLE_CONN_KEEP) {          /* the open's values (E.3), which 58cadc5 left in place */
+    if (b->conn_setup == FM1BLE_CONN_KEEP) {          /* the open's values (E.3), which 43817aa left in place */
         e16(b, FM1BLE_E_WIDEN0, 0);
         e16(b, FM1BLE_E_WIDEN1, 0x51E7u);
     } else if (b->conn_setup == FM1BLE_CONN_PAD || b->conn_setup >= FM1BLE_CONN_PADJ) {   /* PAD, and PADJ, PADB, PADW */

@@ -7,7 +7,7 @@
  * with it at the highest level. A central scanning meanwhile (tools/ble_central.py) says which reached the air; the
  * firmware's own evidence is per trial: the event flags, the changes of TXTOG (the hardware's record of a buffer sent)
  * and the packets received. adv_air passes only with events and one of the other two: an event timer that runs with
- * nothing sent (the first FM-1 run, 48ea034) fails it. Four RX trials follow, each with its own receive setup
+ * nothing sent (the first FM-1 run, c9b4e78) fails it. Four RX trials follow, each with its own receive setup
  * (fm1ble_test.h): what a central's SCAN_REQs did in each is in the rxtN counters. Then the stack comes up on the radio of the trial that sent
  * (fm1ble_stack.h: Cordio's PAL, Cordio, NimBLE): hci passes when NimBLE's start-up through Cordio ends with advertising
  * on; connect when a central connects within the wait; midi_in when a BLE-MIDI write from it reaches the MIDI input;

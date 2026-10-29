@@ -82,14 +82,14 @@ COUNTERS = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common",
             *[f"tr{c}_{n}" for c in range(2) for n in range(20)], *[f"conn{k}_ops" for k in range(4)],
             *[f"conn{k}_ll" for k in range(4)], "pal_tx3_counts", "pal_tx3_sent", "pal_arq_dup", "pal_arq_unwritten",
             "stack_acl", "stack_nocp", "nimble_mtu", "pal_rxtog"]
-# up to a349877 the firmware sent the first 192 (no header trace, three TX modes); up to 122afe3 the firmware sent the first 32 of these (pal_done_37-39 then counted the driver's one-channel events
-# that ended), up to 3b39ab4 the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the
-# first 120; a shorter report reads with the first names. f0e6d08 sent 192 with the window probe's 39 where the TX
+# up to 2e6d430 the firmware sent the first 192 (no header trace, three TX modes); up to 6d8b497 the firmware sent the first 32 of these (pal_done_37-39 then counted the driver's one-channel events
+# that ended), up to 3b39ab4 the first 40, up to 43817aa the first 64, up to fcbfd86 the first 80, up to 5838183 the
+# first 120; a shorter report reads with the first names. 9c47113 sent 192 with the window probe's 39 where the TX
 # side's are now (COUNTERS_F0E6D08): its probe_delays word is always PROBE_DELAYS_F0E6D08, which tells the two apart
 COUNTERS_F0E6D08 = COUNTERS[:153] + ["probe_n", *[f"clk_{w}_{i}" for w in ("idle", "arm") for i in ("0", "e", "7", "10")],
                                      *[f"pr{s}_{c}" for s in range(7) for c in "abcd"], "probe_delays", "probe_windows"]
 PROBE_DELAYS_F0E6D08 = 1400 | 1800 << 16
-# the 24 counters of the firmware at 48ea034 and before (the first FM-1 run); a pair is two 16-bit counts in one word, low
+# the 24 counters of the firmware at c9b4e78 and before (the first FM-1 run); a pair is two 16-bit counts in one word, low
 # then high, which the tool splits
 COUNTERS_24 = ["radio_regs_ok", "radio_regs_bad", "variant", "rf_common", "events", "rearms", "rx_packets", "rx_scan_req",
                "rx_conn_ind", "rx_other", "pending_last", "bb_err", "events_v0", "events_v1", "rearm_used", "adv_err",
@@ -112,17 +112,17 @@ TRIALS = [("C2:46:4D:31:00:10", "variant 0 (no shared radio init), level 6"),
           ("C2:46:4D:31:00:11", "variant 1 (shared radio init first), level 6"),
           ("C2:46:4D:31:00:12", "variant 1, level 11")]
 # the RX trials (fm1ble_test.h): the same ADV_IND on variant 1 at level 6, each with its own receive setup
-# the connection events' window setups (firmware/ble/fm1ble.h FM1BLE_CONN_*): up to a7c1738 the PAL moved to the next
-# after each missed event, up to 5474159 after 3 in a row, in the order wide, pad, keep, widen; since then each
+# the connection events' window setups (firmware/ble/fm1ble.h FM1BLE_CONN_*): up to fcbfd86 the PAL moved to the next
+# after each missed event, up to 5838183 after 3 in a row, in the order wide, pad, keep, widen; since then each
 # connection runs one, the next connection the next, in the order padw, padb, padj, pad, wide, keep, widen (pal_fm1.h)
-CONN_SETUPS = ["keep: as up to 58cadc5 (WIDEN at the open's 487 us)", "pad: no widening, 625 us earlier, 1250 us longer",
+CONN_SETUPS = ["keep: as up to 43817aa (WIDEN at the open's 487 us)", "pad: no widening, 625 us earlier, 1250 us longer",
                "widen: JieLi's (at the anchor, WIDEN half the window)", "wide: no widening, 1250 us earlier, 2500 us longer",
                "padj: as pad, the counter as JieLi writes it (slots - 1)", "padb: as padj, the bit offset with bit 15",
                "padw: as padb, the window in WINCNTL0 too"]
 SETUP_NAMES = ["keep", "pad", "widen", "wide", "padj", "padb", "padw"]
-# the connections' TX modes (firmware/ble/fm1ble.h FM1BLE_TX_*), since f0e6d08 one per connection alongside the setup
+# the connections' TX modes (firmware/ble/fm1ble.h FM1BLE_TX_*), since 9c47113 one per connection alongside the setup
 TX_NAMES = ["air", "jieli", "intime", "arq"]
-TX_MODES = ["air: as up to f0e6d08 (the response's bits 4-0 as on the air, an empty PDU at each arm)",
+TX_MODES = ["air: as up to 9c47113 (the response's bits 4-0 as on the air, an empty PDU at each arm)",
             "jieli: the IR's slot words (bit 2 the slot's, SN in bit 3), nothing written at the arm",
             "intime: as jieli, an empty PDU repeating the last SN at each arm, a response only in time",
             "arq: the chip's SN and NESN (MD in TXDHDR bit 3), the slot TXTOG names only, Cordio's SN and NESN the PAL's"]

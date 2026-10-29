@@ -459,7 +459,7 @@ after a packet, ahead of the next one, not between a packet and T_IFS. In a conn
 (`ble_window_autozoom`) writes the window for the next event into WINCNTL0/1 (+0x22, +0x24), or through
 `__hw_set_widen_drift` (window + 2 × (widening + 100 us), the widening growing by 100 us per missed event; 5 us with
 `config_vendor_le_bb` set), which also writes index 7 (the bit offset | 0x8000) and index 0x10. OPLBOX's driver up to
-f0e6d08 wrote a response into both slots with TXDHDR = length << 8 | the header's bits 4-0 (Cordio's NESN over bit 2)
+9c47113 wrote a response into both slots with TXDHDR = length << 8 | the header's bits 4-0 (Cordio's NESN over bit 2)
 after the packet came; fm1ble.h FM1BLE_TX_JIELI and FM1BLE_TX_INTIME write the IR's words. What the header bits are
 (from IR, read 2026-10-28: `tools/ble_ir.py --steps RF_ble __hw_tx_buf_proess`): before `ble_hw_tx` JieLi sets the buffer
 header's bit 9 to `hw_dma_empty(queue) eq 0`, set while more PDUs wait in its TX queue (cleared with

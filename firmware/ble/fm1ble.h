@@ -159,7 +159,7 @@ const uint8_t *fm1ble_rx_last(const fm1ble *b, uint8_t *n, uint8_t *type);
  * Cordio hands the baseband one packet with a time; the baseband runs a whole event from a parameter block. On the open
  * link (fm1ble_bb_init), our design from the facts:
  *   - an advertising event: state 2 over channels 37, 38 and 39 (the hardware hops), armed as fm1ble_adv_start arms it
- *     (the only advertising a central heard from the FM-1, at 122afe3; one-channel events, hop 0, were never heard, and
+ *     (the only advertising a central heard from the FM-1, at 6d8b497; one-channel events, hop 0, were never heard, and
  *     on 38 and 39 never ended), the PDU in TX buffer 0 and the response (SCAN_RSP) in buffer 1. The PAL serves Cordio's
  *     three per-channel packets with one such event;
  *   - a connection event as the peripheral (channel 0-36): state 7 on a fixed channel (index 6 = channel | 0x2000, as
@@ -200,8 +200,8 @@ int fm1ble_op_adv(fm1ble *b, uint32_t delay_us, const uint8_t *pdu, uint16_t n, 
 int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
 /* How fm1ble_op_conn places the window. Which one the chip needs is a measurement: the PAL's connection trials
  * (pal_fm1.h) try them on the FM-1. WIDEN0/WIDEN1 (E.2) are the window widening JieLi's peripheral writes with __set_widen
- * (le_hw_ioctrl); the open leaves them 0 and 0x51E7 (487 us), which up to 58cadc5 this driver kept in connections.
- *   FM1BLE_CONN_KEEP   as up to 58cadc5: the counter at delay_us, WINCNTL2 = window_us, WIDEN at the open's values;
+ * (le_hw_ioctrl); the open leaves them 0 and 0x51E7 (487 us), which up to 43817aa this driver kept in connections.
+ *   FM1BLE_CONN_KEEP   as up to 43817aa: the counter at delay_us, WINCNTL2 = window_us, WIDEN at the open's values;
  *   FM1BLE_CONN_PAD    no widening (WIDEN0 0, WIDEN1 0x5000), the counter FM1BLE_CONN_PAD_US earlier and the window
  *                      2 x FM1BLE_CONN_PAD_US longer: a slot boundary of the baseband's own (op_arm's guess) cannot
  *                      push the window past the packet;
@@ -209,14 +209,14 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
  *                      minus the widening, twice the widening long), WIDEN = half the window (__set_widen: slots in
  *                      WIDEN0, the rest | 0x5000 in WIDEN1), WINCNTL2 = window_us;
  *   FM1BLE_CONN_WIDE   as PAD with FM1BLE_CONN_WIDE_US on each side: the counter that much earlier, the window 2 x that
- *                      longer. At a7c1738 only PAD received (1 event of 6, the packet 221 us after Cordio's window start,
+ *                      longer. At fcbfd86 only PAD received (1 event of 6, the packet 221 us after Cordio's window start,
  *                      in a window that was still the wide unsynchronised one), KEEP and WIDEN 0 of 5: so op_arm's counter
  *                      may open the window a slot late (JieLi's __set_anchor_cnt writes the slots minus one, op_arm the
  *                      slots) or at a slot boundary of the baseband's own, either of which a 625 us pad only just covers
- *                      and Cordio's later windows (2 x the widening: 286 us after 14 missed events at a7c1738, tens of
+ *                      and Cordio's later windows (2 x the widening: 286 us after 14 missed events at fcbfd86, tens of
  *                      us once in step) do not. 1250 us covers both, and the PAL's event log (pal_fm1.h) says where in
  *                      it the packet lands and when the hardware ended each event.
- * At 5474159 (oplbox-ble-run-5474159-1) PAD received 2 of 9 events and WIDE 2 of 10, KEEP and WIDEN none: the central's
+ * At 5838183 (oplbox-ble-run-5838183-1) PAD received 2 of 9 events and WIDE 2 of 10, KEEP and WIDEN none: the central's
  * packet came 31 us after dueUsec in one PAD event and was missed in three others where PAD's window should have held it,
  * and WIDE's windows ended 262-846 us after dueUsec although WINCNTL2 asked for 5 ms. The next three each take one fact
  * of the IR the setups above leave out, on PAD's shape, so a connection on each says which the chip needs:
@@ -239,18 +239,18 @@ int fm1ble_op_conn(fm1ble *b, uint32_t delay_us, uint32_t window_us);
 #define FM1BLE_CONN_WIDE_US 1250u
 void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup);
 /* How a connection's TX slots are written. The IR (tools/ble_ir.py --steps RF_ble __hw_rx_buf_process ble_hw_tx
- * __hw_tx_process, read 2026-10-28) says three things the driver up to f0e6d08 did not do: on a CONNECT_IND JieLi writes
+ * __hw_tx_process, read 2026-10-28) says three things the driver up to 9c47113 did not do: on a CONNECT_IND JieLi writes
  * TXAHDR0/1 = 0 (the ChSel bit, 0 for algorithm 1), TXDHDR0 = (TXTOG & 1) << 2 | 1 and TXDHDR1 = ((TXTOG & 1) << 2 ^ 4) | 1
  * (two empty PDUs whose bit 2 differs, the one sent first with bit 2 clear); ble_hw_tx keeps TXDHDR bit 2 as it is
  * (`old & 4`) and puts header bit 9 in bit 3, the bit its receive path fills from RXDHDR bit 3 (SN on the air), and a
  * flag in bit 4; and after every packet received __hw_tx_process reads TXTOG bit 0 and TXBUF0CNTL/TXBUF1CNTL bit 0 and
  * refills the TX buffers from its queue (ahead of the event: the slot sent at T_IFS is already filled when the packet
  * comes). So the hardware keeps bit 2 per slot (NESN, or the slot's own sequence bit) and picks the slot by TXTOG, and
- * up to f0e6d08 the driver wrote Cordio's NESN over bit 2 in both slots, and a response after the packet. At f0e6d08
- * (oplbox-ble-run-f0e6d08-1) the one connection that received past its first event received its second event's packet,
+ * up to 9c47113 the driver wrote Cordio's NESN over bit 2 in both slots, and a response after the packet. At 9c47113
+ * (oplbox-ble-run-9c47113-1) the one connection that received past its first event received its second event's packet,
  * Cordio's response came (up to 251 us after a packet, T_IFS is 150), and the hardware neither sent (TXTOG unchanged) nor
  * ended the event. The modes, one per connection (pal_fm1.h PAL_FM1_TX_ORDER):
- *   FM1BLE_TX_AIR      as up to f0e6d08: the response in both slots with TXDHDR = length << 8 | the header byte's bits
+ *   FM1BLE_TX_AIR      as up to 9c47113: the response in both slots with TXDHDR = length << 8 | the header byte's bits
  *                      4-0 as on the air (LLID, NESN, SN, MD), an empty PDU (LLID 1) in both at every event's arm;
  *   FM1BLE_TX_JIELI    as JieLi: the connection's first event writes the CONNECT_IND words above; a response goes in
  *                      both slots as ble_hw_tx writes it: TXDHDR = length << 8 | (TXDHDR & 4) | SN << 3 | MD << 4 | LLID,
@@ -259,7 +259,7 @@ void fm1ble_op_conn_setup(fm1ble *b, uint8_t setup);
  *   FM1BLE_TX_INTIME   as JIELI, an empty PDU (LLID 1, the last SN again) in both slots at every arm, and the PAL puts a
  *                      response in only while T_IFS can still use it (PAL_FM1_TIFS_US after the packet was seen): no
  *                      write while the hardware may be turning around or sending.
- * At a349877 (the done-check after round 3) INTIME received 462 packets in two connections that stayed up 6.6 and 10 s,
+ * At 2e6d430 (the done-check after round 3) INTIME received 462 packets in two connections that stayed up 6.6 and 10 s,
  * and the central never resolved GATT. The IR says why the three modes above cannot work: __hw_tx_buf_proess sets header
  * bit 9 when JieLi's TX queue is not empty (`hw_dma_empty() eq 0`, shifted to 9), that is MD, and ble_hw_tx puts header
  * bit 9 in TXDHDR bit 3. So TXDHDR is the chip's layout, not the air's: bits 1-0 LLID, bit 2 the slot's own (set apart at
@@ -282,7 +282,7 @@ void fm1ble_op_conn_begin(fm1ble *b, uint8_t tx_mode);
 /* ARQ written ahead (since round 7 of the FM-1 Bluetooth goal): a response goes into the slot the hardware sends after
  * the central's next acknowledgement (the one TXTOG & 1 does not name), as JieLi fills its slots after a packet for the
  * next one, and the arm leaves that slot alone while it holds a response TXTOG has not named yet. Without it (ARQ as up
- * to e3d2a74) the response goes into the slot TXTOG names, which the hardware sends T_IFS after the packet: a write the
+ * to fdff9c6) the response goes into the slot TXTOG names, which the hardware sends T_IFS after the packet: a write the
  * hardware has already read past is not sent, and the next acknowledgement moves TXTOG on as if it had been. */
 void fm1ble_op_arq_ahead(fm1ble *b, int on);
 /* ARQ: bit 2 of TXDHDR0 and TXDHDR1 changed (each slot's SN). For a chip whose own SN state (which an acknowledgement is
@@ -306,7 +306,7 @@ uint32_t fm1ble_op_slot(fm1ble *b, int s);
 /* The event off: anchor counter stopped, the link's interrupts off. No wait (it may run from an interrupt). */
 void fm1ble_op_stop(fm1ble *b);
 /* An event the baseband never ended: fm1ble_op_stop, then the wait for the hardware to go idle that fm1ble_adv_stop
- * (ble_hw_disable) does, so it cannot finish into the next event (at f0e6d08 such an event's packet flag came 364 us
+ * (ble_hw_disable) does, so it cannot finish into the next event (at 9c47113 such an event's packet flag came 364 us
  * after the next event was armed, 1192 us before that event's dueUsec, and Cordio took it as the anchor). Main loop only.
  * FM1BLE_ETIMEOUT when the hardware stayed busy (counted in d.halt_busy). */
 int fm1ble_op_halt(fm1ble *b);

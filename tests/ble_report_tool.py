@@ -7,7 +7,7 @@ Also checks that the report's text is the pages' text the simulator drew (PAGES:
 the step records, a report with a failed step (FAILREPORT: SKIP after it), and the tool's decoder on broken reports.
 Also: the tool's counter names against the firmware's (firmware/ble/fm1ble_test.h FM1BLE_CTR_NAMES) and its trial
 addresses against the run's (fm1ble_test.h, fm1ble_test.c), the first FM-1 run's report (tests/ble/report_48ea034.bin,
-recorded from the device at oplbox 48ea034: 24 counters, two of the PAL's in a word) read with that firmware's names, and
+recorded from the device at oplbox c9b4e78: 24 counters, two of the PAL's in a word) read with that firmware's names, and
 --run --central local with the stand-in BlueZ tools of tests/ble/fake_bluez/. Exit 1 when a check fails.
 
   tests/ble_report_tool.py build/host/slot_sysex_test REPORT PAGES FAILREPORT OUTDIR
@@ -116,9 +116,9 @@ old = br.decode(open(os.path.join(ROOT, "tests/ble/report_48ea034.bin"), "rb").r
 oc = old["counters"]
 check(oc["events"] == 2569 and oc["events_v0"] == 4 and oc["pal_adv_ops"] == 7695 and oc["pal_conn_ops"] == 0 and
       oc["pal_rx_timeout"] == 7695 and oc["pal_stuck"] == 5130 and oc["pal_timer_late_us"] == 293 and "midi_out" not in oc,
-      f"the 48ea034 report's counters: {oc}")
+      f"the c9b4e78 report's counters: {oc}")
 check([s["result"] for s in old["steps"]][:2] == ["pass", "fail"] and br.air_trials(old) is None,
-      "the 48ea034 report: block FAIL, no air trials in it")
+      "the c9b4e78 report: block FAIL, no air trials in it")
 
 raw = open(REPORT, "rb").read()
 rep = br.decode(raw)
@@ -131,21 +131,21 @@ def cut(r, n):
     return r[:at] + bytes([n]) + r[at + 1:at + 1 + 4 * n] + r[at + 1 + 4 * k:]
 
 
-# f0e6d08's report: 192 counters, the window probe's where the TX side's are now; told apart by its probe_delays word.
-# a349877's: the same 192 with the TX side's, no header trace
+# 9c47113's report: 192 counters, the window probe's where the TX side's are now; told apart by its probe_delays word.
+# 2e6d430's: the same 192 with the TX side's, no header trace
 r192 = cut(raw, 192)
 k0 = 10 + int.from_bytes(raw[8:10], "little") + 1
 pd = k0 + 4 * br.COUNTERS_F0E6D08.index("probe_delays")
 old192 = br.decode(r192[:pd] + br.PROBE_DELAYS_F0E6D08.to_bytes(4, "little") + r192[pd + 4:])
 check("probe_n" in old192["counters"] and "pal_stale_rx" not in old192["counters"] and
       old192["counters"]["probe_delays"] == br.PROBE_DELAYS_F0E6D08 and "pal_stale_rx" in rep["counters"],
-      "f0e6d08's 192 counters read with its names (the window probe's), this firmware's with the TX side's")
+      "9c47113's 192 counters read with its names (the window probe's), this firmware's with the TX side's")
 a349 = br.decode(r192)
 out = io.StringIO()
 br.show(a349, out)
 check(list(a349["counters"]) == br.COUNTERS[:192] and "LINK LAYER" not in out.getvalue() and
       "TX modes, one per connection in the order arq, air, intime:" in out.getvalue() and len(br.COUNTERS) == 248,
-      f"a349877's 192 counters: the TX side's names, three TX modes, no link layer:\n{out.getvalue()[-3000:]}")
+      f"2e6d430's 192 counters: the TX side's names, three TX modes, no link layer:\n{out.getvalue()[-3000:]}")
 
 # the report's text is what the pages drew, line for line in page order (the footers and blank lines left out)
 drawn = []
@@ -194,7 +194,7 @@ check("C2:46:4D:31:00:15  RX 2: the gain table, WINCNTL2 0x32 (JieLi's): 29 even
       "RXSTAT0 9800" in o and "the stack ran on RX trial 2's window: WINCNTL2 32, gain table written" in o, f"show_rx:\n{o}")
 out = io.StringIO()
 br.show(old, out)
-check("RX TRIALS" not in out.getvalue(), "the 48ea034 report has no RX trials")
+check("RX TRIALS" not in out.getvalue(), "the c9b4e78 report has no RX trials")
 
 # the tool against the fake FM-1: nothing run yet, then --run, then --read
 wait_out = os.path.join(OUT, "ble_wait.txt")
@@ -216,7 +216,7 @@ check("WINDOW PROBE" not in out and "TX modes, one per connection in the order a
       "stale packet flags dropped 1 (starting 400 us or more before the window); events halted at their deadline 1" in out and
       "at the first connection packet (before Cordio's response): TXDHDR0 01, TXDHDR1 05, TXTOG 1, RXTOG 0" in out and
       "at the end: TXTOG 0001, RXTOG 0001, TXDHDR0 0905, TXDHDR1 0001, TXBUF0CNTL 01, TXBUF1CNTL 00, IFSCNT 8295" in out,
-      f"--run: the TX side (no window probe since f0e6d08):\n{out}")
+      f"--run: the TX side (no window probe since 9c47113):\n{out}")
 check("connections: 2 started on the PAL, NimBLE 2 connects and 1 disconnects; kept setup: none, kept TX mode: none" in out and
       "connection 1: padw intime, 6 events, 0 received; missed events ended 262..846 us after dueUsec; TXTOG changed in 0, "
       "stale 1, halted 1" in out and
@@ -267,14 +267,14 @@ check("PDU CAPTURE (what went each way" in out and
       f"--run: the PDU capture:\n{out[out.find('PDU CAPTURE'):]}")
 check(rep["capture"] is not None and len(rep["capture"]) == 160 + 5 * 20 and
       [s["step"] for s in rep["steps"]] == br.STEPS, "the capture frame decoded apart from the steps")
-# a layout-2 capture (round 8, a 128-byte head: the report of 807d70f) reads as it did, without the cross-check
+# a layout-2 capture (round 8, a 128-byte head: the report of 1b8dea6) reads as it did, without the cross-check
 cap2 = bytes([2]) + rep["capture"][1:128] + rep["capture"][160:]
 o2 = io.StringIO()
 br.show_capture({"capture": cap2}, o2)
 check("     4    2    32  central  02   11  --    ATT Read By Type Req: 000D-FFFF, type 2803  [Cordio was told: a repeat]"
       in o2.getvalue() and "settled 185" in o2.getvalue() and "RXTOG against" not in o2.getvalue(),
       f"a layout-2 capture:\n{o2.getvalue()}")
-# a layout-1 capture (round 7, a 16-byte head: the reports of 1907280 and before) reads as it did, no MTUs or trace
+# a layout-1 capture (round 7, a 16-byte head: the reports of 8ff3c5e and before) reads as it did, no MTUs or trace
 cap1 = bytes([1, 1, 0x14, 1, 1, 0, 0xFF, 3, 1, 0, 0, 0, 2, 0, 3, 0,
               6, 2, 7, 4, 0, 1, 3, 0, 4, 0, 2, 5, 2, 0, 0, 0, 0, 0, 0, 0])
 o1 = io.StringIO()

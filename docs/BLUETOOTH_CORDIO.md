@@ -5,9 +5,9 @@ OPLBOX is GPL-3.0-only and ships no JieLi binary for Bluetooth. The controller i
 `firmware/ble/cordio/` (`README.md` there, `SHA256SUMS`, checked by `tests/run_host.sh`). The host above it is Apache NimBLE
 (`firmware/ble/nimble/`, same rules). Between Cordio and the chip is the PAL, Cordio's hardware interface: the chip's PAL is
 `firmware/ble/cordio_port/pal_fm1.c` (below). It runs on the FM-1: the runs are recorded under "The chip's PAL" below
-(raw runs on xryzen in `~/oplbox-ble-runs/<commit>-1`, not in the repo), and at f6ee032 (2026-10-28) every step of the
+(raw runs on xryzen in `~/oplbox-ble-runs/<commit>-1`, not in the repo), and at e8811d7 (2026-10-28) every step of the
 Bluetooth test run passed with BlueZ on xlap as the central: one connection that held, GATT services resolved 0.86 s
-after the connect, a Note On each way (docs/BLUETOOTH.md "The runs after 122afe3"). Not recorded: any Mac, iPhone or
+after the connect, a Note On each way (docs/BLUETOOTH.md "The runs after 6d8b497"). Not recorded: any Mac, iPhone or
 Android phone as the central, the receive interrupt (everything still runs from the main loop), WiFi at the same time.
 
 ## What was taken and how it is configured
@@ -63,7 +63,7 @@ Cordio's PAL"):
   scan response the host changed into that operation between events, so the next event answers with it; nothing is kept
   from an earlier event. The SCAN_RSP Cordio gives after the request (`PalBbBleTxTifsData`) goes into TX buffer 1 for the
   rest of the event; a CONNECT_IND stops the event. No request: the
-  event's end completes the transmit and closes the receive window as a timeout. Until 122afe3 the PAL armed one
+  event's end completes the transmit and closes the receive window as a timeout. Until 6d8b497 the PAL armed one
   one-channel event per packet (hop 0, a map of that channel alone): on the FM-1 none of those reached a central, and the
   ones on 38 and 39 never ended (docs/BLUETOOTH.md "The second FM-1 run").
 - a connection event as the peripheral (`PalBbBleRxData` on 0-36): state 7 on a fixed channel (the one Cordio computed with
@@ -76,28 +76,28 @@ Cordio's PAL"):
   time the PAL saw it minus its time on the air. The scheduler's timer is a deadline checked by `pal_fm1_service`.
 - an operation the baseband never ends ends by its deadline (its start, the window, two packets, 5 ms; an advertising
   event's window is 25 ms for its three channels and the hardware's random delay), so Cordio is never left waiting.
-- a connection event is waited through (since 58cadc5's run): once it is armed, `pal_fm1_service` polls the baseband every
+- a connection event is waited through (since 43817aa's run): once it is armed, `pal_fm1_service` polls the baseband every
   2 us until its packet comes or it ends, so the packet's timestamp is that close and Cordio's response goes in at once.
-  At 58cadc5 the PAL ran only when the main loop came back: the FM-1 received the first packet of a connection (inside
+  At 43817aa the PAL ran only when the main loop came back: the FM-1 received the first packet of a connection (inside
   the wide transmit window), Cordio put the next anchor as late as the loop had been, and the next 17 windows (286 us)
   missed the central (`pal_conn_ops` 18, `pal_conn_rx` 1; xlap's BlueZ dropped it after 0.56 s). The wait costs the main
   loop up to Cordio's 300 us load delay plus the window, every connection event (`pal_busy_us_max`). The scheduler's timer
-  is still polled: much later than 300 us (`pal_timer_late_us`; 215 at most at 58cadc5) and Cordio skips the event.
+  is still polled: much later than 300 us (`pal_timer_late_us`; 215 at most at 43817aa) and Cordio skips the event.
 - where the window lands against the packet is not settled on the chip: the driver has three setups
-  (`fm1ble.h` `FM1BLE_CONN_*`): keep (as up to 58cadc5: WIDEN0/WIDEN1 at the open's values, 487 us of widening the chip may
+  (`fm1ble.h` `FM1BLE_CONN_*`): keep (as up to 43817aa: WIDEN0/WIDEN1 at the open's values, 487 us of widening the chip may
   or may not apply), pad (no widening, 625 us earlier and 1250 us longer: covers a slot boundary of the baseband's own) and
   widen (JieLi's `le_hw_ioctrl` shape: the counter at Cordio's anchor, WIDEN half the window), wide (as pad, 1250 us each
-  side), and since 5474159 three on pad's shape that each add one fact of the IR: padj (the counter as `__set_anchor_cnt`
+  side), and since 5838183 three on pad's shape that each add one fact of the IR: padj (the counter as `__set_anchor_cnt`
   writes it, the slots minus one), padb (and the bit offset with bit 15, as `__hw_set_widen_drift` writes it), padw (and
   the window in WINCNTL0/1, where `__hw_set_widen_drift` puts a connection event's). Each connection runs one for all its
   events, the next connection the next one (`PAL_FM1_SETUP_ORDER`: padw, padb, padj, pad, wide, keep, widen); a setup a
-  connection received 8 packets on is kept for every later connection. Up to a7c1738 a missed event moved to the next
-  setup, up to 5474159 three in a row did; at 5474159 that left pad, which had received, before the anchor settled.
+  connection received 8 packets on is kept for every later connection. Up to fcbfd86 a missed event moved to the next
+  setup, up to 5838183 three in a row did; at 5838183 that left pad, which had received, before the anchor settled.
   `pal_setN_counts` and `pal_setN_arr` say what each received and where in its window the packets started, `connN_*`
-  what each connection did. f0e6d08's window probe (connection events with no central) showed that only padw's window
+  what each connection did. 9c47113's window probe (connection events with no central) showed that only padw's window
   follows the register (its end moved with WINCNTL0: 449..811 us at 60 us, 3019..3709 at 2500), so the stack runs padw
   alone since then (fm1ble_stack.c), and the probe is gone.
-- **The TX side** (fm1ble.h FM1BLE_TX_*, since f0e6d08). At f0e6d08 (oplbox-ble-run-f0e6d08-1) padw's first connection
+- **The TX side** (fm1ble.h FM1BLE_TX_*, since 9c47113). At 9c47113 (oplbox-ble-run-9c47113-1) padw's first connection
   received its first three events: the second's packet came, Cordio's response went in (up to 251 us after a packet:
   T_IFS is 150), and the hardware neither sent (TXTOG unchanged) nor ended the event; the PAL ended it by its deadline and
   armed the next, and 364 us after that arm a packet flag came, 1192 us before that event's dueUsec and 567 us before
@@ -109,7 +109,7 @@ Cordio's PAL"):
   (fm1ble_op_halt: the counter off and the wait for idle that ble_hw_disable does, at most 2 ms; `pal_halts`); and the
   event log and the summaries carry the TX words (TXDHDR0/1, TXTOG, RXTOG, TXBUF0/1CNTL) and Cordio's response time.
   Three TX modes, one per connection in the order intime, jieli, air (`PAL_FM1_TX_ORDER`, kept like the setup once a
-  connection receives 8 packets): air as up to f0e6d08; jieli as the IR (the CONNECT_IND's slot words, a response in both
+  connection receives 8 packets): air as up to 9c47113; jieli as the IR (the CONNECT_IND's slot words, a response in both
   slots with bit 2 kept, the SN in bit 3, the MD in bit 4); intime as jieli, an empty PDU repeating the last SN in both
   slots at each arm, and Cordio's response put in only within `PAL_FM1_TIFS_US` (100 us) of the packet, so nothing is
   written while the hardware may be turning around (Cordio is told the transmit failed; it sends the PDU again in the next
@@ -118,13 +118,13 @@ Cordio's PAL"):
   out and data still flows, and a hung event is halted with the connection going on.
   **Open:** on the model, a connection that follows one whose event ended by its deadline, or one with a left-out late
   response, receives and acknowledges the central's packets but does not pass its first ATT write to the host; it happens
-  with fm1ble_op_stop as up to f0e6d08 too, and with the left-out response reported as sent [unexplained]. A run whose
+  with fm1ble_op_stop as up to 9c47113 too, and with the left-out response reported as sent [unexplained]. A run whose
   later connections stay up and resolve GATT but never get MIDI in may be this. In round 4's test order (more connections
   before it) the hung event's connection and the one after it both pass the ATT write, with the model's central as it was
   and as round 4 changed it: not reproduced, cause still unknown. (Round 4's change to the central: it sent a newly queued
   PDU under the SN of one not yet acknowledged, which a receiver drops as a repeat; it now sends the same PDU until it is
   acknowledged, Vol 6 Part B 4.5.9.)
-- **a349877, the done-check after round 3 (2026-10-28):** two connections stayed up 6.6 and 10 s on intime and received
+- **2e6d430, the done-check after round 3 (2026-10-28):** two connections stayed up 6.6 and 10 s on intime and received
   462 packets, and BlueZ never resolved GATT. The IR answers why: `__hw_tx_buf_proess` sets its header bit 9 when the TX
   queue is not empty, which is MD, and `ble_hw_tx` puts that bit in TXDHDR bit 3; so TXDHDR (and RXDHDR, which the receive
   path reads the same way) is the chip's layout, not the air's, and the chip keeps SN and NESN itself (bit 2 the slot's
@@ -137,8 +137,8 @@ Cordio's PAL"):
   on it. The header trace (`trC_N`, LINK LAYER in the report) records, per packet, the chip's header bits and toggles and
   what Cordio was told and answered, so the run says which reading of the bits holds. On the register model with the
   chip's own ARQ (`hw_arq`) arq answers LL_FEATURE_REQ once and passes the ATT write with a lost response, a lost feature
-  response and a late one, and intime, jieli and air receive every packet and pass nothing, as a349877 did.
-- **1b251ea, the done-check after round 5 (2026-10-28, `~/oplbox-ble-runs/1b251ea-1` on xryzen):** on padw the
+  response and a late one, and intime, jieli and air receive every packet and pass nothing, as 2e6d430 did.
+- **5a47303, the done-check after round 5 (2026-10-28, `~/oplbox-ble-runs/5a47303-1` on xryzen):** on padw the
   connection timing works (869 of 895 events received), but no HCI ACL went from Cordio to NimBLE, so GATT never
   resolved. The header trace shows why: BlueZ's LL_LENGTH_REQ came with RXDHDR bits 4-0 `1F` and its first L2CAP PDU
   (`02`) next, in the same connection event (that event ended about 500 us later than the others, one more exchange).
@@ -152,9 +152,9 @@ Cordio's PAL"):
   when the central's next packet comes, not only at the event's end, so each packet of the event reaches Cordio in turn.
   `pal_arq_dup` and `pal_arq_unwritten` carry, in bits 31-16, the packets after the first in an event and the ones given
   to Cordio (LINK LAYER in the report). On the model the central can send its queue in one event (`air_central.h` burst,
-  `bb_air` conn_next): with the PAL as at 1b251ea the ATT write after LL_FEATURE_REQ (MD set) is lost, as on the FM-1.
+  `bb_air` conn_next): with the PAL as at 5a47303 the ATT write after LL_FEATURE_REQ (MD set) is lost, as on the FM-1.
 
-- **e3d2a74, the done-check after round 6 (2026-10-28, `~/oplbox-ble-runs/e3d2a74-1` on xryzen):** on padw arq 574 of
+- **fdff9c6, the done-check after round 6 (2026-10-28, `~/oplbox-ble-runs/fdff9c6-1` on xryzen):** on padw arq 574 of
   755 events received and the link layer came up: in the first connection LL_FEATURE_REQ/RSP both ways, LL_LENGTH_REQ/RSP,
   BlueZ's ATT Exchange MTU request (L2CAP length 3) and NimBLE's answer (3), then BlueZ's next request (7 bytes: Read By
   Group Type or Read By Type) and NimBLE's 5-byte answer (an ATT Error Response's length), after which BlueZ sent only empty
@@ -179,7 +179,7 @@ Cordio's PAL"):
   get through only with bit 2 changed; and the whole stack (`tests/ble_stack.c run`) passes GATT, MIDI in and MIDI out
   on ARQ ahead with the SN left at 1.
 
-- **1907280, the done-check after round 7 (2026-10-28, `~/oplbox-ble-runs/1907280-1` on xryzen):** the link layer held:
+- **8ff3c5e, the done-check after round 7 (2026-10-28, `~/oplbox-ble-runs/8ff3c5e-1` on xryzen):** the link layer held:
   3 connections on padw arq ahead, 1186 of 1262 events received, Cordio's response within 72 us every time, 42 bad CRCs.
   GATT discovery in the first connection went through ten ATT exchanges (BlueZ asked for MTU 517, NimBLE offered 185;
   Cordio's LL_LENGTH_RSP kept data PDUs at 27 octets): MTU, Read By Type 2B3A, the primary services, 2801, 2802, then Read
@@ -200,14 +200,14 @@ Cordio's PAL"):
   was seen (its length, LLID, SN and first byte: the start's L2CAP length 25 or the continuation's first byte), so the
   next run shows what the chip had in the slot it sent. The capture's head (layout 2) carries each connection's MTU
   offered and settled on, and the trace.
-- **807d70f, the done-check after round 8 (2026-10-28, `~/oplbox-ble-runs/807d70f-1` on xryzen):** three connections on
+- **1b8dea6, the done-check after round 8 (2026-10-28, `~/oplbox-ble-runs/1b8dea6-1` on xryzen):** three connections on
   padw arq ahead, 1141 of 1177 events received, 62 bad CRCs. The first connection settled ATT MTU 23, so nothing was
   fragmented either way (the fragment trace stayed empty), and GATT discovery still stopped: ten requests answered, then
   BlueZ's Read By Type 2803 over 000D-FFFF at event 33 came with RXTOG unmoved, the PAL told Cordio it was a repeat, and
   no answer went. Its SN shows it was new: BlueZ's requests came every three events with SN 1 and 0 in turn (events 8 to
   29), the one at event 33 had SN 1 after SN 0 at event 29 (one empty PDU repeated between), and BlueZ's next packets
   (SN 0, then 1 with a CHANNEL_MAP_IND at event 35) show the chip had acknowledged it on the air. So reading (2) of
-  1907280 holds, without fragmentation: the chip's RXTOG does not follow what its ARQ takes as new. The header trace says
+  8ff3c5e holds, without fragmentation: the chip's RXTOG does not follow what its ARQ takes as new. The header trace says
   more: RXTOG moved at every packet with a bad CRC (5 of 5, among them a repeat), and in the second connection the
   central's SN 0 after two bad-CRC repeats of SN 1 came with RXTOG unmoved too. RXDHDR is the air's layout in both
   connections' traces (bit 3 alternating as the SN, bit 4 set only before a second packet in the event). Round 2 of the
@@ -222,15 +222,15 @@ Cordio's PAL"):
   btmon on the central's host (`sudo -n`, `--no-btmon` leaves it out) for BlueZ's side: its connection completions, the
   ATT and L2CAP signalling PDUs each way and its disconnect reasons (CENTRAL'S HCI, `btmon.txt`), which no run had
   before. On the model RXDHDR is now the air's layout (`bb_model` ir_rxdhdr keeps the IR's reading for the TX modes that
-  lost the link layer at a349877); with RXTOG held at a new ATT write (hold_l2), as at event 33, the write reaches the host
-  (up to 807d70f it was lost); with every fourth packet's CRC bad and RXTOG moving at it (crc_bad), as on the FM-1, data go
+  lost the link layer at 2e6d430); with RXTOG held at a new ATT write (hold_l2), as at event 33, the write reaches the host
+  (up to 1b8dea6 it was lost); with every fourth packet's CRC bad and RXTOG moving at it (crc_bad), as on the FM-1, data go
   both ways and the SN and RXTOG agree; a chip that acknowledges a bad CRC (crc_ack) loses the next packet to Cordio, and
   the cross-check counts and keeps it.
-- **956029a, the done-check after the resumed goal's round 2 (2026-10-28, `~/oplbox-ble-runs/956029a-1` on xryzen):**
+- **6d55475, the done-check after the resumed goal's round 2 (2026-10-28, `~/oplbox-ble-runs/6d55475-1` on xryzen):**
   with the PAL judging new packets by the central's SN, all eight steps PASS and the Note On went both ways, but BlueZ
   never said ServicesResolved: yes, because the run closed the link right after MIDI_OUT while BlueZ was still in its
-  discovery. 77d267d holds the connection for the central to close (fm1ble_test.h `FM1BLE_HOLD_MS`).
-- **f6ee032, the done-check after round 3 (2026-10-28, `~/oplbox-ble-runs/f6ee032-1` on xryzen):** all eight steps
+  discovery. a5ba770 holds the connection for the central to close (fm1ble_test.h `FM1BLE_HOLD_MS`).
+- **e8811d7, the done-check after round 3 (2026-10-28, `~/oplbox-ble-runs/e8811d7-1` on xryzen):** all eight steps
   PASS; one connection, not dropped; GATT services resolved 0.86 s after the connect; the central's Note On 90 3C 64
   arrived and the FM-1's came back.
 

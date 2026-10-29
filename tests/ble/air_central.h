@@ -3,7 +3,7 @@
  * tests/ble_stack.c): it hears the peripheral's advertising packets, answers one with a SCAN_REQ or a CONNECT_IND when
  * asked, then runs the connection as the Core Specification says (Vol 6 Part B: the transmit window 4.5.3, channel
  * selection algorithm #1 4.5.8.2, SN and NESN 4.5.9): an empty PDU or the next queued data PDU at each anchor, the
- * peripheral's answers kept in order. With burst set it sends its queue in one event as BlueZ did at 1b251ea (LL_LENGTH_REQ
+ * peripheral's answers kept in order. With burst set it sends its queue in one event as BlueZ did at 5a47303 (LL_LENGTH_REQ
  * with MD set, its first L2CAP PDU T_IFS after the response): MD set while more is queued after the packet, the next packet
  * after a response it heard (4.5.6). Own code. Host only. */
 #ifndef OPLBOX_TESTS_BLE_AIR_CENTRAL_H

@@ -207,7 +207,7 @@ static int test_run(int stay)
     bb_model_reset();
     bbm.air = &AIR;
     bbm.hw_arq = 1;                                  /* the first connection runs FM1BLE_TX_ARQ: SN and NESN are the chip's */
-    bbm.own_sn = 1;                                  /* its own SN state, left at 1 (e3d2a74's second connection) */
+    bbm.own_sn = 1;                                  /* its own SN state, left at 1 (fdff9c6's second connection) */
     bbm.arq_sn = 1;
     g_run = 1;
     C.scan_all = 1;
@@ -374,7 +374,7 @@ int main(int argc, char **argv)
     check(run_until(c_connected, 1000), "a CONNECT_IND: NimBLE is connected");
     check(C.chan_bad == 0 && C.aa_bad == 0 && bbm.air_missed == 0, "connection events on the right channels, none missed");
 
-    /* BlueZ's first ATT request (1907280-1): Exchange MTU (0x02) for 517; NimBLE offers 185 (syscfg.h), so the responses
+    /* BlueZ's first ATT request (8ff3c5e-1): Exchange MTU (0x02) for 517; NimBLE offers 185 (syscfg.h), so the responses
      * below can be longer than a data PDU's 27 octets and come as a start and continuations (LLID 2, then 1) */
     {
         uint8_t q[3] = { 0x02, 0x05, 0x02 };

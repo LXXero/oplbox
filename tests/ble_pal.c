@@ -154,7 +154,7 @@ static int cmd(uint16_t op, const uint8_t *par, uint8_t n)
     return -1;
 }
 
-/* A connection polled from a main loop that comes back every 200 us (the FM-1's PAL runs from the loop: at 58cadc5 it
+/* A connection polled from a main loop that comes back every 200 us (the FM-1's PAL runs from the loop: at 43817aa it
  * received 1 packet in 18 connection events, the scheduler's timer at most 215 us late; much later than 300 us, Cordio's
  * SCH_LOAD_DELAY_US, and Cordio skips events). busy: the PAL waits through each connection event (pal_fm1.c); setups:
  * the window setups it may try (pal_fm1_cfg conn_setups); lead: the scheduler's timer fires PAL_FM1_TIMER_LEAD_US
@@ -316,7 +316,7 @@ int main(void)
      * each, in a rotated order */
     check(C.nchan >= 6 && C.chan_order[0] + C.chan_order[1] + C.chan_order[2] == 114 && C.chan_order[0] != C.chan_order[1] &&
           C.chan_order[1] != C.chan_order[2] && C.chan_order[3] == C.chan_order[0], "each event: 37, 38 and 39 once each, the same order every event");
-    /* the hardware hops inside one event (the advertising the FM-1 put on the air at 122afe3): 37, 38, 39 in that order
+    /* the hardware hops inside one event (the advertising the FM-1 put on the air at 6d8b497): 37, 38, 39 in that order
      * whatever channel Cordio asked for first, well inside the 10 ms the specification allows between them */
     check(C.nchan >= 3 && C.chan_order[0] == 37 && C.chan_order[1] == 38 && C.chan_order[2] == 39 &&
           C.chan_t[1] > C.chan_t[0] && C.chan_t[1] - C.chan_t[0] < 10000u && C.chan_t[2] > C.chan_t[1] &&
@@ -428,7 +428,7 @@ int main(void)
         check(find_ev(0, 0x13, 0) >= 0, "Number Of Completed Packets to the host once it was acknowledged");
     }
 
-    /* the host sends one L2CAP PDU longer than a data PDU: NimBLE's 37-byte Read By Type Response of 1907280 (L2CAP length
+    /* the host sends one L2CAP PDU longer than a data PDU: NimBLE's 37-byte Read By Type Response of 8ff3c5e (L2CAP length
      * 37, 41 bytes), in two ACL packets as NimBLE does for Cordio's 27-byte buffers (Packet_Boundary 00, then 01): the
      * central gets a start (27 bytes, LLID 2) and a continuation (14, LLID 1), and the PAL's fragment trace (pal_fm1.h
      * PAL_FM1_FRAG) starts at the packet the start answers */
@@ -475,7 +475,7 @@ int main(void)
     check(C.adv_seen[0] >= 3, "ADV_IND on the air again");
 
     /* Polled from the main loop (no interrupt), as on the FM-1: waited through, every connection event holds the
-     * central's packet, Cordio's response goes in before T_IFS, data goes both ways; not waited through (up to 58cadc5),
+     * central's packet, Cordio's response goes in before T_IFS, data goes both ways; not waited through (up to 43817aa),
      * the late timestamps put the anchors late and the windows miss the central's packets, as on the FM-1 */
     {
         uint16_t h;
@@ -502,12 +502,12 @@ int main(void)
         check(st->cind_gap_us > 0 && st->cind_gap_us <= 2000u, "the CONNECT_IND's poll gap is measured");
         k = find_ev(0, 0x05, 0);
         check(k >= 0 && (g_ev[k][3] | g_ev[k][4] << 8) == h, "polled: the central ends it");
-        /* not waited through, the window as up to 58cadc5 (one setup, no timer lead): the late timestamps put the anchors
+        /* not waited through, the window as up to 43817aa (one setup, no timer lead): the late timestamps put the anchors
          * late */
         missed = polled_conn(&B, 0, 1u << FM1BLE_CONN_KEEP, 0, &h, &data_ok);
         st = pal_fm1_state();
         check(missed >= 3 && st->conn_rx * 2u < st->conn_ops,
-              "polled, not waited through (58cadc5): most windows miss the central's packets");
+              "polled, not waited through (43817aa): most windows miss the central's packets");
         {   /* a missed event's end, as the PAL saw the flag: where the model closed the window (KEEP: dueUsec + timeout) */
             uint32_t j, ends = 0, near = 0;
             for (j = 0; j < st->log_n; j++) {
@@ -615,7 +615,7 @@ int main(void)
             static const char *const what[3] = { "INTIME: a connection, data both ways, every response put in",
                                                  "JIELI: a connection, data both ways", "AIR: a connection, data both ways" };
             for (i = 0; i < 3; i++) {
-                bbm.hw_nesn = M[i] != FM1BLE_TX_AIR;     /* AIR writes Cordio's NESN itself, as up to f0e6d08 */
+                bbm.hw_nesn = M[i] != FM1BLE_TX_AIR;     /* AIR writes Cordio's NESN itself, as up to 9c47113 */
                 g_tx_modes = (uint8_t)(1u << M[i]);
                 missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
                 check(h != 0xFFFF && missed == 0 && data_ok && st->conn_tx == M[i] && st->tx_rx[M[i]] >= 15 &&
@@ -630,7 +630,7 @@ int main(void)
             bbm.hw_arq = 1;
             g_feat = 1;
             g_tx_modes = 1u << FM1BLE_TX_ARQ;
-            g_arq_ways = PAL_FM1_ARQ_TIFS;              /* ARQ as up to e3d2a74; ahead below */
+            g_arq_ways = PAL_FM1_ARQ_TIFS;              /* ARQ as up to fdff9c6; ahead below */
             missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
             check(h != 0xFFFF && missed == 0 && data_ok && g_feat_rsp == 1 && st->conn_tx == FM1BLE_TX_ARQ &&
                   st->arq_dup == 0 && st->arq_unwritten == 0 && (st->ll_ops[0] & 1u << 0x08) && (st->ll_cnt[0] & 0xFFu) == 1u &&
@@ -660,9 +660,9 @@ int main(void)
             check(h != 0xFFFF && data_ok && g_feat_rsp == 1 && st->arq_dup >= 3u && st->arq_unwritten == 0,
                   "ARQ, the central missing every fifth response: its repeats told to Cordio as repeats, nothing lost or doubled");
             bbm.drop_rsp = 0;
-            /* the central sends its queue in one event, as BlueZ did at 1b251ea (LL_LENGTH_REQ with MD set, its first L2CAP
+            /* the central sends its queue in one event, as BlueZ did at 5a47303 (LL_LENGTH_REQ with MD set, its first L2CAP
              * PDU T_IFS after the response): the ATT write comes as the event's second packet, the chip's ARQ takes it,
-             * and it reaches the host (up to 1b251ea Cordio, told MD 0, had closed the event: the write was lost) */
+             * and it reaches the host (up to 5a47303 Cordio, told MD 0, had closed the event: the write was lost) */
             g_burst = 1;
             bbm.later_in = 0;
             missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
@@ -670,7 +670,7 @@ int main(void)
                   st->later_given == st->later_rx,
                   "ARQ, the central's ATT write as the second packet of an event (MD set): given to Cordio, it reaches the host");
             /* and three in one event (the two writes after the feature request): each taken when the next comes, so none
-             * is held over the next one (up to 1b251ea Cordio's response completed only at the event's end) */
+             * is held over the next one (up to 5a47303 Cordio's response completed only at the event's end) */
             g_burst = 2;
             bbm.later_in = 0;
             missed = polled_conn(&B, 1, 1u << FM1BLE_CONN_PADW, 1, &h, &data_ok);
@@ -705,7 +705,7 @@ int main(void)
                   "ARQ, a response late two events after the feature response: the emptied slot goes, no second copy");
             /* a chip that reads the slot 20 us after the packet (tx_latch_us), and Cordio's feature response put in 60 us
              * after it, in time for PAL_FM1_TIFS_US: in T_IFS it is not what goes, the central acknowledges the empty PDU
-             * that did, and the PAL tells Cordio its PDU was acknowledged: the response is lost (e3d2a74: NimBLE's first
+             * that did, and the PAL tells Cordio its PDU was acknowledged: the response is lost (fdff9c6: NimBLE's first
              * L2CAP PDU, put in 70 us after the packet, never answered). Ahead it goes into the slot sent next: heard once */
             bbm.tx_latch_us = 20;
             g_hook_jump = 60;
@@ -771,7 +771,7 @@ int main(void)
             check(!bbm.drop_data && h != 0xFFFF && data_ok && g_feat_rsp == 1 && cap_count(st, 1, 3, 0x09) == 1,
                   "ARQ ahead, the feature response not heard: sent again from its slot, heard once, captured once");
             /* the chip takes the central's ATT write as new on the air but RXTOG does not move (bb_model hold_l2), as
-             * BlueZ's Read By Type request at 807d70f's event 33: new by its SN, so it reaches the host (up to 807d70f the
+             * BlueZ's Read By Type request at 1b8dea6's event 33: new by its SN, so it reaches the host (up to 1b8dea6 the
              * PAL told Cordio it was a repeat and it was lost), captured once as new; the cross-check (pal_fm1.h
              * PAL_FM1_SNX) counts and keeps it: new by the SN, RXTOG still, RXDHDR's LLID 2 */
             bbm.hold_l2 = 1;
@@ -826,7 +826,7 @@ int main(void)
             check(h != 0xFFFF && data_ok && g_feat_rsp == 1 && st->later_given == st->later_rx,
                   "ARQ ahead, three packets in one event: both ATT writes reach the host in order");
             g_burst = 0;
-            /* the chip's SN left at 1 by an earlier connection (bb_model own_sn, e3d2a74's second connection): its first
+            /* the chip's SN left at 1 by an earlier connection (bb_model own_sn, fdff9c6's second connection): its first
              * packet moves TXTOG, the slot then named carries SN 1, and without bit 2 changed the central takes every PDU
              * after it as a repeat. Both ways: bit 2 changed at the first packet, the feature response heard once */
             bbm.own_sn = 1;
@@ -858,7 +858,7 @@ int main(void)
             bbm.own_sn = 0;
             g_arq_ways = PAL_FM1_ARQ_TIFS;
             /* on that chip with RXDHDR as the IR reads it (bb_model ir_rxdhdr: MD in bit 3) INTIME, JIELI and AIR lose the
-             * link layer as the FM-1 did at a349877 (packets received, no GATT): Cordio reads the chip's MD bit as SN */
+             * link layer as the FM-1 did at 2e6d430 (packets received, no GATT): Cordio reads the chip's MD bit as SN */
             bbm.ir_rxdhdr = 1;
             {
                 static const uint8_t M[3] = { FM1BLE_TX_INTIME, FM1BLE_TX_JIELI, FM1BLE_TX_AIR };
@@ -881,7 +881,7 @@ int main(void)
                   st->conn_txs == (FM1BLE_TX_ARQ | FM1BLE_TX_ARQ << 4) && st->arq_conns == 2u && st->ahead_conns == 1u &&
                   st->good_ahead == PAL_FM1_NO_SETUP,
                   "the TX order: the first connection ARQ, kept by the next once L2CAP came through; ahead, then in T_IFS");
-            /* packets alone do not keep a mode (a349877 kept INTIME on 462): INTIME's connection receives, no L2CAP gets
+            /* packets alone do not keep a mode (2e6d430 kept INTIME on 462): INTIME's connection receives, no L2CAP gets
              * through, the next connection runs JIELI, the next of the order */
             bbm.ir_rxdhdr = 1;
             g_tx_modes = (uint8_t)(1u << FM1BLE_TX_INTIME | 1u << FM1BLE_TX_JIELI);
@@ -922,7 +922,7 @@ int main(void)
             /* a hung event: the baseband runs nothing and raises no flag for the third event; it ends by its deadline, the
              * driver is halted, the connection goes on. Last of the three, and its data path is not checked: on the model a
              * connection after one whose event ended by its deadline, or after the late response above, loses the central's
-             * write to the host although its packets are received and acknowledged, with fm1ble_op_stop as up to f0e6d08
+             * write to the host although its packets are received and acknowledged, with fm1ble_op_stop as up to 9c47113
              * as much as with the halt, and with the skipped response reported as sent [unexplained;
              * docs/BLUETOOTH_CORDIO.md] */
             g_hook = H_HANG;

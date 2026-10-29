@@ -12,8 +12,8 @@ typedef struct {
     void *ctx;
     uint16_t sch_setup_us;              /* how long before an operation the scheduler's timer fires: 0 = 2000 us (main-loop
                                            polling, not an interrupt: a guess at the loop's latency [measure on FM-1]) */
-    uint8_t no_busy_wait;               /* 1: a connection event is polled like the rest (up to 58cadc5), not waited through */
-    uint8_t no_timer_lead;              /* 1: the scheduler's timer fires when Cordio asks (up to a7c1738), not
+    uint8_t no_busy_wait;               /* 1: a connection event is polled like the rest (up to 43817aa), not waited through */
+    uint8_t no_timer_lead;              /* 1: the scheduler's timer fires when Cordio asks (up to fcbfd86), not
                                            PAL_FM1_TIMER_LEAD_US earlier */
     uint8_t conn_setups;                /* the driver's window setups to try (bit n: FM1BLE_CONN_* n); 0: all seven */
     uint8_t tx_modes;                   /* the driver's TX modes to try (bit n: FM1BLE_TX_* n); 0: all four */
@@ -22,8 +22,8 @@ typedef struct {
 
 /* The order the window setups are tried in: each connection runs one setup for all its events, the next connection the
  * next enabled one in this order (the first connection the first), so a run whose central connects again after each drop
- * (tools/ble_central.py, the test run's MIDI_IN step) tries one per connection. At a7c1738 a move after every missed event
- * gave no setup two events in a row; at 5474159 a move after 3 in a row left PAD, which had received, for KEEP before the
+ * (tools/ble_central.py, the test run's MIDI_IN step) tries one per connection. At fcbfd86 a move after every missed event
+ * gave no setup two events in a row; at 5838183 a move after 3 in a row left PAD, which had received, for KEEP before the
  * anchor settled. A connection in which a setup received PAL_FM1_GOOD packets makes it the one every later connection runs.
  * PADW, PADB and PADJ first: each adds one fact of the IR to PAD (fm1ble.h), PAD and WIDE after them to compare. */
 #define PAL_FM1_SETUP_ORDER { FM1BLE_CONN_PADW, FM1BLE_CONN_PADB, FM1BLE_CONN_PADJ, FM1BLE_CONN_PAD, FM1BLE_CONN_WIDE, \
@@ -34,7 +34,7 @@ typedef struct {
 /* The TX modes (fm1ble.h FM1BLE_TX_*), one per connection in this order, alongside the window setup: the k-th connection
  * since the attach runs the k-th enabled one. A connection in which the central sent an L2CAP PDU (LLID 2: its controller
  * and host got past the link layer's own procedures, so both directions worked) makes its mode the one every later
- * connection runs; packets alone do not (at a349877 INTIME received 462 and was kept, and no GATT came). ARQ first (the
+ * connection runs; packets alone do not (at 2e6d430 INTIME received 462 and was kept, and no GATT came). ARQ first (the
  * IR's reading, fm1ble.h), AIR (the air's layout written as it is) to compare, then INTIME and JIELI. */
 #define PAL_FM1_TX_ORDER    { FM1BLE_TX_ARQ, FM1BLE_TX_AIR, FM1BLE_TX_INTIME, FM1BLE_TX_JIELI }
 
@@ -42,8 +42,8 @@ typedef struct {
  * first, then in T_IFS, in turn; a connection on which the central sent PAL_FM1_L2_GOOD L2CAP PDUs Cordio took (an ATT
  * request after the MTU exchange and one after that: Cordio's answers got through) makes its way the one every later ARQ
  * connection runs.
- *   in T_IFS (as up to e3d2a74): into the slot TXTOG names, which the hardware sends T_IFS after the packet; Cordio is told
- *            its PDU was acknowledged when TXTOG has moved since. At e3d2a74 (oplbox-ble-runs/e3d2a74-1) NimBLE's first
+ *   in T_IFS (as up to fdff9c6): into the slot TXTOG names, which the hardware sends T_IFS after the packet; Cordio is told
+ *            its PDU was acknowledged when TXTOG has moved since. At fdff9c6 (oplbox-ble-runs/fdff9c6-1) NimBLE's first
  *            L2CAP PDU (its connection parameter request, put in 70 us after the packet) never got an answer from
  *            BlueZ, nor did the 5-byte ATT answer to BlueZ's second request, though the chip moved TXTOG past both: a
  *            write after the hardware read the slot does not go, and the next acknowledgement looks like its own.
@@ -57,17 +57,17 @@ typedef struct {
 
 /* The chip's SN (fm1ble.h fm1ble_op_arq_flip). A new connection's first packet has NESN 0 (Vol 6 Part B 4.5.9): it
  * acknowledges nothing, so Cordio is told so; when TXTOG moved at it anyway, the chip's own SN state was left at 1 by the
- * last connection (at e3d2a74 the second connection's first packet moved it, and the central took every one of Cordio's
+ * last connection (at fdff9c6 the second connection's first packet moved it, and the central took every one of Cordio's
  * PDUs after it as a repeat: 244 sent again, RXTOG moving at the central's packets, TXTOG never), so bit 2 of both slots
  * is changed. And PAL_FM1_ARQ_STUCK packets in a row at which RXTOG moved (the central heard the chip's NESN) and TXTOG
  * did not (it took nothing the chip sent) change it too (since round 2 of the resumed goal: packets new by their SN,
  * below, in place of RXTOG moving). */
 #define PAL_FM1_ARQ_STUCK   3u
 
-/* New or a repeat, in ARQ (since round 2 of the resumed FM-1 Bluetooth goal, 807d70f): the central's SN, RXDHDR bit 3
- * (bits 4-0 as on the air: LLID, NESN, SN, MD; the 1b251ea and 807d70f traces alternate bit 3 packet by packet and set
+/* New or a repeat, in ARQ (since round 2 of the resumed FM-1 Bluetooth goal, 1b8dea6): the central's SN, RXDHDR bit 3
+ * (bits 4-0 as on the air: LLID, NESN, SN, MD; the 5a47303 and 1b8dea6 traces alternate bit 3 packet by packet and set
  * bit 4 only before a second packet in the event), against the SN the PAL expects next (0 at a connection's start, changed
- * at each new packet with a good CRC), as the Core Specification does it (Vol 6 Part B 4.5.9). Up to 807d70f RXTOG
+ * at each new packet with a good CRC), as the Core Specification does it (Vol 6 Part B 4.5.9). Up to 1b8dea6 RXTOG
  * decided: in the first connection the central's Read By Type request at event 33 (SN 1 after SN 0 at event 29, so new)
  * came with RXTOG unmoved, the PAL told Cordio it was a repeat, and the central's next packets (SN 0, then 1) show the
  * chip had acknowledged it on the air, so BlueZ never got an answer and GATT never resolved; RXTOG also moved at every
@@ -82,8 +82,8 @@ typedef struct {
 /* The PDU capture: the first PAL_FM1_CAP data PDUs with a payload since pal_fm1_attach, either way, PAL_FM1_CAP_BYTES
  * each: the central's as the chip received them (good CRC: new to Cordio, and since round 8 also those Cordio was told
  * were repeats, one entry while the bytes stay the same) and Cordio's as it handed them over (one entry for a PDU handed
- * again unchanged). At 1907280 BlueZ sent nothing new after NimBLE's first fragmented response: a request the PAL told
- * Cordio was a repeat would not have shown. For the bytes of what went each way: at e3d2a74 the header trace showed BlueZ's two
+ * again unchanged). At 8ff3c5e BlueZ sent nothing new after NimBLE's first fragmented response: a request the PAL told
+ * Cordio was a repeat would not have shown. For the bytes of what went each way: at fdff9c6 the header trace showed BlueZ's two
  * L2CAP PDUs (3 and 7 bytes) and NimBLE's three (12, 3 and 5), and GATT never resolved. An entry:
  *   0: bit 0 Cordio's (1) or the central's (0); bit 1 the central's with a good CRC, or Cordio's written ahead; bit 2 the
  *      central's new to Cordio, or Cordio's put in; bit 3 the central's a later packet of its event; bits 7-4 the
@@ -104,23 +104,23 @@ typedef struct {
  *      sends at T_IFS), fm1ble.h fm1ble_op_slot's word (15-0 its TXDHDR: the length in 15-8, bit 2 the SN on the air, the
  *      LLID in 1-0; 23-16 its first payload byte), TXTOG (24), RXTOG (25), the other slot's TXDHDR bits 2-0 (28-26), the
  *      connection writes ahead (29), 31 set.
- * At 1907280 the start (27 bytes) and the continuation (14) were handed over, and the capture cannot say what the chip
+ * At 8ff3c5e the start (27 bytes) and the continuation (14) were handed over, and the capture cannot say what the chip
  * put on the air. */
 #define PAL_FM1_FRAG        12
 
 /* FM1BLE_TX_INTIME: Cordio's response goes in only this many us after the PAL saw the packet. The flag comes at the
  * packet's end [unchecked]; T_IFS is 150 us and the hardware reads the slot before its preamble. Cordio took 42 us at most
- * at a7c1738 and 251 at f0e6d08. */
+ * at fcbfd86 and 251 at 9c47113. */
 #define PAL_FM1_TIFS_US     100u
 
 /* A connection packet that starts this many us or more before its window opened (dueUsec less the setup's early arm) is
  * not the central's packet for this event: it is a flag an earlier event raised late. It is counted (stale_rx) and not
- * given to Cordio, which would take it as the anchor. At f0e6d08 one came 1192 us before dueUsec (567 us before PADW's
+ * given to Cordio, which would take it as the anchor. At 9c47113 one came 1192 us before dueUsec (567 us before PADW's
  * window) and every later window of the connection missed; PADW's window opened up to 236 us early in the probe. */
 #define PAL_FM1_STALE_US    400u
 
 /* How much earlier than Cordio asks the scheduler's timer fires. Cordio starts an operation SCH_LOAD_DELAY_US (300 us)
- * before its dueUsec, less the timer's lateness from the main loop (up to 210 us at a7c1738), so a connection event was
+ * before its dueUsec, less the timer's lateness from the main loop (up to 210 us at fcbfd86), so a connection event was
  * armed 90-300 us ahead and the PAD and WIDE setups could not open their windows earlier than at once. With the lead the
  * event is armed about FM1BLE_CONN_WIDE_US + 300 us ahead. Cordio loads a BOD whose due time is in the future
  * (sch_main.c schLoadBod), so an early load only moves the PAL's arm and busy wait earlier. */
@@ -163,10 +163,10 @@ typedef struct {
  * And for each of the first PAL_FM1_CONNS connections: ll_ops, the control opcodes 0-31 the central sent (bit n: opcode n,
  * good CRC); ll_cnt, the central's L2CAP PDUs (LLID 2) Cordio took as new (7-0), Cordio's non-empty responses put in
  * (15-8), the packets Cordio was told did not acknowledge its last PDU (23-16), RXTOG's changes (31-24), each at most 255.
- * arq_dup and arq_unwritten (ARQ only): packets Cordio was told were repeats (their SN not the one expected; up to 807d70f
+ * arq_dup and arq_unwritten (ARQ only): packets Cordio was told were repeats (their SN not the one expected; up to 1b8dea6
  * RXTOG unchanged once it had moved), and
  * responses that did not go in (too late, or after the event), so Cordio was told its PDU was not acknowledged.
- * Packets after the first in a connection event (since round 6 of the FM-1 Bluetooth goal: at 1b251ea BlueZ sent
+ * Packets after the first in a connection event (since round 6 of the FM-1 Bluetooth goal: at 5a47303 BlueZ sent
  * LL_LENGTH_REQ with MD set and its first L2CAP PDU T_IFS after the response, in the same event; the chip's ARQ
  * acknowledged it on the air, Cordio had closed the event and never got it, so no ATT request reached NimBLE):
  * later_rx such packets, later_given the ones given to Cordio. */

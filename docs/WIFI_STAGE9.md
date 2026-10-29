@@ -83,7 +83,7 @@ addresses: keep `--out` private like a stage 8 run's.
 
 ## Size
 
-`./build.sh`, against main b84bafd (stage 8): the image grows by 25,024 B to 431,612 of 581,564 B; `.data`+`.bss`
+`./build.sh`, against main 3d0a341 (stage 8): the image grows by 25,024 B to 431,612 of 581,564 B; `.data`+`.bss`
 by 15,920 B to 75,180 of 98,304 B: the run's state (`wl`: the IP state and its 8 kept frames) 5,988 B, lwIP's heap
 4,115 B and its receive pool 2,115 B, `fm1wifi_net.c`'s frame buffers in and out 1,546 B each, the rest lwIP's
 smaller pools and tables; the pool by 6,556 B to 280,072 of 344,064 B; the RAM code (16,028 B)

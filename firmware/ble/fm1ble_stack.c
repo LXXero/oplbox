@@ -17,7 +17,7 @@ static uint8_t g_sx[64];                /* SysEx from a central is not used by t
 static uint32_t now_ms(void *ctx) { (void)ctx; return fm1ble_port_now_us() / 1000u; }
 
 /* The ATT MTU NimBLE offers, connection by connection in turn (ble_nimble.h cfg mtus; since round 8 of the FM-1 Bluetooth
- * goal). At 1907280 (~/oplbox-ble-runs/1907280-1) BlueZ asked for 517, NimBLE offered 185, the link took 27-octet data
+ * goal). At 8ff3c5e (~/oplbox-ble-runs/8ff3c5e-1) BlueZ asked for 517, NimBLE offered 185, the link took 27-octet data
  * PDUs (Cordio's LL_LENGTH_RSP), and GATT discovery went through ten ATT exchanges until the first response longer than
  * one data PDU: the 37-byte Read By Type Response, handed over as a start (27 bytes) and a continuation (14). BlueZ never
  * sent its next request and left 754 events later. With 23 no L2CAP PDU is ever fragmented, either way: the first
@@ -59,10 +59,10 @@ int fm1ble_stack_start(fm1ble *b, const uint8_t addr[6])
     memset(&pc, 0, sizeof pc);
     pc.b = b;
     pc.rand32 = rand32;
-    /* PADW only: the one setup whose window follows the register on the FM-1 (oplbox-ble-run-f0e6d08-1's probe: its end
+    /* PADW only: the one setup whose window follows the register on the FM-1 (oplbox-ble-run-9c47113-1's probe: its end
      * moved with WINCNTL0, 449..811 us at 60 us and 3019..3709 at 2500, where KEEP, PAD, WIDE, PADJ and PADB ignored the
      * window) and the only one that received past a connection's first event. ARQ only (since round 7): on the chip's
-     * own SN and NESN (fm1ble.h) the other three lose the link layer, as at a349877; its connections run its two ways
+     * own SN and NESN (fm1ble.h) the other three lose the link layer, as at 2e6d430; its connections run its two ways
      * in turn (pal_fm1.h PAL_FM1_L2_GOOD), ahead first */
     pc.conn_setups = 1u << FM1BLE_CONN_PADW;
     pc.tx_modes = 1u << FM1BLE_TX_ARQ;

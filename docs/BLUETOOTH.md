@@ -9,9 +9,9 @@ controller (Apache-2.0, built from source, vendored unchanged in `firmware/ble/c
 and our own BLE-MIDI service. No JieLi Bluetooth archive (`btctrler.a`, `btstack.a`, `crypto_toolbox_Osize.a`) is linked
 by any build file; `tools/ble_ir.py` reads `btctrler.a` from the user's own SDK only to check the facts in
 docs/BLUETOOTH_RADIO.md, and the shared radio's power-up that JieLi's `wf_rf_common_init` does is OPLBOX's own
-(`firmware/hal/fm1ble_port_bsp.c`). BLE MIDI ran on xero's FM-1 at f6ee032 (2026-10-28) with BlueZ on xlap as the
+(`firmware/hal/fm1ble_port_bsp.c`). BLE MIDI ran on xero's FM-1 at e8811d7 (2026-10-28) with BlueZ on xlap as the
 central: all eight steps of the Bluetooth test run passed, the connection held, BlueZ resolved the GATT services and a
-Note On went each way ("The runs after 122afe3" below). Still open: connections from a Mac, an iPhone or an Android
+Note On went each way ("The runs after 6d8b497" below). Still open: connections from a Mac, an iPhone or an Android
 phone (stage 5; none is recorded), WiFi and Bluetooth together (stage 6), pairing (stage 7).
 
 From "Licence provenance" to "fm1-radio's notes 01-06 as prior art", and the plan's stages as first written, this file
@@ -343,7 +343,7 @@ test proves. "FM-1" is what needs xero to flash a build and read numbers off the
 Status (2026-10-28): stages 1, 2 and 3 are done (stage 3 as "Cordio path as built" 1). The gate is closed: no JieLi
 controller is linked, so there is nothing to decide. Stages 4 and 5 were done on Cordio's controller in place of
 JieLi's: the start-up, advertising, a connection, GATT and MIDI both ways ran on the FM-1 with BlueZ on xlap as the
-central ("The runs after 122afe3"); stage 5's Mac, iPhone and Android connections are not recorded as done. Stages 6
+central ("The runs after 6d8b497"); stage 5's Mac, iPhone and Android connections are not recorded as done. Stages 6
 and 7 are open. The stage texts below are the plan as first written [history], with notes where it changed.
 
 ### Stage 1: HCI packet layer and a fake controller (host only)
@@ -434,8 +434,8 @@ packet handler `hci_host_receive(type, packet, size)`, the shape of the controll
 
 ### Stage 5: advertise, connect, exchange MIDI (needs FM-1)
 
-- Done with BlueZ on xlap as the central: at f6ee032 the connection held, GATT services resolved and a Note On went
-  each way ("The runs after 122afe3"). Not recorded: a connection from a Mac, an iPhone or an Android phone, the
+- Done with BlueZ on xlap as the central: at e8811d7 the connection held, GATT services resolved and a Note On went
+  each way ("The runs after 6d8b497"). Not recorded: a connection from a Mac, an iPhone or an Android phone, the
   connection interval and latency they settle on, and dropped notes. BLE MIDI is not yet wired into the app's MIDI
   paths (keys and the arp out, USB and TRS in): only the Bluetooth test run calls `ble_midi_get`. Those stay open.
 - As first planned: stage 3's host on stage 4's controller: advertise "OPLBOX" with the service UUID, connect from a Mac, an iPhone and
@@ -528,7 +528,7 @@ functions. Apache-2.0 is compatible with GPL-3.0-only when LICENSE and NOTICE ar
 ours, clean-room, from facts only.
 
 Status of the six steps as of 2026-10-27, before the first FM-1 run [history]; the runs since are in "The first FM-1
-run", "The second FM-1 run" and "The runs after 122afe3". Host tests: `tests/run_host.sh`.
+run", "The second FM-1 run" and "The runs after 6d8b497". Host tests: `tests/run_host.sh`.
 
 1. **NimBLE host, peripheral-only, no pairing: done and host-tested.** `firmware/ble/nimble/` (129 files, unchanged, commit
    e00b85cc, `README.md` and `SHA256SUMS`), our polled port (`ble_nimble_npl.c`, `nimble_port/`), the transport as a function
@@ -581,9 +581,9 @@ run", "The second FM-1 run" and "The runs after 122afe3". Host tests: `tests/run
    581,564 B and 94,084 B of 98,304 B of RAM (Cordio's 3 KB heap and the C library's 3 KB heap are in the pool, app.ld's
    zeroed region outside the 96 KB), with WiFi's stages 4-9 in the same image.
 
-### The first FM-1 run (48ea034) and what changed
+### The first FM-1 run (c9b4e78) and what changed
 
-The control session flashed 48ea034 (FM-1_960 on xryzen's USB) and ran `fm1_ble_report.py --run` twice (90 s and 45 s
+The control session flashed c9b4e78 (FM-1_960 on xryzen's USB) and ran `fm1_ble_report.py --run` twice (90 s and 45 s
 waits), while xlap (BlueZ 5.87, one floor down) scanned with `bluetoothctl scan le`. Both runs: radio PASS, block FAIL
 ("block address does not read back"), hci PASS, adv_set PASS, adv_air PASS, connect FAIL, the MIDI steps SKIP; xlap heard
 about 100 devices and never C2:46:4D:31:00:01. The raw evidence, read against docs/BLUETOOTH_RADIO.md:
@@ -608,10 +608,10 @@ counts its changes per trial; a central that hears the trials while `tx_flips` s
 record), which variant of the power-up puts a carrier out, why two in three of Cordio's one-channel operations never end
 (the counters `pal_done_37`, `_38`, `_39` say which channels end), and the whole receive side.
 
-### The second FM-1 run (122afe3) and what changed
+### The second FM-1 run (6d8b497) and what changed
 
-The control session flashed 122afe3 onto the FM-1 on xlap and ran `fm1_ble_report.py --run --wait 30 --central xlap`
-(report on xlap in ~/Downloads/oplbox-ble-run-122afe3/). radio, block, hci, adv_set PASS; adv_air PASS "sent, trials 0 1";
+The control session flashed 6d8b497 onto the FM-1 on xlap and ran `fm1_ble_report.py --run --wait 30 --central xlap`
+(report on xlap in ~/Downloads/oplbox-ble-run-6d8b497/). radio, block, hci, adv_set PASS; adv_air PASS "sent, trials 0 1";
 connect FAIL; the MIDI steps SKIP. xlap heard :11 (variant 1, level 6) at -48 dBm and :12 (level 11) at -26, not :10
 (variant 0) and never :01 (the stack). So the driver's own advertising reaches the air once the shared radio's init has
 run, and this morning's TXDHDR, TXTOG and level fixes work; `tx_flips` changed once in the 29 events of a heard trial,
@@ -631,10 +631,10 @@ advertising, and Cordio's other two packets of the event go in it (docs/BLUETOOT
 has (its advertising operation's scan response, read when the event is armed) goes in TX buffer 1 for that event, so a
 scan response the host changes goes out from the next event on; a CONNECT_IND ends the event; a data PDU goes in both TX slots. The
 register model now does what the chip did with one-channel events (on 37: ends, sends nothing; on 38, 39: never ends),
-so the PAL of 122afe3 fails the host tests the way it failed on the FM-1. Eight counters more (40, a fourteenth page):
+so the PAL of 6d8b497 fails the host tests the way it failed on the FM-1. Eight counters more (40, a fourteenth page):
 docs/BLUETOOTH_PAGE.md.
 
-### The next FM-1 run [history: the plan after 122afe3]
+### The next FM-1 run [history: the plan after 6d8b497]
 
 From xryzen, the FM-1 on its USB, xlap as the central (a few metres away is enough):
 
@@ -662,22 +662,22 @@ where the packets started in it, how long Cordio took to answer against T_IFS, w
 and the central's packets carried RXSTAT bit 8). Events that receive and a connection that still drops point at the
 response: its header (SN and NESN in TXDHDR, which JieLi writes differently: bit 2 per TX slot) or its timing.
 
-### The runs after 122afe3
+### The runs after 6d8b497
 
 From 2026-10-27 the control session ran the test run after each round of work, with the FM-1 on xryzen's USB and BlueZ
 on xlap as the central (`--central xlap`). The raw runs are kept on xryzen in `~/oplbox-ble-runs/<commit>-1` (not in the
-repo). docs/BLUETOOTH_CORDIO.md "The chip's PAL" records each run up to 807d70f and what changed after it: the PAL's
+repo). docs/BLUETOOTH_CORDIO.md "The chip's PAL" records each run up to 1b8dea6 and what changed after it: the PAL's
 advertising through one hardware event per Cordio event, the receiver's gain table and window setups, the busy wait
 through each connection event, the TX modes and the chip's own ARQ, and new-or-repeat judged by the central's SN in
-place of RXTOG (f55cda4).
+place of RXTOG (5075ded).
 
-- **956029a** (`~/oplbox-ble-runs/956029a-1`): all eight steps PASS. The central connected once, sent its Note On
+- **6d55475** (`~/oplbox-ble-runs/6d55475-1`): all eight steps PASS. The central connected once, sent its Note On
   (`midi_in`) and heard the FM-1's (`midi_out`: "Note on 0, note 60, velocity 100"), but BlueZ never said
   ServicesResolved: yes: the run closed the link (LL_TERMINATE_IND) right after MIDI_OUT, 0.85 s into the connection,
-  while BlueZ was still in its discovery (77d267d's message). 77d267d keeps the connection up after MIDI_OUT for the
+  while BlueZ was still in its discovery (a5ba770's message). a5ba770 keeps the connection up after MIDI_OUT for the
   central to close, at most 15 s (fm1ble_test.h `FM1BLE_HOLD_MS`), and `ble_central.py` reads on for up to 10 s for
   ServicesResolved before it disconnects.
-- **f6ee032** (`~/oplbox-ble-runs/f6ee032-1`, 2026-10-28): all eight steps PASS. One connection, not dropped; GATT
+- **e8811d7** (`~/oplbox-ble-runs/e8811d7-1`, 2026-10-28): all eight steps PASS. One connection, not dropped; GATT
   services resolved 0.86 s after the connect; the Note On 90 3C 64 went in and the FM-1's Note On came back
   ("Note on 0, note 60, velocity 100"). This was the done-check of the Momentum goal "connect, midi_in and midi_out all
   PASS on the board".

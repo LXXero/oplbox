@@ -147,7 +147,7 @@ static void air_event(void)
         uint32_t ch = bbm.ax[FM1BLE_AX_CHANNEL], hop = (ch >> 8) & 0x1Fu, last = (ch & 0x80u) ? 39u : 38u, s, c;
         if (!hop) {
             /* A one-channel event (hop 0, the map that channel alone): what the FM-1 did with Cordio's operations at
-             * 122afe3 (tools/fm1_ble_report.py, 852 of 2556 ended, all of them on 37, nothing heard from any): on 37 the
+             * 6d8b497 (tools/fm1_ble_report.py, 852 of 2556 ended, all of them on 37, nothing heard from any): on 37 the
              * event ends having sent nothing a central heard; on 38 and 39 it never ends. */
             bbm.one_chan++;
             if (chan != 37u)

@@ -171,7 +171,7 @@ static void advertising(void)
     check(e16(FM1BLE_E_TXPTR0) == B.tx[0] + 0x14u && e16(FM1BLE_E_TXPTR1) == B.tx[1] + 0x14u, "TXPTR0 and TXPTR1: the payloads' offsets");
     check(e16(FM1BLE_E_TXAHDR0) == 0x10u && e16(FM1BLE_E_TXAHDR1) == (((0x44u >> 2) & 0x30u) | 4u), "TXAHDR: ((hdr >> 2) & 0x30) | (hdr & 0xF)");
     check(e16(FM1BLE_E_TXDHDR0) == (a.nadv + 6u) << 8 && e16(FM1BLE_E_TXDHDR1) == (a.nrsp + 6u) << 8,
-          "TXDHDR: the PDU's length in bits 15-8 for both advertising buffers (it stayed 1, length 0, at 48ea034)");
+          "TXDHDR: the PDU's length in bits 15-8 for both advertising buffers (it stayed 1, length 0, at c9b4e78)");
     check(e16(FM1BLE_E_RXPTR0) == B.rx[0] + 0x14u && e16(FM1BLE_E_RXPTR1) == B.rx[1] + 0x14u, "RXPTR0 and RXPTR1");
     check(e16(FM1BLE_E_LOCALADR) == 0x0001u && e16(FM1BLE_E_LOCALADR + 2) == 0x4D31u && e16(FM1BLE_E_LOCALADR + 4) == 0xC246u,
           "LOCALADR: the address as three little-endian words");
@@ -410,7 +410,7 @@ static void rx_setup(void)
         fm1ble_op_conn_begin(&B, FM1BLE_TX_AIR);
         e[FM1BLE_E_TXDHDR0] = 0x05;                      /* bit 2 as the hardware might have left it */
         check(fm1ble_op_conn(&B, 2000, 52) == FM1BLE_OK && e16(FM1BLE_E_TXDHDR0) == 1u && e16(FM1BLE_E_TXDHDR1) == 1u,
-              "AIR: an empty PDU (LLID 1, bits 4-2 clear) in both slots at the arm, as up to f0e6d08");
+              "AIR: an empty PDU (LLID 1, bits 4-2 clear) in both slots at the arm, as up to 9c47113");
         check(fm1ble_op_resp(&B, data, 5) == FM1BLE_OK && e16(FM1BLE_E_TXDHDR0) == (3u << 8 | 0x1Eu) &&
               e16(FM1BLE_E_TXDHDR1) == (3u << 8 | 0x1Eu), "AIR: the response's header bits 4-0 as on the air, in both slots");
         fm1ble_op_stop(&B);

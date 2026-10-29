@@ -8,7 +8,7 @@
  * (PalBbBleRxData on 0-36) is one hardware event on that channel. An advertising event is three of Cordio's packets
  * (PalBbBleTxData on 37, 38 and 39, bb_ble_adv_slave.c), and the hardware's advertising event covers all three (it hops
  * by itself): the first of them arms one (fm1ble_op_adv, armed as the driver's own advertising, the only advertising a
- * central heard from the FM-1: at 122afe3 the one-channel events this PAL armed per packet were never heard, and the
+ * central heard from the FM-1: at 6d8b497 the one-channel events this PAL armed per packet were never heard, and the
  * ones on 38 and 39 never ended), and the next ones on a channel not yet asked for in it are served by it ("covered").
  * The baseband reports two things per event, a packet received and the event's end, and they become Cordio's
  * completions:
@@ -36,8 +36,8 @@
  * WIDE windows to open before dueUsec.
  *
  * The busy wait. Polled from the main loop, a connection packet is timestamped as late as the loop came back, and Cordio
- * puts the next anchor that much late: at 58cadc5 the FM-1 received the first packet of a connection (in the transmit
- * window, which is wide) and 0 of the next 17, whose windows were 286 us (oplbox-ble-run-58cadc5: pal_conn_ops 18,
+ * puts the next anchor that much late: at 43817aa the FM-1 received the first packet of a connection (in the transmit
+ * window, which is wide) and 0 of the next 17, whose windows were 286 us (oplbox-ble-run-43817aa: pal_conn_ops 18,
  * pal_conn_rx 1, pal_timer_late_us 215). So once a connection event is armed, pal_fm1_service does not return before
  * its packet or its end: it polls the baseband every BUSY_STEP_US, the timestamp is that close, and Cordio's response
  * goes in at once (resp_us_max says how long Cordio took against T_IFS). It costs the main loop the scheduler's setup
@@ -57,10 +57,10 @@
  * 5 ms); past it the operation counts as ended, so Cordio is never left waiting (the stub PAL's hang, docs/BLUETOOTH_CORDIO.md).
  * A connection event ended that way is halted (fm1ble_op_halt), so it cannot finish into the next one.
  *
- * The TX side (since f0e6d08). Each connection also runs one of the driver's TX modes (fm1ble.h FM1BLE_TX_*), the k-th
+ * The TX side (since 9c47113). Each connection also runs one of the driver's TX modes (fm1ble.h FM1BLE_TX_*), the k-th
  * connection the k-th enabled one of PAL_FM1_TX_ORDER, kept with the setup once a connection received PAL_FM1_GOOD
  * packets. A packet flag that starts PAL_FM1_STALE_US or more before the event's window could open is an earlier event's,
- * raised late (at f0e6d08 one came 1192 us before dueUsec and Cordio anchored on it): it is dropped, not given to Cordio.
+ * raised late (at 9c47113 one came 1192 us before dueUsec and Cordio anchored on it): it is dropped, not given to Cordio.
  * In FM1BLE_TX_INTIME a response Cordio hands over more than PAL_FM1_TIFS_US after the packet was seen is not put in
  * (the empty PDU repeating the last SN goes) and Cordio is told the transmit failed. The log's and the summaries' fourth
  * words say what the TX side did (pal_fm1.h).
@@ -70,10 +70,10 @@
  * own state (the SN and NESN of the last response Cordio handed over), the chip's toggles and the central's SN: a packet
  * acknowledges Cordio's last PDU when that PDU went into a slot and TXTOG has changed since (the chip moved to the other
  * slot); it is new when its SN (RXDHDR bit 3, the air's layout) is the one the PAL expects next (pal_fm1.h PAL_FM1_SNX; up
- * to 807d70f, when RXTOG changed at it, and at 807d70f RXTOG stayed at a new ATT request the chip acknowledged on the
- * air). MD goes to Cordio as 1 (since round 6; up to 1b251ea as 0), so Cordio keeps a receive buffer
+ * to 1b8dea6, when RXTOG changed at it, and at 1b8dea6 RXTOG stayed at a new ATT request the chip acknowledged on the
+ * air). MD goes to Cordio as 1 (since round 6; up to 5a47303 as 0), so Cordio keeps a receive buffer
  * for a later packet in the same event, whichever RXDHDR bit is really the central's MD; an event with no later packet
- * ends with Cordio's receive timing out at the event's end. At 1b251ea BlueZ sent LL_LENGTH_REQ with MD set and its first
+ * ends with Cordio's receive timing out at the event's end. At 5a47303 BlueZ sent LL_LENGTH_REQ with MD set and its first
  * L2CAP PDU in the same event: the chip's ARQ acknowledged it on the air, but Cordio (told MD 0) had closed the event, so
  * the PDU never reached Cordio and no ATT request reached NimBLE. A response too late for T_IFS is not put in,
  * and the next packet tells Cordio its PDU was not acknowledged, so it hands the same one again. The header trace and each
@@ -81,12 +81,12 @@
  *
  * Packets after the first in an event (every mode). Cordio's response is complete when the central's next packet comes
  * (it went at T_IFS before it), not only at the event's end, so Cordio takes each packet of the event in turn; up to
- * 1b251ea the completion waited for the event's end and a later packet was held over Cordio's response. The busy wait
+ * 5a47303 the completion waited for the event's end and a later packet was held over Cordio's response. The busy wait
  * does not run through the response (pal_fm1_service may run from the interrupt): a later packet the main loop comes
  * back to too late for T_IFS still reaches Cordio, and in ARQ its answer goes at the next event (not acknowledged).
  *
  * ARQ ahead and the chip's SN (since round 7; pal_fm1.h PAL_FM1_L2_GOOD, PAL_FM1_ARQ_STUCK). ARQ connections write
- * Cordio's response either into the slot the chip sends now (in T_IFS, as up to e3d2a74) or into the one it sends next
+ * Cordio's response either into the slot the chip sends now (in T_IFS, as up to fdff9c6) or into the one it sends next
  * (ahead); with ahead Cordio is told its PDU was acknowledged once TXTOG names its slot, the acknowledgement it used is
  * then spent, and the arm leaves the slot alone. A connection's first packet never acknowledges Cordio's PDU, and when
  * the chip's own SN state disagrees with the slots' bit 2 (TXTOG moved at the first packet, or the central keeps taking

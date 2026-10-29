@@ -865,9 +865,9 @@ xero (2026-10-25): "ideally bluetooth as well". The goal is BLE MIDI beside USB 
 
 **Status (2026-10-28).** The controller is Cordio's LE link layer from source (Apache-2.0, `firmware/ble/cordio/`) on our
 own radio driver and PAL, the host is Apache NimBLE (`firmware/ble/nimble/`), the BLE-MIDI service is ours. No JieLi
-Bluetooth archive is linked (xero, 2026-10-27: no JieLi binary in the image). At f6ee032 every step of the Bluetooth
+Bluetooth archive is linked (xero, 2026-10-27: no JieLi binary in the image). At e8811d7 every step of the Bluetooth
 test run passed on xero's FM-1 with BlueZ on xlap as the central: the connection held, GATT resolved, a Note On went
-each way (docs/BLUETOOTH.md "The runs after 122afe3", docs/BLUETOOTH_CORDIO.md). The sections below up to Stage 2 are
+each way (docs/BLUETOOTH.md "The runs after 6d8b497", docs/BLUETOOTH_CORDIO.md). The sections below up to Stage 2 are
 the record as written at the time [history].
 
 **Stage 0 done (2026-10-25).** `docs/BLUETOOTH.md`: licence provenance of the SDK's Bluetooth archives, the controller's HCI interface, what
@@ -929,7 +929,7 @@ hardware and against any real central** (a Mac, an iPhone): that is stage 5. The
 11.25 ms is not in the specification, which says 15 ms or less; Apple's guidelines were not read.
 
 **Since then.** Stage 3 (NimBLE, host-tested) and the Cordio path are done, and stages 4 and 5 ran on Cordio's
-controller with BlueZ on xlap as the central (docs/BLUETOOTH.md "Cordio path as built", "The runs after 122afe3").
+controller with BlueZ on xlap as the central (docs/BLUETOOTH.md "Cordio path as built", "The runs after 6d8b497").
 
 **Next.** Stage 5 with xero's devices: a Mac, an iPhone, an Android phone (none is recorded as tried). Wire BLE MIDI into
 the app's MIDI paths (today only the Bluetooth test run calls `ble_midi_get`). Stage 6, WiFi and Bluetooth together.

@@ -41,14 +41,14 @@ typedef struct {
 #define FM1BLE_N_CTR    248     /* counters behind the steps; names in fm1ble_ctr_name, FM1BLE_CTR_NAMES */
 
 /* The counters, in the report's order. tools/fm1_ble_report.py has the same list (tests/ble_report_tool.py holds it to
- * FM1BLE_CTR_NAMES); the firmware at 48ea034 and before sent 24 others (the tool reads those by their count), up to
- * 122afe3 the first 32 of these, with pal_done_37-39 counting the driver's one-channel events that ended, up to 3b39ab4
- * the first 40, up to 58cadc5 the first 64, up to a7c1738 the first 80, up to 5474159 the first 120 (the event log then
+ * FM1BLE_CTR_NAMES); the firmware at c9b4e78 and before sent 24 others (the tool reads those by their count), up to
+ * 6d8b497 the first 32 of these, with pal_done_37-39 counting the driver's one-channel events that ended, up to 3b39ab4
+ * the first 40, up to 43817aa the first 64, up to fcbfd86 the first 80, up to 5838183 the first 120 (the event log then
  * the first 12 events, the setup in bits 7-6 alone). The RX trials' four each (rxtN_*) and the receive
  * setup the stack ran on follow, then the connection events' (pal_fm1.h: the busy wait, the window setups; fm1ble.h's
  * connection words), then the fourth setup's, the CONNECT_IND's poll gap and the PAL's event log (evN_a/b/c); then the
- * fifth to seventh setups', the connections' summaries (connN_a/b/c), NimBLE's connects; up to f0e6d08 the window
- * probe's, since then the TX side's (below); up to a349877 the first 192, since then the header trace's and the link
+ * fifth to seventh setups', the connections' summaries (connN_a/b/c), NimBLE's connects; up to 9c47113 the window
+ * probe's, since then the TX side's (below); up to 2e6d430 the first 192, since then the header trace's and the link
  * layer's after them (below). */
 enum {
     FM1BLE_C_RADIO_REGS_OK, FM1BLE_C_RADIO_REGS_BAD, FM1BLE_C_VARIANT, FM1BLE_C_RF_COMMON,
@@ -103,7 +103,7 @@ enum {
 /* the fifth to seventh setups' counters (pal_set4-6_counts/_arr) as the first four's; pal_conns the connections the PAL
  * started, pal_good the setup a connection received PAL_FM1_GOOD packets on (0xFF: none); connN_a/b/c the PAL's summary
  * of connection N (pal_fm1.h conn_sum); nimble_conns NimBLE's connects (bits 15-0) and disconnects (31-16).
- * The TX side (pal_fm1.h, fm1ble.h FM1BLE_TX_*), in place of f0e6d08's window probe (its 39 counters; the probe settled
+ * The TX side (pal_fm1.h, fm1ble.h FM1BLE_TX_*), in place of 9c47113's window probe (its 39 counters; the probe settled
  * that only PADW's window follows the register): pal_stale_rx the stale packets dropped; pal_halts the events halted
  * (15-0) and the halts the hardware stayed busy through (31-16); pal_resp_skipped INTIME's responses not put in;
  * pal_resp_hist Cordio's response latency in four 8-bit buckets (under 50, 50-99, 100-149, 150 us and more);
@@ -213,7 +213,7 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
 
 /* A central that leaves during MIDI_IN (the connection dropped) may connect again: the step waits on while NimBLE has
  * seen fewer than FM1BLE_CONN_TRIES connects, within the step's wait. Each connection runs the PAL's next TX mode
- * (pal_fm1.h PAL_FM1_TX_ORDER; the window setup is PADW for all since f0e6d08) until one carries L2CAP, so a run whose
+ * (pal_fm1.h PAL_FM1_TX_ORDER; the window setup is PADW for all since 9c47113) until one carries L2CAP, so a run whose
  * central connects again (tools/ble_central.py --tries) tries them in turn. */
 #define FM1BLE_CONN_TRIES   7u
 
@@ -226,7 +226,7 @@ enum { FM1BLE_RXT_COUNTS, FM1BLE_RXT_STAT, FM1BLE_RXT_PKT, FM1BLE_RXT_BYTES };
 /* The PDU capture (since round 7 of the FM-1 Bluetooth goal): the PAL's (pal_fm1.h PAL_FM1_CAP, PAL_FM1_CAP_BYTES, 32 of
  * 20 bytes) and ARQ's ways, after the steps' frames in the report as one more frame, index FM1BLE_STEPS
  * (tools/fm1_ble_report.py prints it as PDU CAPTURE). Its bytes: a head of FM1BLE_CAP_HEAD,
- *   0 the layout (3; 2 up to 807d70f: bytes 0-127 only, a 128-byte head; 1 up to round 7: bytes 0-14 only, a 16-byte head); 1 the entries; 2 an entry's bytes; 3 the ARQ
+ *   0 the layout (3; 2 up to 1b8dea6: bytes 0-127 only, a 128-byte head; 1 up to round 7: bytes 0-14 only, a 16-byte head); 1 the entries; 2 an entry's bytes; 3 the ARQ
  *   connections started (at most 255); 4-5 the first 16 connections that ran ARQ ahead (bit k: connection k); 6 the way
  *   kept (1 ahead, 0 in T_IFS, 0xFF none); 7 PAL_FM1_ARQ_STUCK; 8-9 and 10-11 bit 2 changed at a first packet and after
  *   PAL_FM1_ARQ_STUCK; 12-13 the responses written ahead; 14 PAL_FM1_L2_GOOD; 15 the connection the fragment trace is of
