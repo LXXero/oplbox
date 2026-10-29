@@ -4,7 +4,11 @@ OPLBOX is GPL-3.0-only and ships no JieLi binary for Bluetooth. The controller i
 (Apache-2.0, <https://github.com/packetcraft-inc/stacks>, commit 3656312, 2020-11-11), vendored unchanged in
 `firmware/ble/cordio/` (`README.md` there, `SHA256SUMS`, checked by `tests/run_host.sh`). The host above it is Apache NimBLE
 (`firmware/ble/nimble/`, same rules). Between Cordio and the chip is the PAL, Cordio's hardware interface: the chip's PAL is
-`firmware/ble/cordio_port/pal_fm1.c` (below). Nothing in this document ran on an FM-1.
+`firmware/ble/cordio_port/pal_fm1.c` (below). It runs on the FM-1: the runs are recorded under "The chip's PAL" below
+(raw runs on xryzen in `~/oplbox-ble-runs/<commit>-1`, not in the repo), and at f6ee032 (2026-10-28) every step of the
+Bluetooth test run passed with BlueZ on xlap as the central: one connection that held, GATT services resolved 0.86 s
+after the connect, a Note On each way (docs/BLUETOOTH.md "The runs after 122afe3"). Not recorded: any Mac, iPhone or
+Android phone as the central, the receive interrupt (everything still runs from the main loop), WiFi at the same time.
 
 ## What was taken and how it is configured
 
@@ -222,8 +226,16 @@ Cordio's PAL"):
   (up to 807d70f it was lost); with every fourth packet's CRC bad and RXTOG moving at it (crc_bad), as on the FM-1, data go
   both ways and the SN and RXTOG agree; a chip that acknowledges a bad CRC (crc_ack) loses the next packet to Cordio, and
   the cross-check counts and keeps it.
+- **956029a, the done-check after the resumed goal's round 2 (2026-10-28, `~/oplbox-ble-runs/956029a-1` on xryzen):**
+  with the PAL judging new packets by the central's SN, all eight steps PASS and the Note On went both ways, but BlueZ
+  never said ServicesResolved: yes, because the run closed the link right after MIDI_OUT while BlueZ was still in its
+  discovery. 77d267d holds the connection for the central to close (fm1ble_test.h `FM1BLE_HOLD_MS`).
+- **f6ee032, the done-check after round 3 (2026-10-28, `~/oplbox-ble-runs/f6ee032-1` on xryzen):** all eight steps
+  PASS; one connection, not dropped; GATT services resolved 0.86 s after the connect; the central's Note On 90 3C 64
+  arrived and the FM-1's came back.
 
-**What the first run has to show.** The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
+**What the first run has to show** [history: written before the first run; the runs above answered the timing with the
+busy wait, not an interrupt]. The response must be in its buffer within T_IFS (150 us) of the packet's end, and the
 timestamp is right only when the PAL runs at the packet's end: both need `pal_fm1_service` in the receive interrupt (IRQ
 29) or, for connection events, the busy wait above (`pal_resp_us_max` says how long Cordio took). This build attaches no
 interrupt: everything runs from the main loop, so on the FM-1 a SCAN_RSP is expected to come too late (the PAL counts

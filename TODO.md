@@ -859,11 +859,18 @@ built together so one FM-1 run tests all of them (docs/WIFI_STAGE4.md).
 - **Stage 8 on the page** (7d, docs/WIFI_STAGE8.md): the run joins the WPA2 network set over USB, eleven pages now.
   Host-tested, not run on an FM-1 yet. **Not on the page yet**: stage 7 (IP over lwIP), host-built.
 
-## 8. Bluetooth LE MIDI on code we can ship — stage 0 done (the map), stage 1 done (HCI, host only)
+## 8. Bluetooth LE MIDI on code we can ship — runs on the FM-1 (Cordio and NimBLE, MIDI both ways with BlueZ); phones, WiFi together and pairing open
 
 xero (2026-10-25): "ideally bluetooth as well". The goal is BLE MIDI beside USB and TRS, on GPL-3.0-compatible code.
 
-**Done.** `docs/BLUETOOTH.md`: licence provenance of the SDK's Bluetooth archives, the controller's HCI interface, what
+**Status (2026-10-28).** The controller is Cordio's LE link layer from source (Apache-2.0, `firmware/ble/cordio/`) on our
+own radio driver and PAL, the host is Apache NimBLE (`firmware/ble/nimble/`), the BLE-MIDI service is ours. No JieLi
+Bluetooth archive is linked (xero, 2026-10-27: no JieLi binary in the image). At f6ee032 every step of the Bluetooth
+test run passed on xero's FM-1 with BlueZ on xlap as the central: the connection held, GATT resolved, a Note On went
+each way (docs/BLUETOOTH.md "The runs after 122afe3", docs/BLUETOOTH_CORDIO.md). The sections below up to Stage 2 are
+the record as written at the time [history].
+
+**Stage 0 done (2026-10-25).** `docs/BLUETOOTH.md`: licence provenance of the SDK's Bluetooth archives, the controller's HCI interface, what
 the SDK's C sources show of its registers and RF path, what is shared with WiFi, coexistence, candidate host stacks
 with licences, flash and RAM against the 238 KB, fm1-radio's notes 01-06 as prior art, and a plan in seven stages.
 Documents only; nothing was flashed.
@@ -888,7 +895,8 @@ Documents only; nothing was flashed.
 **Decided** (chosen by the colony; xero can change it):
 - Host: Apache NimBLE, peripheral-only, no pairing first. Our own minimal ATT/GATT host is the fallback if the port or
   the size is a problem. Not JieLi's `btstack.a`, not BTstack.
-- Controller: JieLi's `btctrler.a` for diagnostic builds only, never shipped, until the licence gate is answered.
+- Controller [superseded 2026-10-27]: was JieLi's `btctrler.a` for diagnostic builds only, never shipped, until the
+  licence gate was answered. Now Cordio's link layer from source; nothing links `btctrler.a`, so no gate is pending.
 - Bluetooth and WiFi run one at a time at first; simultaneous use is stage 6.
 - The BLE-MIDI profile is our own code, written after reading the specification.
 
@@ -901,9 +909,8 @@ incoming fragments back together, follows a connection update, and advertises ag
 diffs a whole session against `tests/ble/session_expect.txt`, runs it again with answers inside the send call, and
 covers a refused command, a silent controller (2 s timeout), a Hardware Error, no command credit, a link lost with
 buffers held, and the ACL drop rules; `tests/ble_mutants.py` makes it catch 17 deliberate bugs. 3 KB of code, no
-static RAM, compiled by `./build.sh` but not linked. **Untested on an FM-1**: whether JieLi's controller answers the
-same way (the same opcodes, credits, buffer size, events after these masks, answers inside or after the send call) is
-stage 4's question.
+static RAM, compiled by `./build.sh` but not linked. Whether JieLi's controller answers the same way was to be stage 4's
+question [history]; JieLi's controller is no longer used.
 
 **Stage 2 done (host only, 2026-10-26).** `firmware/ble/ble_midi.c`/`.h`: the BLE-MIDI profile, our own code from the
 specification (MMA/AMEI RP-052, BLE-MIDI 1.0, which was read; midi.org's download is members-only, so the copy read
@@ -921,9 +928,13 @@ packets in hex, so the test's vectors are our reading of its rules; a misreading
 hardware and against any real central** (a Mac, an iPhone): that is stage 5. The earlier note that Apple asks for
 11.25 ms is not in the specification, which says 15 ms or less; Apple's guidelines were not read.
 
-**Next.** Stage 3 ports NimBLE against the fake controller and puts its attribute table on the stage 2 constants.
-Stage 4, the first FM-1 test: xero flashes a diagnostic build and reads the controller's start-up numbers off the screen.
+**Since then.** Stage 3 (NimBLE, host-tested) and the Cordio path are done, and stages 4 and 5 ran on Cordio's
+controller with BlueZ on xlap as the central (docs/BLUETOOTH.md "Cordio path as built", "The runs after 122afe3").
 
-**Open.** Whether OPLBOX may ship the controller binary (xero's decision). Whether both radios fit in one image. Whether
-the controller takes plain `send_packet` calls without JieLi's OS. Whether a Mac or an iPhone accepts the stage 2
-packets and the connection interval (needs the FM-1). Coexistence index 8. Whether an iPhone connects without bonding.
+**Next.** Stage 5 with xero's devices: a Mac, an iPhone, an Android phone (none is recorded as tried). Wire BLE MIDI into
+the app's MIDI paths (today only the Bluetooth test run calls `ble_midi_get`). Stage 6, WiFi and Bluetooth together.
+Stage 7, pairing, if a phone insists.
+
+**Open.** Whether a Mac or an iPhone accepts the stage 2 packets and the connection interval. Whether an iPhone
+connects without bonding. Coexistence index 8. The receive interrupt (everything runs from the main loop today).
+No licence decision is pending for Bluetooth: nothing links JieLi's controller.
